@@ -36,4 +36,6 @@ On claimed exchanges the proxy removes the request's `accept-encoding` so stream
 
 Each JSONL line holds `exchange`, `adapter`, `event`, `mono_us`, `wall_ms`, `start`, `end` and `payload`. Credential headers are redacted before anything is written.
 
+Lines of a reply come in two forms, both in the common format ([docs/common-format.md](docs/common-format.md)). Live events (`conversation`, `block_start`, `block_delta`, `block_stop`, `usage`, `reply_end`, `error`) are written as each chunk arrives. When a reply ends, one `record` line holds the whole conversation and reply, with `incomplete` and `dropped` set when events were lost or the stream was cut off. Image blocks hold a reference, content type and size, never the bytes. A claimed host whose request the adapter does not read gets an `unsupported` line with the host and path. The line shapes are in [specs/002-agent-traffic-capture/contracts/records.md](specs/002-agent-traffic-capture/contracts/records.md).
+
 A new tool is an `Adapter` (see `src/adapter.rs`): it names its hosts and, per request, returns an `ExchangeParser` or declines.

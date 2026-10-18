@@ -175,10 +175,13 @@ impl Tunnel {
 
     async fn forward(self: Arc<Self>, mut req: Request<Incoming>) -> Result<Response<Out>, Infallible> {
         let head = request_head(&self.host, &req);
-        let tap = self
-            .adapter
-            .claim(&head)
-            .map(|parser| self.begin_exchange(&head, &req, parser));
+        let tap = match self.adapter.claim(&head) {
+            Some(parser) => Some(self.begin_exchange(&head, &req, parser)),
+            None => {
+                self.note_unsupported(&head);
+                None
+            }
+        };
         let client_upgrade = req
             .headers()
             .contains_key(UPGRADE)
@@ -204,6 +207,15 @@ impl Tunnel {
         Ok(res.map(|body| TeeBody::new(body, tap, Side::Response).boxed_unsync()))
     }
 
+    fn note_unsupported(&self, head: &RequestHead) {
+        let path = head.path.split('?').next().unwrap_or_default();
+        let event = crate::common::unsupported(&head.host, path);
+        let proxy = &self.proxy;
+        let exchange = proxy.next_exchange.fetch_add(1, Ordering::Relaxed);
+        let recorder = Recorder::new(proxy.sink.clone(), exchange, self.adapter.name());
+        recorder.write(proxy.clock.stamp(), &event.kind, event.payload, (0, 0));
+    }
+
     fn begin_exchange(
         &self,
         head: &RequestHead,
@@ -211,11 +223,11 @@ impl Tunnel {
         parser: Box<dyn crate::adapter::ExchangeParser>,
     ) -> ExchangeTap {
         let proxy = &self.proxy;
-        let recorder = Recorder {
-            sink: proxy.sink.clone(),
-            exchange: proxy.next_exchange.fetch_add(1, Ordering::Relaxed),
-            adapter: self.adapter.name(),
-        };
+        let recorder = Recorder::new(
+            proxy.sink.clone(),
+            proxy.next_exchange.fetch_add(1, Ordering::Relaxed),
+            self.adapter.name(),
+        );
         let tap = ExchangeTap::spawn(recorder, proxy.clock, parser);
         tap.note(
             "exchange_start",

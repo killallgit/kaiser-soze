@@ -1,4 +1,5 @@
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
+use crate::assembler::Assembler;
 use crate::sink::Sink;
 use crate::ws::WsDecoder;
 use bytes::Bytes;
@@ -106,11 +107,26 @@ pub struct Recorder {
     pub sink: Sink,
     pub exchange: u64,
     pub adapter: &'static str,
+    refused: Arc<AtomicU64>,
 }
 
 impl Recorder {
-    pub fn write(&self, stamp: Stamp, kind: &str, payload: Value, offsets: (u64, u64)) {
-        self.sink.write(json!({
+    pub fn new(sink: Sink, exchange: u64, adapter: &'static str) -> Self {
+        Self {
+            sink,
+            exchange,
+            adapter,
+            refused: Arc::default(),
+        }
+    }
+
+    /// Live lines of this exchange the sink refused.
+    pub fn refused(&self) -> u64 {
+        self.refused.load(Ordering::Relaxed)
+    }
+
+    fn line(&self, stamp: Stamp, kind: &str, payload: Value, offsets: (u64, u64)) -> Value {
+        json!({
             "exchange": self.exchange,
             "adapter": self.adapter,
             "event": kind,
@@ -119,7 +135,17 @@ impl Recorder {
             "start": offsets.0,
             "end": offsets.1,
             "payload": payload,
-        }));
+        })
+    }
+
+    pub fn write(&self, stamp: Stamp, kind: &str, payload: Value, offsets: (u64, u64)) {
+        if !self.sink.write(self.line(stamp, kind, payload, offsets)) {
+            self.refused.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub async fn write_reliable(&self, stamp: Stamp, kind: &str, payload: Value) {
+        self.sink.write_reliable(self.line(stamp, kind, payload, (0, 0))).await;
     }
 }
 
@@ -179,6 +205,8 @@ async fn run_parser(
     stats: Arc<Stats>,
 ) {
     let mut decoders = [WsDecoder::default(), WsDecoder::default()];
+    let mut assembler = Assembler::default();
+    let dropped = || stats.dropped.load(Ordering::Relaxed) + recorder.refused();
     while let Some((stamp, msg)) = rx.recv().await {
         let inputs = match msg {
             Msg::Input(input) => vec![input],
@@ -200,6 +228,7 @@ async fn run_parser(
             }
         };
         for event in inputs.into_iter().flat_map(|input| parser.feed(input)) {
+            let records = assembler.push(&event, dropped());
             let TapEvent {
                 kind,
                 payload,
@@ -207,11 +236,17 @@ async fn run_parser(
                 end,
             } = event;
             recorder.write(stamp, &kind, payload, (start, end));
+            for record in records {
+                recorder.write_reliable(stamp, "record", record).await;
+            }
         }
+    }
+    if let Some(record) = assembler.finish(dropped()) {
+        recorder.write_reliable(clock.stamp(), "record", record).await;
     }
     let mut summary = stats.summary();
     summary["sink_dropped"] = json!(recorder.sink.dropped());
-    recorder.write(clock.stamp(), "exchange_end", summary, (0, 0));
+    recorder.write_reliable(clock.stamp(), "exchange_end", summary).await;
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -323,11 +358,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let tap_file = dir.path().join("tap.jsonl");
         let sink = Sink::open(&tap_file).await.unwrap();
-        let recorder = Recorder {
-            sink,
-            exchange: 1,
-            adapter: "test",
-        };
+        let recorder = Recorder::new(sink, 1, "test");
         let (release, receiver) = std::sync::mpsc::channel();
         let messages_seen = Arc::new(AtomicUsize::new(0));
         let parser = BlocksUntilReleased {
@@ -397,11 +428,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let tap_file = dir.path().join("tap.jsonl");
         let sink = Sink::open(&tap_file).await.unwrap();
-        let recorder = Recorder {
-            sink,
-            exchange: 1,
-            adapter: "test",
-        };
+        let recorder = Recorder::new(sink, 1, "test");
         let (_release, receiver) = std::sync::mpsc::channel();
         let parser = BlocksUntilReleased {
             release: receiver,
@@ -419,5 +446,158 @@ mod tests {
         let text = std::fs::read_to_string(&tap_file).unwrap();
         let end: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
         assert!(end["payload"]["sink_dropped"].as_u64().unwrap() > 0);
+    }
+
+    struct Emits {
+        events: Vec<TapEvent>,
+        release: Option<Receiver<()>>,
+    }
+
+    impl ExchangeParser for Emits {
+        fn feed(&mut self, input: TapInput) -> Vec<TapEvent> {
+            if let Some(release) = self.release.take() {
+                release.recv().ok();
+            }
+            if matches!(input, TapInput::ResponseEnd) {
+                std::mem::take(&mut self.events)
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    fn open_reply() -> Vec<TapEvent> {
+        use crate::common::*;
+        vec![
+            conversation(json!("sys"), json!([]), vec![message("user", vec![text_block("hi")])]),
+            block_start(BlockStart {
+                index: 0,
+                kind: "text",
+                id: Value::Null,
+                name: Value::Null,
+            }),
+            block_delta(0, Delta::Text("ok".into())),
+        ]
+    }
+
+    fn closed_reply() -> Vec<TapEvent> {
+        use crate::common::*;
+        let mut events = open_reply();
+        events.extend([block_stop(0), usage(Usage::default()), reply_end(json!("end_turn"))]);
+        events
+    }
+
+    fn lines(tap_file: &std::path::Path) -> Vec<Value> {
+        let text = std::fs::read_to_string(tap_file).unwrap();
+        text.lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    }
+
+    async fn run_to_the_end(events: Vec<TapEvent>) -> Vec<Value> {
+        let dir = tempfile::tempdir().unwrap();
+        let tap_file = dir.path().join("tap.jsonl");
+        let recorder = Recorder::new(Sink::open(&tap_file).await.unwrap(), 1, "test");
+        let tap = ExchangeTap::spawn(recorder, Clock::start(), Box::new(Emits { events, release: None }));
+
+        tap.send(TapInput::ResponseEnd);
+        drop(tap);
+        wait_for_exchange_end(&tap_file).await;
+
+        lines(&tap_file)
+    }
+
+    #[tokio::test]
+    async fn live_lines_come_before_one_record_before_exchange_end() {
+        // It writes each live event, then the record when the reply ends
+        let lines = run_to_the_end(closed_reply()).await;
+
+        let kinds: Vec<&str> = lines.iter().map(|line| line["event"].as_str().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "conversation",
+                "block_start",
+                "block_delta",
+                "block_stop",
+                "usage",
+                "reply_end",
+                "record",
+                "exchange_end"
+            ]
+        );
+        assert_eq!(lines[6]["payload"]["incomplete"], false);
+        assert_eq!(lines[6]["payload"]["dropped"], 0);
+    }
+
+    #[tokio::test]
+    async fn closing_before_the_reply_ends_writes_one_incomplete_record() {
+        // It keeps the assembled part and flags it
+        let lines = run_to_the_end(open_reply()).await;
+
+        let records: Vec<&Value> = lines.iter().filter(|line| line["event"] == "record").collect();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["payload"]["incomplete"], true);
+        assert_eq!(records[0]["payload"]["reply"]["message"]["blocks"][0]["text"], "ok");
+    }
+
+    #[tokio::test]
+    async fn a_record_is_written_when_the_sink_refuses_live_lines_and_counts_them() {
+        // It waits for room, so the record is not lost, and reports the refused live lines
+        let (sink, mut drained) = Sink::detached(3);
+        let recorder = Recorder::new(sink, 1, "test");
+        let tap = ExchangeTap::spawn(
+            recorder,
+            Clock::start(),
+            Box::new(Emits {
+                events: closed_reply(),
+                release: None,
+            }),
+        );
+        tap.send(TapInput::ResponseEnd);
+        drop(tap);
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let mut written = Vec::new();
+        while let Some(line) = drained.recv().await {
+            let last = line["event"] == "exchange_end";
+            written.push(line);
+            if last {
+                break;
+            }
+        }
+
+        let record = written.iter().find(|line| line["event"] == "record").unwrap();
+        assert!(record["payload"]["dropped"].as_u64().unwrap() > 0);
+        assert_eq!(record["payload"]["incomplete"], true);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stalled_parser_gives_an_incomplete_record_that_counts_the_dropped_input() {
+        // It adds the inputs the full queue refused to the record's dropped count
+        let dir = tempfile::tempdir().unwrap();
+        let tap_file = dir.path().join("tap.jsonl");
+        let recorder = Recorder::new(Sink::open(&tap_file).await.unwrap(), 1, "test");
+        let (release, receiver) = std::sync::mpsc::channel();
+        let tap = ExchangeTap::spawn(
+            recorder,
+            Clock::start(),
+            Box::new(Emits {
+                events: closed_reply(),
+                release: Some(receiver),
+            }),
+        );
+
+        for _ in 0..1000 {
+            tap.send(TapInput::ResponseBody(Bytes::from_static(b"x")));
+        }
+        release.send(()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        tap.send(TapInput::ResponseEnd);
+        drop(tap);
+        wait_for_exchange_end(&tap_file).await;
+
+        let lines = lines(&tap_file);
+        let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+        assert!(record["payload"]["dropped"].as_u64().unwrap() > 0);
+        assert_eq!(record["payload"]["incomplete"], true);
     }
 }
