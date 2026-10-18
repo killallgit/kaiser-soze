@@ -66,4 +66,4 @@ A Codex request shape, abbreviated:
   "input":[{"type":"string=custom_tool_call_output","call_id":"string","output":[{"type":"string=input_text","text":"string"}]}]}}
 ```
 
-One run of both harnesses gave 50 distinct shapes: 17 Anthropic and 33 Codex event, request and header shapes. These are the raw material for the schema fingerprints in roadmap item 13.
+One run of both harnesses gave 50 distinct shapes: 16 Anthropic and 34 Codex event, request and header shapes. These are the raw material for the schema fingerprints in roadmap item 13.
