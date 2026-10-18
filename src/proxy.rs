@@ -2,6 +2,7 @@ use crate::adapter::{claims_host, Adapter, RequestHead, ResponseHead, TapInput};
 use crate::ca::Ca;
 use crate::exchange::{Clock, ExchangeTap, Recorder, Side, TeeBody};
 use crate::redact::redact_headers;
+use crate::shape::{ShapeLog, ShapedParser};
 use crate::sink::Sink;
 use crate::BoxError;
 use bytes::Bytes;
@@ -36,6 +37,8 @@ pub struct ProxyConfig {
     pub adapters: Vec<Arc<dyn Adapter>>,
     pub ca_dir: PathBuf,
     pub tap_file: PathBuf,
+    /// Where to write the shape of each distinct request and reply, or none.
+    pub shape_file: Option<PathBuf>,
     pub upstream_roots: RootCertStore,
     pub upstream_addr: Option<SocketAddr>,
 }
@@ -46,6 +49,7 @@ pub struct Proxy {
     connector: TlsConnector,
     upstream_addr: Option<SocketAddr>,
     sink: Sink,
+    shapes: Option<Arc<ShapeLog>>,
     clock: Clock,
     next_exchange: AtomicU64,
 }
@@ -70,12 +74,17 @@ impl Proxy {
             .with_root_certificates(config.upstream_roots)
             .with_no_client_auth();
         client.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let shapes = match &config.shape_file {
+            Some(path) => Some(ShapeLog::new(Sink::open(path).await?)),
+            None => None,
+        };
         Ok(Arc::new(Self {
             ca: Ca::load_or_create(&config.ca_dir, &hosts)?,
             adapters: config.adapters,
             connector: TlsConnector::from(Arc::new(client)),
             upstream_addr: config.upstream_addr,
             sink: Sink::open(&config.tap_file).await?,
+            shapes,
             clock: Clock::start(),
             next_exchange: AtomicU64::new(1),
         }))
@@ -223,11 +232,12 @@ impl Tunnel {
         parser: Box<dyn crate::adapter::ExchangeParser>,
     ) -> ExchangeTap {
         let proxy = &self.proxy;
-        let recorder = Recorder::new(
-            proxy.sink.clone(),
-            proxy.next_exchange.fetch_add(1, Ordering::Relaxed),
-            self.adapter.name(),
-        );
+        let exchange = proxy.next_exchange.fetch_add(1, Ordering::Relaxed);
+        let recorder = Recorder::new(proxy.sink.clone(), exchange, self.adapter.name());
+        let parser: Box<dyn crate::adapter::ExchangeParser> = match &proxy.shapes {
+            Some(log) => Box::new(ShapedParser::new(log.clone(), parser, exchange, head)),
+            None => parser,
+        };
         let tap = ExchangeTap::spawn(recorder, proxy.clock, parser);
         tap.note(
             "exchange_start",

@@ -47,8 +47,23 @@ Scenarios: plain text, one tool call, a second turn, a longer reply. Shapes of t
 ## Gaps in the current mapping
 
 1. **Codex `system` and `tools` are never filled.** The request carries `instructions` and `tools`; the common scheme says both exist only on the wire, so this is lost data.
-2. **Codex tool calls are not mapped.** The tool scenario produced an `other` block and no `tool_call` or `tool_result`. Stop reason is `completed` even when the model asked for a tool.
-3. **Codex requests are incremental.** A later request can carry only new items, so a record's conversation is not the whole conversation. The common scheme says each request carries the whole conversation. This must be decided: rebuild the history per socket (a per-exchange state store) or record the partial request as is.
+2. **Codex tool calls are not mapped.** The shape file shows why: Codex sends `custom_tool_call` items (events `response.custom_tool_call_input.delta` and `.done`) and answers with `custom_tool_call_output`, not `function_call`. The mapper reads only `function_call`, so these become `other` blocks. Stop reason is `completed` even when the model asked for a tool.
+3. **Codex requests are incremental.** Confirmed: a request carries `previous_response_id` and only the new `input` items. A later request can carry only new items, so a record's conversation is not the whole conversation. The common scheme says each request carries the whole conversation. This must be decided: rebuild the history per socket (a per-exchange state store) or record the partial request as is.
 4. **Claude messages contain a `system` role.** Messages came out as `user,system,assistant,user,system...`. The common scheme allows only `user` and `assistant`. Needs a check of what the extra messages are.
 5. **Stop reasons differ.** `end_turn` and `tool_use` against `completed`. The common scheme needs one vocabulary.
 6. **Warm-up replies.** Codex's empty first reply is a record with no content. Decide whether to keep, mark or drop it.
+
+## Wire shapes
+
+`soze --shape-file <path>` (and `task dev`, which writes `target/dev/shapes.jsonl`) writes the shape of each distinct request, reply event and header set, once per run. Keys and types only: no values, no header values. Tags (`type`, `role`, `object`) keep their value because they name the schema, and user-defined schemas (`input_schema`, `parameters`, `metadata`, an object-valued `input`) collapse to `opaque`.
+
+A Codex request shape, abbreviated:
+
+```json
+{"host":"chatgpt.com","path":"/backend-api/codex/responses","direction":"request","transport":"websocket","kind":"response.create",
+ "shape":{"model":"string","previous_response_id":"string","stream":"boolean","store":"boolean",
+  "reasoning":{"effort":"string"},"include":["string"],
+  "input":[{"type":"string=custom_tool_call_output","call_id":"string","output":[{"type":"string=input_text","text":"string"}]}]}}
+```
+
+One run of both harnesses gave 50 distinct shapes: 17 Anthropic and 33 Codex event, request and header shapes. These are the raw material for the schema fingerprints in roadmap item 13.
