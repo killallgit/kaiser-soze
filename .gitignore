@@ -1,0 +1,4 @@
+/target
+/CLAUDE.local.md
+/.claude/worktrees/
+*.jsonl

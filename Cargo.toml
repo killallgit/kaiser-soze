@@ -1,0 +1,25 @@
+[package]
+name = "kaiser-soze"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "soze"
+path = "src/main.rs"
+
+[dependencies]
+bytes = "=1.12.1"
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+http-body = "=1.1.0"
+http-body-util = "=0.1.5"
+hyper = { version = "=1.11.1", features = ["http1", "client", "server"] }
+hyper-util = { version = "=0.1.21", features = ["tokio"] }
+rcgen = { version = "=0.14.10", default-features = false, features = ["pem", "ring"] }
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+serde_json = "=1.0.151"
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time", "fs"] }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "=1.0.9"
+
+[dev-dependencies]
+tempfile = "=3.27.0"
