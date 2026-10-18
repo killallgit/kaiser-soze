@@ -10,10 +10,11 @@ is in [docs/common-format.md](docs/common-format.md).
 ## Gate
 
 ```
-cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+task check
 ```
 
-To test a single module, run `cargo test <module>::`.
+It runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`, and
+names every check that failed. To test a single module, run `task test:unit -- <module>::`.
 
 ## Rules
 
@@ -50,5 +51,5 @@ in that worktree.
 Each commit message is one plain sentence, with no attribution lines. `CLAUDE.local.md` is never
 committed.
 
-Integrate by rebasing the lane onto `main`, running the gate, and fast-forwarding local `main` to
-the lane. Nothing is pushed without the user's request.
+Integrate by rebasing the lane onto `main`, running the gate, and opening a pull request. Merge
+only after all CI checks pass. Nothing is pushed without the user's request.

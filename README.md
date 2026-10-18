@@ -11,6 +11,15 @@ cargo build
 ./target/debug/soze --tap-file out.jsonl [--port 0] [--ca-dir ~/.config/soze]
 ```
 
+## Tasks
+
+Run `task --list` to see them. Tasks run from any directory in the repo.
+
+- `task check`: formatting, clippy with warnings as errors, and all tests. CI runs the same checks.
+- `task test:unit -- <module>::`: unit tests only; the module filter is optional.
+- `task test:integration`: integration tests in `tests/` only.
+- `task dev`: start the proxy with its tap file and CA under `target/dev/`; stops after `DEV_TIMEOUT` seconds (default 300, max 600).
+
 The CA is created on first run in the CA dir (`ca.pem`, `ca-key.pem` mode 0600) and is name-constrained to the adapter hosts. It is never installed into a trust store. Point the agent at it:
 
 ```sh

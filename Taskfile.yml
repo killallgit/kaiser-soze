@@ -1,0 +1,27 @@
+version: '3'
+
+tasks:
+  default:
+    silent: true
+    cmds:
+      - task --list
+
+  check:
+    desc: Run the formatting check, clippy with warnings as errors, and all tests
+    cmds:
+      - scripts/check.sh
+
+  test:unit:
+    desc: Run only the unit tests; pass a module filter after -- (for example sse::)
+    cmds:
+      - cargo test --lib {{.CLI_ARGS}}
+
+  test:integration:
+    desc: Run only the integration tests in tests/
+    cmds:
+      - cargo test --test proxy
+
+  dev:
+    desc: Start the proxy with a scratch tap file and CA under target/dev; stops after DEV_TIMEOUT seconds (default 300, max 600)
+    cmds:
+      - scripts/dev.sh
