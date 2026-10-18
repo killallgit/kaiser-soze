@@ -2,7 +2,7 @@
 
 kaiser-soze is one Rust crate with one binary, `soze`: a local proxy that sits between a coding
 agent and its model API, forwards every byte as it arrives, and taps a copy of the stream into
-events. Each tool is an `Adapter` (`src/adapter.rs`). Codex and Claude Code are implemented.
+events. Each tool is an `Adapter`. Codex and Claude Code are implemented.
 
 Read [docs/objective.md](docs/objective.md) first: it is the whole scope. The target data shape
 is in [docs/common-format.md](docs/common-format.md).
