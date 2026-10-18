@@ -103,7 +103,7 @@ description: "Task list for Agent Traffic Capture"
 - [X] T023 [P] Update `README.md`: the paragraph on JSONL lines describes live events and the `record` line, `incomplete` and `dropped`, and that images are references
 - [X] T024 Run `task check`, then quickstart sections 1 to 6 and confirm each expected outcome
 - [X] T025 Ask the user before quickstart section 7. Only with a yes: run one Codex task and one Claude Code task through `task dev` (harmless prompt, at most 4 calls per task, `</dev/null`, `timeout`), check one `record` per call with `incomplete` false, report counts and ids only, then delete `target/dev/`
-- [ ] T026 When the user asks: commit on the lane branch, rebase onto `main`, run `task check`, open a pull request, merge only after all CI checks pass, then remove the lane worktree
+- [X] T026 When the user asks: commit on the lane branch, rebase onto `main`, run `task check`, open a pull request, merge only after all CI checks pass, then remove the lane worktree
 
 ---
 
