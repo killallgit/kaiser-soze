@@ -86,7 +86,7 @@ No blocking work beyond T001 to T003. All stories add tasks to the same `Taskfil
 **Independent Test**: [quickstart.md](quickstart.md) section 7.
 
 - [X] T016 [P] [US4] Create `.github/workflows/ci.yml`: trigger on `pull_request` and on `push` to `main`; one job on `ubuntu-latest` with `actions/checkout` pinned to a full commit SHA (look it up with `gh api` and confirm it is at least two weeks old), then three steps in this order: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`. No setup action, no cache action, no Task
-- [ ] T017 [US4] Verify (needs the user's go-ahead to push): open a pull request with a deliberately failing test, see CI fail at the test step, fix it, see CI pass. Confirm the three steps match `scripts/check.sh`
+- [X] T017 [US4] Verify (needs the user's go-ahead to push): open a pull request with a deliberately failing test, see CI fail at the test step, fix it, see CI pass. Confirm the three steps match `scripts/check.sh`
 
 **Checkpoint**: CI result equals the local result.
 
@@ -149,7 +149,7 @@ T003 -> US4 (T016 any time after T003) -> T017 after US1
 
 ## Phase 9: Convergence
 
-- [ ] T025 Prove CI goes red: on a throwaway branch push one deliberately failing test, confirm the `ci` job fails at the `cargo test` step, then delete the branch, per US4/AC2 and SC-006 (partial)
+- [X] T025 Prove CI goes red: on a throwaway branch push one deliberately failing test, confirm the `ci` job fails at the `cargo test` step, then delete the branch, per US4/AC2 and SC-006 (partial)
 - [X] T026 Prove the integration tests pass offline: run `task test:integration` with the network switched off and confirm the same 5 tests pass, per the "pass offline" edge case (partial)
 - [X] T027 Prove `task dev` stops cleanly on interrupt: start `task dev`, send SIGINT, confirm exit 0 and no leftover `soze` process, then delete `target/dev/`, per US3/AC2 (partial)
 - [ ] T028 Time the README discovery: from a cold read of `README.md`, find and run `task test:unit` and confirm it takes under 1 minute, per SC-002 (partial)
