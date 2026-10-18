@@ -89,8 +89,8 @@ verified and tested, as if a junior developer with no knowledge of project rules
 
 ## Development Workflow
 
-- The gate MUST pass before integration:
-  `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`.
+- The gate MUST pass before integration. The gate is `task check`, which runs the formatting check,
+  clippy with warnings as errors, and all tests.
 - Lint and typecheck MUST be green before any push and in CI.
 - A change that exposes an unrelated latent failure in tests, lint or typecheck MUST stop and fix
   it. The exception is urgent work: then a parallel agent SHOULD fix it.
@@ -98,8 +98,9 @@ verified and tested, as if a junior developer with no knowledge of project rules
   `.claude/worktrees/`.
 - Each commit message MUST be one plain sentence with no attribution lines. `CLAUDE.local.md`
   MUST NOT be committed.
-- Integration MUST rebase the lane onto `main`, run the gate, and fast-forward local `main`.
-  Nothing MUST be pushed without the user's request.
+- Integration MUST rebase the lane onto `main`, run the gate, and open a pull request. The pull
+  request MUST merge only after all CI checks pass. Nothing MUST be pushed without the user's
+  request.
 
 ## Governance
 
@@ -109,4 +110,4 @@ approved by the user. Versioning follows semantic rules: MAJOR for removed or re
 principles, MINOR for new or materially expanded principles, PATCH for clarifications. Every
 plan and review MUST check compliance. A violation MUST be fixed or justified in writing.
 
-**Version**: 1.1.0 | **Ratified**: 2026-10-17 | **Last Amended**: 2026-10-17
+**Version**: 1.2.0 | **Ratified**: 2026-10-17 | **Last Amended**: 2026-10-18
