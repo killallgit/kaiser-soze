@@ -1,5 +1,7 @@
 # kaiser-soze
 
+Scope: [docs/objective.md](docs/objective.md).
+
 A local explicit HTTP proxy that sits between a coding agent and its model API and taps the streamed results into a JSONL file. Responses are forwarded as they arrive; the tap reads a copy through a bounded queue and drops (and counts) events when it falls behind.
 
 Hosts an adapter claims (Codex: `chatgpt.com`, `api.openai.com`; Claude Code: `api.anthropic.com`) are decrypted with a local CA. Every other host is tunnelled as raw TCP.

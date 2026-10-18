@@ -50,21 +50,3 @@ model, so a proxy sees Cursor's private protocol, never the model request.
 | usage | `response.completed.usage` | `message_start.usage` + `message_delta.usage` |
 
 A reply ends at `response.completed` (Codex) or `message_stop` (Claude Code).
-
-## The link layer (later)
-
-Around the conversation, the graph ties work across tools and repos:
-
-```
-Repo {remote} -HAS_BRANCH-> Branch {name} -HAS_PR-> PR {number, url}
-Repo -HAS_WORKTREE-> Worktree {path} -ON_BRANCH-> Branch
-Session -HAS_RUN-> Run -SPAWNED {call_id}-> Run
-Run -IN_REPO | IN_WORKTREE-> ...   Run -ON_BRANCH-> Branch
-Run -HAS_MESSAGE-> Message -HAS_PART-> Part -RESULT_OF-> Part
-```
-
-- Branch is the join across tools: every tool records it, each worktree is one branch, each PR is
-  one branch.
-- The wire does not carry repo, branch or working directory. They come from the harness (headers
-  such as Codex `x-codex-turn-metadata` and Claude Code `x-claude-code-session-id`, or its
-  transcript files) and from the repo's own `.git`.
