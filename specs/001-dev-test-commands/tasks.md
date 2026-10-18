@@ -111,7 +111,7 @@ No blocking work beyond T001 to T003. All stories add tasks to the same `Taskfil
 - [X] T021 Run `task check` on the finished tree and confirm exit 0, and that `git diff main -- Cargo.toml Cargo.lock` shows no change (FR-014)
 - [X] T022 Compare the three commands in `.github/workflows/ci.yml` with `scripts/check.sh` and confirm they match (FR-012)
 - [X] T023 Delete scratch files: `target/dev/` and any scratch worktree from T007
-- [ ] T024 When the user asks: commit on the lane branch, rebase onto `main`, run `task check`, open a pull request, merge only after all CI checks pass, then remove the lane worktree
+- [X] T024 When the user asks: commit on the lane branch, rebase onto `main`, run `task check`, open a pull request, merge only after all CI checks pass, then remove the lane worktree
 
 ---
 
@@ -144,3 +144,12 @@ T003 -> US4 (T016 any time after T003) -> T017 after US1
 
 - Total: 24 tasks. Setup 3, US1 4, US2 4, US3 4, US4 2, US5 3, Polish 4.
 - Wording of task descriptions, scripts and docs avoids message content and logs; no test asserts on message strings.
+
+---
+
+## Phase 9: Convergence
+
+- [ ] T025 Prove CI goes red: on a throwaway branch push one deliberately failing test, confirm the `ci` job fails at the `cargo test` step, then delete the branch, per US4/AC2 and SC-006 (partial)
+- [X] T026 Prove the integration tests pass offline: run `task test:integration` with the network switched off and confirm the same 5 tests pass, per the "pass offline" edge case (partial)
+- [X] T027 Prove `task dev` stops cleanly on interrupt: start `task dev`, send SIGINT, confirm exit 0 and no leftover `soze` process, then delete `target/dev/`, per US3/AC2 (partial)
+- [ ] T028 Time the README discovery: from a cold read of `README.md`, find and run `task test:unit` and confirm it takes under 1 minute, per SC-002 (partial)
