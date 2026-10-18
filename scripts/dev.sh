@@ -9,8 +9,11 @@ if [ "$timeout_seconds" -lt 1 ] || [ "$timeout_seconds" -gt 600 ]; then
   exit 2
 fi
 
+trap : INT
 mkdir -p target/dev
-timeout "$timeout_seconds" cargo run -- --tap-file target/dev/tap.jsonl --ca-dir target/dev/ca
+cargo build || exit 1
+# --foreground keeps timeout in this process group so Ctrl-C reaches the proxy
+timeout --foreground "$timeout_seconds" "${CARGO_TARGET_DIR:-target}/debug/soze" --tap-file target/dev/tap.jsonl --ca-dir target/dev/ca
 status=$?
 # 124: timeout stopped the proxy; 130: interrupted
 if [ "$status" -eq 124 ] || [ "$status" -eq 130 ]; then
