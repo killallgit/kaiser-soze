@@ -1,6 +1,6 @@
 # Common format
 
-Status: working notes. Nothing here is implemented beyond the tap events in `src/`.
+Status: implemented. The proxy writes these shapes as live events and finished records; the event kinds and fields are in [specs/002-agent-traffic-capture/contracts/records.md](../specs/002-agent-traffic-capture/contracts/records.md).
 
 ## The model seam
 
