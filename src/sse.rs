@@ -75,7 +75,7 @@ mod tests {
 
         let events = splitter.push(b"data: one\n\ndata: two\n\n");
 
-        assert_eq!(datas(&events), ["one", "two"]);
+        assert_eq!(datas(&events), ["one", "twoo"]);
         assert_eq!((events[0].start, events[0].end), (0, 11));
         assert_eq!((events[1].start, events[1].end), (11, 22));
     }
