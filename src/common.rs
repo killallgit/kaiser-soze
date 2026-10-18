@@ -144,6 +144,11 @@ pub fn image_block(reference: &str, content_type: &str, size: usize) -> Value {
     json!({"kind": "image", "ref": reference, "content_type": content_type, "size": size})
 }
 
+pub fn base64_size(data: &str) -> usize {
+    let padding = data.bytes().rev().take_while(|byte| *byte == b'=').count();
+    (data.len() / 4 * 3).saturating_sub(padding)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

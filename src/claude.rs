@@ -161,11 +161,6 @@ fn result_output(location: &str, content: &Value) -> Value {
     }
 }
 
-fn base64_size(data: &str) -> usize {
-    let padding = data.bytes().rev().take_while(|byte| *byte == b'=').count();
-    (data.len() / 4 * 3).saturating_sub(padding)
-}
-
 fn usage_event(usage_json: &Value) -> TapEvent {
     let count = |field: &str| usage_json[field].as_u64();
     usage(Usage {

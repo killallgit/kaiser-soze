@@ -53,6 +53,7 @@ impl CodexParser {
 
     fn request_events(&self, body: &[u8], start: u64, end: u64) -> Vec<TapEvent> {
         let event = match serde_json::from_slice::<Value>(body) {
+            Ok(json) if json["type"].as_str().is_some_and(|kind| kind != "response.create") => return Vec::new(),
             Ok(json) => conversation_event(&json),
             Err(_) => unparsed(Side::Request),
         };
@@ -82,8 +83,12 @@ fn input_item(index: usize, item: &Value) -> Option<(String, Vec<Value>)> {
     let location = index.to_string();
     match item["type"].as_str().unwrap_or("message") {
         "message" => {
-            let role = item["role"].as_str()?.to_string();
-            Some((role, content_parts(&location, &item["content"])))
+            let role = if item["role"].as_str()? == "assistant" {
+                "assistant"
+            } else {
+                "user"
+            };
+            Some((role.to_string(), content_parts(&location, &item["content"])))
         }
         "reasoning" => Some(("assistant".into(), vec![reasoning_of(item)])),
         "function_call" => {
@@ -150,11 +155,6 @@ fn image_of(location: &str, url: &str) -> Value {
         .map(|(meta, data)| (meta.split(';').next().unwrap_or_default(), base64_size(data)))
         .unwrap_or_default();
     image_block(location, content_type, size)
-}
-
-fn base64_size(data: &str) -> usize {
-    let padding = data.bytes().rev().take_while(|byte| *byte == b'=').count();
-    (data.len() / 4 * 3).saturating_sub(padding)
 }
 
 fn stream_event(data: &str, start: u64, end: u64) -> Vec<TapEvent> {
@@ -322,6 +322,29 @@ mod tests {
                 ),
             ])
         );
+    }
+
+    #[test]
+    fn maps_non_assistant_roles_to_user() {
+        // It keeps the common format to user and assistant, folding developer into user
+        let events = parser().request_events(
+            br#"{"input":[{"type":"message","role":"developer","content":"d"},{"type":"message","role":"user","content":"u"}]}"#,
+            0,
+            1,
+        );
+
+        assert_eq!(
+            events[0].payload["messages"],
+            json!([message("user", vec![text_block("d"), text_block("u")])])
+        );
+    }
+
+    #[test]
+    fn ignores_websocket_frames_that_are_not_requests() {
+        // A cancel frame opens no conversation and so leaves no phantom record
+        let events = parser().request_events(br#"{"type":"response.cancel"}"#, 0, 1);
+
+        assert!(events.is_empty());
     }
 
     #[test]
