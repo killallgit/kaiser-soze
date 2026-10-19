@@ -1,6 +1,7 @@
 use crate::adapter::{claims_host, Adapter, RequestHead, ResponseHead, TapInput};
 use crate::ca::Ca;
 use crate::exchange::{Clock, ExchangeTap, Recorder, Side, TeeBody};
+use crate::label::{self, Label};
 use crate::live::Live;
 use crate::redact::redact_headers;
 use crate::shape::{ShapeLog, ShapedParser};
@@ -18,7 +19,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, RootCertStore};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -63,6 +64,7 @@ struct Tunnel {
     adapter: Arc<dyn Adapter>,
     host: String,
     port: u16,
+    label: Option<Label>,
     upstream: tokio::sync::Mutex<Upstream>,
 }
 
@@ -142,10 +144,12 @@ impl Proxy {
         }
         let authority = req.uri().authority().ok_or("CONNECT without a host")?;
         let (host, port) = (authority.host().to_string(), authority.port_u16().unwrap_or(443));
+        let label = label::from_headers(req.headers());
         if !self.live {
             eprintln!("connect {host}:{port}");
         }
         let Some(adapter) = self.adapters.iter().find(|a| claims_host(a.as_ref(), &host)) else {
+            self.note_tunnel(&host, port, label.as_ref());
             let upstream = self.dial(&host, port).await?;
             let upgrade = hyper::upgrade::on(req);
             tokio::spawn(async move {
@@ -163,6 +167,7 @@ impl Proxy {
             adapter: adapter.clone(),
             host,
             port,
+            label,
             upstream: tokio::sync::Mutex::new(sender),
         });
         tokio::spawn(async move {
@@ -178,6 +183,23 @@ impl Proxy {
         });
         Ok(())
     }
+}
+
+impl Proxy {
+    /// Records that a connection to a host nobody claims was tunnelled, unread.
+    fn note_tunnel(&self, host: &str, port: u16, label: Option<&Label>) {
+        let exchange = self.next_exchange.fetch_add(1, Ordering::Relaxed);
+        let recorder = Recorder::new(self.sink.clone(), exchange, "none");
+        let payload = with_label(json!({"host": host, "port": port}), label);
+        recorder.write(self.clock.stamp(), "tunnel", payload, (0, 0));
+    }
+}
+
+fn with_label(mut payload: Value, label: Option<&Label>) -> Value {
+    if let Some(label) = label {
+        payload["label"] = label.to_json();
+    }
+    payload
 }
 
 impl Tunnel {
@@ -229,7 +251,8 @@ impl Tunnel {
         let proxy = &self.proxy;
         let exchange = proxy.next_exchange.fetch_add(1, Ordering::Relaxed);
         let recorder = Recorder::new(proxy.sink.clone(), exchange, self.adapter.name());
-        recorder.write(proxy.clock.stamp(), &event.kind, event.payload, (0, 0));
+        let payload = with_label(event.payload, self.label.as_ref());
+        recorder.write(proxy.clock.stamp(), &event.kind, payload, (0, 0));
     }
 
     fn begin_exchange(
@@ -248,14 +271,17 @@ impl Tunnel {
         let tap = ExchangeTap::spawn(recorder, proxy.clock, parser);
         tap.note(
             "exchange_start",
-            json!({
-                "method": head.method,
-                "host": head.host,
-                "path": head.path,
-                "http_version": format!("{:?}", req.version()),
-                "upgrade": req.headers().contains_key(UPGRADE),
-                "headers": head.headers,
-            }),
+            with_label(
+                json!({
+                    "method": head.method,
+                    "host": head.host,
+                    "path": head.path,
+                    "http_version": format!("{:?}", req.version()),
+                    "upgrade": req.headers().contains_key(UPGRADE),
+                    "headers": head.headers,
+                }),
+                self.label.as_ref(),
+            ),
         );
         tap
     }

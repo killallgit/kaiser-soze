@@ -8,6 +8,7 @@ pub mod claude;
 pub mod codex;
 pub mod common;
 pub mod exchange;
+pub mod label;
 pub mod live;
 pub mod proxy;
 pub mod redact;
