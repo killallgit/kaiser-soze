@@ -16,7 +16,7 @@ With `task dev` running, a person sees a line when a request arrives and a line 
 **Acceptance**
 1. A request line shows: time, exchange number, adapter (`claude`, `codex`), message count, tool count, and `warmup` or `partial` when set.
 2. A reply line shows: time, exchange number, adapter, stop reason, elapsed time since that exchange's request, input and output token counts, and the block kinds in the reply (for example `text,tool_call`). `incomplete` and the dropped count appear when non-zero.
-3. A claimed request the adapter did not read shows an `unsupported` line with method and path, and an unreadable body shows an `unparsed` line with its side. An upstream error shows an `error` line with its code.
+3. A claimed request the adapter did not read shows an `unsupported` line with method and path, and an unreadable body shows an `unparsed` line with its side. An upstream error shows an `error` line with its code. A connection to a host nobody claims (tunnelled, not read) shows a `tunnel` line with host and port, so an agent the proxy cannot read, such as Cursor's, is still visible.
 4. Streaming events (block deltas and the like) print nothing.
 5. A line is at most 120 columns. Longer parts are cut, never wrapped.
 6. Lines come from fields the tap file already holds. Message text, system text, tool names, tool input and tool output never appear; names a person typed (a directory, a label) are allowed only where story 2 says so.
@@ -37,7 +37,7 @@ The wrapper tells the proxy which command and which working directory started ea
 ## User Story 3 (P2): Turn it on and off
 
 **Acceptance**
-1. `soze --live` prints the lines to standard error. Without it nothing is printed, as today.
+1. `soze --live` prints the lines to standard error. Without it the proxy prints what it prints today (its `connect host:port` line per tunnel); with it, the `tunnel` line replaces that line.
 2. `task dev` passes `--live` by default and `LIVE=0 task dev` turns it off.
 3. Printing is best-effort and never in the way: a slow or closed terminal drops lines and counts them, and never delays forwarding or the tap file.
 4. The listening and CA lines at start-up still print first.
