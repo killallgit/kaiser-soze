@@ -1,5 +1,5 @@
 use crate::adapter::{Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
-use crate::body::{is_encoded, RequestBuffer};
+use crate::body::{is_encoded, RequestBuffer, MAX_REQUEST_BODY};
 use crate::common::*;
 use crate::sse::{SseEvent, SseSplitter};
 use serde_json::{json, Value};
@@ -37,6 +37,7 @@ impl Adapter for CodexAdapter {
 }
 
 pub struct CodexParser {
+    history: History,
     request: RequestBuffer,
     response_encoded: bool,
     sse: SseSplitter,
@@ -45,24 +46,147 @@ pub struct CodexParser {
 impl CodexParser {
     fn new(request_encoded: bool) -> Self {
         Self {
+            history: History::default(),
             request: RequestBuffer::new(request_encoded),
             response_encoded: false,
             sse: SseSplitter::default(),
         }
     }
 
-    fn request_events(&self, body: &[u8], start: u64, end: u64) -> Vec<TapEvent> {
+    fn request_events(&mut self, body: &[u8], start: u64, end: u64) -> Vec<TapEvent> {
         let event = match serde_json::from_slice::<Value>(body) {
             Ok(json) if json["type"].as_str().is_some_and(|kind| kind != "response.create") => return Vec::new(),
-            Ok(json) => conversation_event(&json),
-            Err(_) => unparsed(Side::Request),
+            Ok(json) => self.history.join(&json),
+            Err(_) => {
+                self.history.broken = true;
+                unparsed(Side::Request)
+            }
         };
         vec![event.at(start, end)]
     }
+
+    fn stream_events(&mut self, events: Vec<SseEvent>) -> Vec<TapEvent> {
+        events
+            .iter()
+            .flat_map(|e| {
+                self.history.watch(&e.data);
+                stream_event(&e.data, e.start, e.end)
+            })
+            .collect()
+    }
 }
 
-fn conversation_event(json: &Value) -> TapEvent {
-    let mut messages: Vec<(String, Vec<Value>)> = Vec::new();
+/// The running conversation of one socket. Codex sends only the new items with
+/// `previous_response_id`, so the parser joins them to what it stored. A request it cannot
+/// chain (joined mid-socket, dropped frame, past the bound) is emitted as sent with
+/// `partial: true`, and nothing chains from it until a request starts a new history.
+#[derive(Default)]
+struct History {
+    last_reply: Option<String>,
+    system: Value,
+    tools: Value,
+    messages: Vec<Value>,
+    bytes: usize,
+    broken: bool,
+    reply_id: Option<String>,
+    reply_items: Vec<(String, Vec<Value>)>,
+}
+
+impl History {
+    fn join(&mut self, json: &Value) -> TapEvent {
+        let (system, tools, messages) = read_request(json);
+        let previous = json["previous_response_id"].as_str();
+        let partial = previous.is_some() && (self.broken || previous != self.last_reply.as_deref());
+        let mut event = if partial {
+            self.broken = true;
+            conversation(system, tools, messages)
+        } else {
+            if previous.is_none() {
+                *self = History::default();
+            }
+            let system = if system.is_null() { self.system.clone() } else { system };
+            let tools = if tools.is_null() { self.tools.clone() } else { tools };
+            self.bytes += size_of(&messages);
+            append(&mut self.messages, messages);
+            (self.system, self.tools) = (system.clone(), tools.clone());
+            let event = conversation(system, tools, self.messages.clone());
+            self.bound();
+            event
+        };
+        if partial {
+            event.payload["partial"] = json!(true);
+        }
+        if json["generate"] == json!(false) {
+            event.payload["warmup"] = json!(true);
+        }
+        event
+    }
+
+    fn watch(&mut self, data: &str) {
+        let Ok(json) = serde_json::from_str::<Value>(data) else {
+            return;
+        };
+        match json["type"].as_str().unwrap_or_default() {
+            "response.created" => {
+                self.reply_id = json["response"]["id"].as_str().map(String::from);
+                self.reply_items.clear();
+            }
+            "response.output_item.done" => {
+                let index = json["output_index"].as_u64().unwrap_or_default() as usize;
+                self.reply_items.extend(input_item(index, &json["item"]));
+            }
+            "response.completed" | "response.incomplete" => self.commit(&json["response"]["output"]),
+            _ => {}
+        }
+    }
+
+    fn commit(&mut self, output: &Value) {
+        let items = std::mem::take(&mut self.reply_items);
+        let id = self.reply_id.take();
+        let output_len = output.as_array().map_or(0, Vec::len);
+        // shortcut: a dropped output_item.done frame is caught only when the reply lists its output
+        if self.broken || (output_len > 0 && output_len != items.len()) {
+            self.broken = true;
+            return;
+        }
+        let reply: Vec<Value> = items.into_iter().map(|(role, blocks)| message(&role, blocks)).collect();
+        self.bytes += size_of(&reply);
+        append(&mut self.messages, reply);
+        self.last_reply = id;
+        self.bound();
+    }
+
+    fn bound(&mut self) {
+        if self.bytes > MAX_REQUEST_BODY {
+            self.broken = true;
+        }
+        if self.broken {
+            self.messages = Vec::new();
+        }
+    }
+}
+
+fn size_of(messages: &[Value]) -> usize {
+    messages.iter().map(|m| m.to_string().len()).sum()
+}
+
+/// Adds messages, joining one to the last when they share a role.
+fn append(into: &mut Vec<Value>, more: Vec<Value>) {
+    for next in more {
+        match into.last_mut() {
+            Some(last) if last["role"] == next["role"] => {
+                let blocks = next["blocks"].as_array().cloned().unwrap_or_default();
+                if let Some(joined) = last["blocks"].as_array_mut() {
+                    joined.extend(blocks);
+                }
+            }
+            _ => into.push(next),
+        }
+    }
+}
+
+fn read_request(json: &Value) -> (Value, Value, Vec<Value>) {
+    let mut messages: Vec<Value> = Vec::new();
     let mut system = Vec::new();
     let mut tools = Value::Null;
     for (index, item) in json["input"].as_array().into_iter().flatten().enumerate() {
@@ -70,20 +194,12 @@ fn conversation_event(json: &Value) -> TapEvent {
             ("additional_tools", _) => tools = item["tools"].clone(),
             ("message", Some("developer" | "system")) => system.extend(system_entries(&item["content"])),
             _ => {
-                let Some((role, blocks)) = input_item(index, item) else {
-                    continue;
-                };
-                match messages.last_mut() {
-                    Some((last, joined)) if *last == role => joined.extend(blocks),
-                    _ => messages.push((role, blocks)),
+                if let Some((role, blocks)) = input_item(index, item) {
+                    append(&mut messages, vec![message(&role, blocks)]);
                 }
             }
         }
     }
-    let messages = messages
-        .into_iter()
-        .map(|(role, blocks)| message(&role, blocks))
-        .collect();
     let system = match (&json["instructions"], system.is_empty()) {
         (Value::Null, false) => Value::Array(system),
         (instructions, _) => instructions.clone(),
@@ -93,7 +209,7 @@ fn conversation_event(json: &Value) -> TapEvent {
     } else {
         json["tools"].clone()
     };
-    conversation(system, tools, messages)
+    (system, tools, messages)
 }
 
 fn system_entries(content: &Value) -> Vec<Value> {
@@ -247,13 +363,6 @@ fn usage_event(usage_json: &Value) -> TapEvent {
     })
 }
 
-fn stream_events(events: Vec<SseEvent>) -> Vec<TapEvent> {
-    events
-        .iter()
-        .flat_map(|e| stream_event(&e.data, e.start, e.end))
-        .collect()
-}
-
 impl ExchangeParser for CodexParser {
     fn feed(&mut self, input: TapInput) -> Vec<TapEvent> {
         match input {
@@ -261,23 +370,38 @@ impl ExchangeParser for CodexParser {
                 self.request.push(&chunk);
                 Vec::new()
             }
-            TapInput::RequestEnd if self.request.unreadable() => vec![unparsed(Side::Request)],
+            TapInput::RequestEnd if self.request.unreadable() => {
+                self.history.broken = true;
+                vec![unparsed(Side::Request)]
+            }
             TapInput::RequestEnd if self.request.bytes().is_empty() => Vec::new(),
-            TapInput::RequestEnd => self.request_events(self.request.bytes(), 0, self.request.bytes().len() as u64),
+            TapInput::RequestEnd => {
+                let body = self.request.bytes().to_vec();
+                self.request_events(&body, 0, body.len() as u64)
+            }
             TapInput::ResponseHead(head) => {
                 self.response_encoded = is_encoded(&head.headers);
                 Vec::new()
             }
-            TapInput::ResponseBody(chunk) if !self.response_encoded => stream_events(self.sse.push(&chunk)),
+            TapInput::ResponseBody(chunk) if !self.response_encoded => {
+                let events = self.sse.push(&chunk);
+                self.stream_events(events)
+            }
             TapInput::ResponseEnd if self.response_encoded => vec![unparsed(Side::Reply)],
-            TapInput::ResponseEnd => stream_events(self.sse.finish()),
+            TapInput::ResponseEnd => {
+                let events = self.sse.finish();
+                self.stream_events(events)
+            }
             TapInput::WsMessage {
                 from_client: true,
                 text,
                 start,
                 end,
             } => self.request_events(text.as_bytes(), start, end),
-            TapInput::WsMessage { text, start, end, .. } => stream_event(&text, start, end),
+            TapInput::WsMessage { text, start, end, .. } => {
+                self.history.watch(&text);
+                stream_event(&text, start, end)
+            }
             _ => Vec::new(),
         }
     }
@@ -639,5 +763,229 @@ mod tests {
         let events = parser.feed(TapInput::ResponseBody(Bytes::from_static(b"data: [DONE]\n\n")));
 
         assert!(events.is_empty());
+    }
+
+    fn client(parser: &mut CodexParser, frame: Value) -> Vec<TapEvent> {
+        parser.feed(TapInput::WsMessage {
+            from_client: true,
+            text: frame.to_string(),
+            start: 0,
+            end: 1,
+        })
+    }
+
+    fn server(parser: &mut CodexParser, frames: &[Value]) {
+        for frame in frames {
+            parser.feed(TapInput::WsMessage {
+                from_client: false,
+                text: frame.to_string(),
+                start: 0,
+                end: 1,
+            });
+        }
+    }
+
+    fn user_item(text: &str) -> Value {
+        json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]})
+    }
+
+    fn reply_frames(id: &str, text: &str) -> Vec<Value> {
+        vec![
+            json!({"type": "response.created", "response": {"id": id}}),
+            json!({"type": "response.output_item.done", "output_index": 0, "item": {
+                "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}}),
+            json!({"type": "response.completed", "response": {"id": id, "status": "completed"}}),
+        ]
+    }
+
+    fn first_request(parser: &mut CodexParser) -> TapEvent {
+        client(
+            parser,
+            json!({"type": "response.create", "input": [
+                {"type": "message", "role": "developer", "content": "sys"},
+                {"type": "additional_tools", "tools": [{"name": "t"}]},
+                user_item("one")]}),
+        )
+        .remove(0)
+    }
+
+    #[test]
+    fn a_continuing_request_is_emitted_as_stored_history_reply_and_new_items() {
+        // It joins the first request, its reply and the new items, and carries system and tools
+        let mut parser = parser();
+        first_request(&mut parser);
+        server(&mut parser, &reply_frames("r1", "answer"));
+
+        let event = client(
+            &mut parser,
+            json!({"type": "response.create", "previous_response_id": "r1", "input": [user_item("two")]}),
+        )
+        .remove(0);
+
+        assert_eq!(
+            event.payload["messages"],
+            json!([
+                message("user", vec![text_block("one")]),
+                message("assistant", vec![text_block("answer")]),
+                message("user", vec![text_block("two")]),
+            ])
+        );
+        assert_eq!(event.payload["system"], json!([{"type": "text", "text": "sys"}]));
+        assert_eq!(event.payload["tools"], json!([{"name": "t"}]));
+        assert!(event.payload["partial"].is_null());
+    }
+
+    #[test]
+    fn a_request_without_a_previous_id_starts_a_new_history() {
+        // It forgets the earlier turns and the earlier system and tools
+        let mut parser = parser();
+        first_request(&mut parser);
+        server(&mut parser, &reply_frames("r1", "answer"));
+
+        let event = client(
+            &mut parser,
+            json!({"type": "response.create", "input": [user_item("fresh")]}),
+        )
+        .remove(0);
+
+        assert_eq!(
+            event.payload["messages"],
+            json!([message("user", vec![text_block("fresh")])])
+        );
+        assert!(event.payload["system"].is_null());
+        assert!(event.payload["tools"].is_null());
+    }
+
+    #[test]
+    fn a_later_request_that_sets_system_replaces_the_stored_one() {
+        let mut parser = parser();
+        first_request(&mut parser);
+        server(&mut parser, &reply_frames("r1", "answer"));
+
+        let event = client(
+            &mut parser,
+            json!({"type": "response.create", "previous_response_id": "r1", "instructions": "new", "input": [user_item("two")]}),
+        )
+        .remove(0);
+
+        assert_eq!(event.payload["system"], json!("new"));
+        assert_eq!(event.payload["tools"], json!([{"name": "t"}]));
+    }
+
+    #[test]
+    fn an_unknown_previous_id_is_partial_and_stays_partial() {
+        // It emits the request as sent, then does not chain from it until a new history starts
+        let mut parser = parser();
+        let event = client(
+            &mut parser,
+            json!({"type": "response.create", "previous_response_id": "gone", "input": [user_item("two")]}),
+        )
+        .remove(0);
+        assert_eq!(event.payload["partial"], json!(true));
+        assert_eq!(
+            event.payload["messages"],
+            json!([message("user", vec![text_block("two")])])
+        );
+
+        server(&mut parser, &reply_frames("r2", "answer"));
+        let next = client(
+            &mut parser,
+            json!({"type": "response.create", "previous_response_id": "r2", "input": [user_item("three")]}),
+        )
+        .remove(0);
+        assert_eq!(next.payload["partial"], json!(true));
+
+        let fresh = client(
+            &mut parser,
+            json!({"type": "response.create", "input": [user_item("new")]}),
+        )
+        .remove(0);
+        assert!(fresh.payload["partial"].is_null());
+    }
+
+    #[test]
+    fn a_reply_with_fewer_items_than_its_output_breaks_the_chain() {
+        // A dropped output_item.done frame must not give a silently short history
+        let mut parser = parser();
+        first_request(&mut parser);
+        server(
+            &mut parser,
+            &[
+                json!({"type": "response.created", "response": {"id": "r1"}}),
+                json!({"type": "response.completed", "response": {"id": "r1", "output": [{"type": "message"}]}}),
+            ],
+        );
+
+        let event = client(
+            &mut parser,
+            json!({"type": "response.create", "previous_response_id": "r1", "input": [user_item("two")]}),
+        )
+        .remove(0);
+
+        assert_eq!(event.payload["partial"], json!(true));
+    }
+
+    #[test]
+    fn history_past_the_bound_makes_later_records_partial() {
+        let mut parser = parser();
+        first_request(&mut parser);
+        parser.history.bytes = MAX_REQUEST_BODY;
+        server(&mut parser, &reply_frames("r1", "answer"));
+
+        let event = client(
+            &mut parser,
+            json!({"type": "response.create", "previous_response_id": "r1", "input": [user_item("two")]}),
+        )
+        .remove(0);
+
+        assert_eq!(event.payload["partial"], json!(true));
+    }
+
+    #[test]
+    fn parsers_do_not_share_history() {
+        let mut a = parser();
+        let mut b = parser();
+        first_request(&mut a);
+        server(&mut a, &reply_frames("r1", "answer"));
+
+        let event = client(
+            &mut b,
+            json!({"type": "response.create", "previous_response_id": "r1", "input": [user_item("two")]}),
+        )
+        .remove(0);
+
+        assert_eq!(event.payload["partial"], json!(true));
+    }
+
+    #[test]
+    fn a_generate_false_request_is_marked_warmup_and_the_chain_runs_through_it() {
+        // Only the warm-up carries the flag, and the next request continues from its reply
+        let mut parser = parser();
+        let warm = client(
+            &mut parser,
+            json!({"type": "response.create", "generate": false, "input": [user_item("one")]}),
+        )
+        .remove(0);
+        assert_eq!(warm.payload["warmup"], json!(true));
+        server(
+            &mut parser,
+            &[
+                json!({"type": "response.created", "response": {"id": "w1"}}),
+                json!({"type": "response.completed", "response": {"id": "w1", "output": []}}),
+            ],
+        );
+
+        let next = client(
+            &mut parser,
+            json!({"type": "response.create", "previous_response_id": "w1", "input": [user_item("two")]}),
+        )
+        .remove(0);
+
+        assert!(next.payload["warmup"].is_null());
+        assert!(next.payload["partial"].is_null());
+        assert_eq!(
+            next.payload["messages"],
+            json!([message("user", vec![text_block("one"), text_block("two")])])
+        );
     }
 }

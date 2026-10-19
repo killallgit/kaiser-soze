@@ -6,7 +6,7 @@ Consumer: any application that reads the JSONL tap file. One JSON object per lin
 
 | `event` | `payload` | When |
 |---------|-----------|------|
-| `conversation` | `{system, tools, messages}` | The request body is complete |
+| `conversation` | `{system, tools, messages}`, plus `partial: true` and `warmup: true` when they apply (Codex) | The request body is complete |
 | `block_start` | `{index, kind, id?, name?}` where kind is `text`, `reasoning` or `tool_call` | A reply block begins |
 | `block_delta` | `{index, text?, input_json?, signature?, encrypted?}` | A chunk of a reply block arrives |
 | `block_stop` | `{index}` | A reply block ends |
