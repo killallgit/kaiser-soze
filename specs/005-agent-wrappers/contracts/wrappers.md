@@ -4,7 +4,7 @@
 
 ```
 # >>> soze wrappers >>>
-. "$HOME/.config/soze/wrappers.sh"
+if [ -r "$HOME/.config/soze/wrappers.sh" ]; then . "$HOME/.config/soze/wrappers.sh"; fi
 # <<< soze wrappers <<<
 ```
 
@@ -12,7 +12,7 @@ Install appends it once. Uninstall deletes the lines from the first marker to th
 
 ## `scripts/wrappers.sh`
 
-`wrappers.sh install|uninstall [--dry-run]`. Exit 0 on success and when there is nothing to do; non-zero only for an unknown argument or a file it cannot write. `--dry-run` prints what would change (paths and the block, never other file content) and writes nothing. `HOME` is honoured, so a throwaway `HOME` isolates every path.
+`wrappers.sh install|uninstall [--dry-run] [--yes] [--rc FILE]`. `SOZE_RC` also names the start-up file; `--rc` wins. Install asks `[Y/n/e(dit)]` before editing the start-up file (Enter, `y` or `yes` edits; `e` asks for another start-up file and asks again; `n`, any other answer, or no input leaves it alone; `--yes` skips the question). If the file cannot be written, or the answer is not yes, install still installs the wrappers file, prints the block and how to name another file, and exits 0. Uninstall of a block in an unwritable file removes the wrappers file and prints which lines to delete. Exit 0 on success and when there is nothing to do; non-zero only for an unknown argument or a file it cannot write. `--dry-run` prints what would change (paths and the block, never other file content) and writes nothing. `HOME` is honoured, so a throwaway `HOME` isolates every path.
 
 ## Wrapper behaviour
 
