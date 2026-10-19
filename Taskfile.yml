@@ -21,6 +21,21 @@ tasks:
     cmds:
       - cargo test --test proxy
 
+  test:wrappers:
+    desc: Run the shell tests for the agent wrappers and their installer
+    cmds:
+      - tests/wrappers/run.sh
+
+  wrappers:install:
+    desc: Install the claude, codex and agent wrappers for zsh or bash; pass --dry-run after --
+    cmds:
+      - scripts/wrappers.sh install {{.CLI_ARGS}}
+
+  wrappers:uninstall:
+    desc: Remove the wrappers and their start-up file block; pass --dry-run after --
+    cmds:
+      - scripts/wrappers.sh uninstall {{.CLI_ARGS}}
+
   dev:
     desc: Start the proxy with a scratch tap file and CA under target/dev; stops after DEV_TIMEOUT seconds (default 300, max 600)
     cmds:

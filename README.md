@@ -30,6 +30,24 @@ Hosts an adapter claims (Codex: `chatgpt.com`, `api.openai.com`; Claude Code: `a
    jq -c 'select(.event=="record") | {exchange, incomplete: .payload.incomplete, dropped: .payload.dropped}' target/dev/tap.jsonl
    ```
 
+## Plain `claude`, `codex` and `agent`
+
+Shell functions send each command through the proxy when it is running, with no arguments to remember. They work in zsh and bash.
+
+```sh
+task wrappers:install              # adds ~/.config/soze/wrappers.sh and one marked block in ~/.zshrc or ~/.bashrc
+task wrappers:install -- --dry-run # shows what would change, writes nothing
+task wrappers:uninstall            # removes both; a backup of the start-up file is kept as <file>.soze-backup
+```
+
+Open a new shell, start the proxy on the wrappers' port (`task dev` uses it, or `soze --port 48731 ...`), then run `claude`, `codex` or `agent` as usual.
+
+- **They fail open.** The proxy is used only when something is listening on the port, the CA file is readable, and `HTTPS_PROXY` is not already set. In every other case, including soze not running or broken, the real command runs exactly as without the wrappers.
+- **Bypass one command** with `SOZE_OFF=1 claude` or `command claude`.
+- **Settings:** `SOZE_PORT` (default 48731) and `SOZE_CA_DIR` (default `~/.config/soze`). `task dev` keeps its CA under `target/dev/ca`, so use `SOZE_CA_DIR=$PWD/target/dev/ca claude` while developing.
+- **Known limit:** the proxy address is fixed when the agent starts. If soze stops mid-session, that session loses its connection; start a new one.
+- `agent` (Cursor) gets the proxy only: its host is tunnelled, so nothing is parsed from it.
+
 ## The tap file
 
 Each line has `exchange`, `adapter`, `event`, `mono_us`, `wall_ms`, `start`, `end` and `payload`. Credential headers are redacted before anything is written.
@@ -49,3 +67,4 @@ Run `task --list`. Tasks run from any directory in the repo.
 - `task test:unit -- <module>::`: unit tests; the module filter is optional.
 - `task test:integration`: integration tests only.
 - `task dev`: see above.
+- `task test:wrappers`: shell tests for the wrappers and their installer, run under every shell installed. `task check` runs them too.
