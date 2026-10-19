@@ -1,6 +1,7 @@
 use crate::adapter::{claims_host, Adapter, RequestHead, ResponseHead, TapInput};
 use crate::ca::Ca;
 use crate::exchange::{Clock, ExchangeTap, Recorder, Side, TeeBody};
+use crate::live::Live;
 use crate::redact::redact_headers;
 use crate::shape::{ShapeLog, ShapedParser};
 use crate::sink::Sink;
@@ -41,6 +42,8 @@ pub struct ProxyConfig {
     pub shape_file: Option<PathBuf>,
     pub upstream_roots: RootCertStore,
     pub upstream_addr: Option<SocketAddr>,
+    /// Shows a short line per event on a terminal, or none.
+    pub live: Option<Live>,
 }
 
 pub struct Proxy {
@@ -49,6 +52,7 @@ pub struct Proxy {
     connector: TlsConnector,
     upstream_addr: Option<SocketAddr>,
     sink: Sink,
+    live: bool,
     shapes: Option<Arc<ShapeLog>>,
     clock: Clock,
     next_exchange: AtomicU64,
@@ -83,7 +87,8 @@ impl Proxy {
             adapters: config.adapters,
             connector: TlsConnector::from(Arc::new(client)),
             upstream_addr: config.upstream_addr,
-            sink: Sink::open(&config.tap_file).await?,
+            live: config.live.is_some(),
+            sink: Sink::open_with(&config.tap_file, config.live).await?,
             shapes,
             clock: Clock::start(),
             next_exchange: AtomicU64::new(1),
@@ -137,7 +142,9 @@ impl Proxy {
         }
         let authority = req.uri().authority().ok_or("CONNECT without a host")?;
         let (host, port) = (authority.host().to_string(), authority.port_u16().unwrap_or(443));
-        eprintln!("connect {host}:{port}");
+        if !self.live {
+            eprintln!("connect {host}:{port}");
+        }
         let Some(adapter) = self.adapters.iter().find(|a| claims_host(a.as_ref(), &host)) else {
             let upstream = self.dial(&host, port).await?;
             let upgrade = hyper::upgrade::on(req);
