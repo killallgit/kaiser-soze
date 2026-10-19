@@ -9,4 +9,4 @@
 
 **Rules**: no `previous_response_id` resets History. `previous_response_id == last_reply` emits `messages + new`. Anything else, or `over_bound`, emits the request as sent with `partial: true` and leaves History unchanged.
 
-**Conversation payload** gains `partial: bool` and `warmup: bool`; the record copies both. Existing fields unchanged.
+**Conversation payload** gains `partial: true` and `warmup: true`, set only when they apply and absent otherwise. The record embeds the payload, so both appear there. Existing fields unchanged. A reply whose listed `output` length differs from the items seen, or an unparsed request, breaks the chain.

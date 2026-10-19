@@ -18,7 +18,7 @@ Block        = text        {text}
 Usage        = input, output, cache_read, cache_write, reasoning   (per reply)
 ```
 
-- The model is stateless. Each request carries the whole conversation again.
+- The model is stateless. Each request carries the whole conversation again. Codex sends only new items after the first request, so its parser rebuilds the whole conversation per socket. A conversation it could not rebuild carries `partial: true`, and a Codex warm-up request (`generate: false`) carries `warmup: true`. Both flags are absent otherwise.
 - The harness owns the loop: it runs each `tool_call` itself and appends the `tool_result` as a
   new user message, then calls the model again until it stops.
 - A user turn (prompt to final answer) is a harness idea made of several model replies. The API

@@ -48,7 +48,7 @@ Scenarios: plain text, one tool call, a second turn, a longer reply. Shapes of t
 
 1. **Codex `system` and `tools` were never filled (fixed).** Codex sends neither `instructions` nor `tools`. It sends system text as `message` items with role `developer`, and tools as one `additional_tools` item. The mapper now fills `system` and `tools` from those. In a live run the warm-up request carried 1 system entry and 4 tool namespaces, and the real request 7 system entries but no tools: Codex sends tools once per socket, so later requests have `tools` null (see gap 3).
 2. **Codex tool calls were not mapped (fixed).** Codex sends `custom_tool_call` items (events `response.custom_tool_call_input.delta` and `.done`) and answers with `custom_tool_call_output`, not `function_call`. The mapper now reads both. A live run gives a `tool_call` block in the reply and a `tool_result` in the next request. The input of a custom call is raw text (for example a patch), not JSON. The stop reason is still `completed` when the model asked for a tool (gap 5).
-3. **Codex requests are incremental (decided).** A request carries `previous_response_id` and only the new `input` items, so on its own it is not the whole conversation.
+3. **Codex requests are incremental (fixed).** A request carries `previous_response_id` and only the new `input` items, so on its own it is not the whole conversation.
 
    **Decision: rebuild the full conversation per socket.** The Codex parser lives for one WebSocket, so it keeps the running history there: after each reply it stores the conversation and the reply message, and a request that continues the last reply on that socket is emitted as stored history plus its new items. The common scheme then holds for Codex as it does for Claude: every `conversation` and every record is the whole conversation, with `system` and `tools` from the first request of the socket carried forward.
 
@@ -60,10 +60,10 @@ Scenarios: plain text, one tool call, a second turn, a longer reply. Shapes of t
    - History is bounded like the request buffer: past the limit, later requests are `partial: true`.
    - The warm-up request (`generate: false`) is a link in the chain, not a reply: its record is marked `warmup: true` so readers can skip it (gap 6).
 
-   First step when built: confirm from a live run that `previous_response_id` equals the id in the previous `response.created`, using a shape-only check. If it does not, chain by socket order instead.
+   Chain key confirmed: in a live `codex exec` run with 3 requests on one socket, both requests that carried `previous_response_id` (the second and third) matched the id in the previous `response.created`. The first request, the warm-up, has none. The chain rule stands.
 4. **Claude messages contain a `system` role.** Messages came out as `user,system,assistant,user,system...`. The common scheme allows only `user` and `assistant`. Needs a check of what the extra messages are.
 5. **Stop reasons differ.** `end_turn` and `tool_use` against `completed`. The common scheme needs one vocabulary.
-6. **Warm-up replies.** Codex's empty first reply is a record with no content. Decide whether to keep, mark or drop it.
+6. **Warm-up replies (fixed).** Codex's empty first reply is a record with no content. The request that starts it (`generate: false`) now carries `warmup: true` in its conversation, so readers can skip the record. It stays in the chain.
 
 ## Wire shapes
 
