@@ -17,7 +17,7 @@ After install, `claude`, `codex` and `agent` start through the proxy with no ext
 1. Wrapper `claude` sets `HTTPS_PROXY` and `NODE_EXTRA_CA_CERTS`; `codex` sets `HTTPS_PROXY` and `CODEX_CA_CERTIFICATE`; `agent` sets `HTTPS_PROXY` only (its host is tunnelled, not decrypted).
 2. Arguments, stdin, stdout, exit status and the terminal behave exactly as without the wrapper, including interactive use.
 3. The variables are set for that one command only, never exported into the shell.
-4. The port comes from `SOZE_PORT` and the CA from `SOZE_CA_DIR`, with fixed defaults matching `soze`'s defaults.
+4. The port comes from `SOZE_PORT` and the CA from `SOZE_CA_DIR`, with defaults: port 29817 and `~/.config/soze` (the CA dir `soze` already uses).
 
 ## User Story 2 (P1): A broken or absent soze never breaks an agent
 
@@ -36,7 +36,7 @@ After install, `claude`, `codex` and `agent` start through the proxy with no ext
 
 **Acceptance**
 1. `task wrappers:install` writes one wrappers file under `~/.config/soze/` and adds one marked block to the shell start-up file (zsh and bash). Running it twice changes nothing the second time.
-2. `task wrappers:uninstall` removes the block and the file, leaving the start-up file byte-identical to before install apart from that block. Uninstall with nothing installed succeeds and changes nothing.
+2. `task wrappers:uninstall` removes the block and the file, leaving the start-up file byte-identical to before install apart from a final newline that install adds when the file lacked one. Uninstall with nothing installed succeeds and changes nothing.
 3. Install shows what it will change and writes a backup of the start-up file first. `--dry-run` writes nothing.
 4. Install and uninstall work against a throwaway home (`HOME` override), so tests never touch real files.
 5. Nothing is written under `~/.claude`, `~/.codex` or `~/.cursor`, no CA is added to a trust store, and no credential store is opened.
