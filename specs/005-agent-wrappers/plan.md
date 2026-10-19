@@ -8,7 +8,7 @@ All shell, no Rust and no new dependency. Spec: [spec.md](spec.md). Decisions: [
 - `scripts/wrappers.sh`: `install` and `uninstall`, both with `--dry-run`.
 - `Taskfile.yml`: `wrappers:install`, `wrappers:uninstall` (arguments after `--` go to the script), `test:wrappers`.
 - `tests/wrappers/`: shell tests with stub agents, run by `tests/wrappers/run.sh`. `scripts/check.sh` runs them, so `task check` and CI cover them.
-- `scripts/dev.sh`: pass `--port "${SOZE_PORT:-29817}"` so `task dev` listens where the wrappers look.
+- `scripts/dev.sh`: pass `--port "${SOZE_PORT:-48731}"` so `task dev` listens where the wrappers look.
 - `README.md`: install, remove, bypass, the dev CA note, and the known limit (soze dying mid-session).
 
 ## Wrapper shape

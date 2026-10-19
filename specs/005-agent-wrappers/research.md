@@ -1,9 +1,10 @@
 # Research
 
 ## Default port
-- **Decision**: 29817.
-- **Rationale**: below the Linux (32768) and macOS (49152) ephemeral ranges, so the OS never hands it to an outgoing connection; absent from `/etc/services`; not listening on this machine; not a conventional dev-server number.
-- **Alternatives**: 8765 and similar (common in tutorials and tools); a port in the ephemeral range (can collide with any client socket).
+- **Decision**: 48731.
+- **Rationale**: five digits, because most dev tools sit on four-digit ports (3000, 5173, 8080, 8000); just under 49152, where macOS starts handing out outgoing-connection ports; absent from `/etc/services`; not listening on this machine; not a conventional number.
+- **Known limit**: Linux's default outgoing range starts at 32768, so 48731 can in principle be taken by a client socket when soze starts. soze then fails to bind and says so; the wrappers see no listener and run the agent untouched.
+- **Alternatives**: 8765 and similar four-digit ports (common in tools and tutorials); a port at or above 49152 (macOS ephemeral, collides more often).
 
 ## Detecting a live proxy
 - **Decision**: `nc -z -w 1 127.0.0.1 $SOZE_PORT`, plus a readable CA file; no `nc` means not ready.

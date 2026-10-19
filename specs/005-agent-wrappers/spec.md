@@ -17,7 +17,7 @@ After install, `claude`, `codex` and `agent` start through the proxy with no ext
 1. Wrapper `claude` sets `HTTPS_PROXY` and `NODE_EXTRA_CA_CERTS`; `codex` sets `HTTPS_PROXY` and `CODEX_CA_CERTIFICATE`; `agent` sets `HTTPS_PROXY` only (its host is tunnelled, not decrypted).
 2. Arguments, stdin, stdout, exit status and the terminal behave exactly as without the wrapper, including interactive use.
 3. The variables are set for that one command only, never exported into the shell.
-4. The port comes from `SOZE_PORT` and the CA from `SOZE_CA_DIR`, with defaults: port 29817 and `~/.config/soze` (the CA dir `soze` already uses).
+4. The port comes from `SOZE_PORT` and the CA from `SOZE_CA_DIR`, with defaults: port 48731 and `~/.config/soze` (the CA dir `soze` already uses).
 
 ## User Story 2 (P1): A broken or absent soze never breaks an agent
 

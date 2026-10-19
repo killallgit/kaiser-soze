@@ -1,7 +1,7 @@
 # Data model
 
 **Settings** (environment, read at each call):
-- `SOZE_PORT`: proxy port, default 29817
+- `SOZE_PORT`: proxy port, default 48731
 - `SOZE_CA_DIR`: directory holding `ca.pem`, default `$HOME/.config/soze`
 - `SOZE_OFF`: any non-empty value skips the wrapper for that command
 
