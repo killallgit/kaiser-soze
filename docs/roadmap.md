@@ -30,6 +30,7 @@ High level only. Each item becomes its own feature and spec when it is next. Ord
 12. **Vocabulary rename.** Move code and specs from "common format", "tool" and per-harness adapter names to the terms above, as files are touched.
 
 13. **Schema fingerprints.** Record a fingerprint of each provider API's wire schema (field names, types, event kinds, never content) and validate live traffic against it, so a harness or provider change is detected and reported instead of silently mis-mapped.
+14. **Codex history rebuild.** Per-socket history so every Codex `conversation` and record is the whole conversation, with `partial: true` when the chain breaks and `warmup: true` on the warm-up. Decided in [traffic-survey.md](traffic-survey.md) gap 3.
 
 ## Open questions
 
