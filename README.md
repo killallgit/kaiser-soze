@@ -35,10 +35,14 @@ Hosts an adapter claims (Codex: `chatgpt.com`, `api.openai.com`; Claude Code: `a
 Shell functions send each command through the proxy when it is running, with no arguments to remember. They work in zsh and bash.
 
 ```sh
-task wrappers:install              # adds ~/.config/soze/wrappers.sh and one marked block in ~/.zshrc or ~/.bashrc
+task wrappers:install              # adds ~/.config/soze/wrappers.sh, then asks before adding one marked block to ~/.zshrc or ~/.bashrc
 task wrappers:install -- --dry-run # shows what would change, writes nothing
 task wrappers:uninstall            # removes both; a backup of the start-up file is kept as <file>.soze-backup
+task wrappers:install -- --yes     # skip the question
+task wrappers:install -- --rc ~/.zshrc.local   # use another start-up file (or set SOZE_RC)
 ```
+
+If the start-up file cannot be written (a managed or read-only `.zshrc`), or you answer no, the installer leaves it alone, installs only `~/.config/soze/wrappers.sh`, and prints the block to add by hand, in that file or any file your shell reads. The block does nothing if the wrappers file is missing.
 
 Open a new shell, start the proxy on the wrappers' port (`task dev` uses it, or `soze --port 48731 ...`), then run `claude`, `codex` or `agent` as usual.
 
