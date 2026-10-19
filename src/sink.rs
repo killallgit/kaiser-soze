@@ -1,3 +1,4 @@
+use crate::live::Live;
 use serde_json::Value;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,6 +16,12 @@ pub struct Sink {
 
 impl Sink {
     pub async fn open(path: &Path) -> std::io::Result<Self> {
+        Self::open_with(path, None).await
+    }
+
+    /// Opens the tap file; each line written is also shown by `live`, after the file write and
+    /// without ever waiting for it.
+    pub async fn open_with(path: &Path, mut live: Option<Live>) -> std::io::Result<Self> {
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -27,6 +34,9 @@ impl Sink {
                 let line = format!("{record}\n");
                 if file.write_all(line.as_bytes()).await.is_err() || file.flush().await.is_err() {
                     break;
+                }
+                if let Some(live) = live.as_mut() {
+                    live.show(&record);
                 }
             }
         });

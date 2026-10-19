@@ -1,7 +1,9 @@
 use kaiser_soze::claude::ClaudeAdapter;
 use kaiser_soze::codex::CodexAdapter;
+use kaiser_soze::live::Live;
 use kaiser_soze::proxy::{Proxy, ProxyConfig};
 use kaiser_soze::BoxError;
+use std::os::fd::AsFd;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -11,15 +13,21 @@ struct Args {
     tap_file: PathBuf,
     ca_dir: PathBuf,
     shape_file: Option<PathBuf>,
+    live: bool,
 }
 
 fn parse_args() -> Result<Args, BoxError> {
     let mut port = 0;
     let mut tap_file = None;
     let mut shape_file = None;
+    let mut live = false;
     let mut ca_dir = PathBuf::from(std::env::var("HOME")?).join(".config/soze");
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
+        if flag == "--live" {
+            live = true;
+            continue;
+        }
         let value = args.next().ok_or("flag without a value")?;
         match flag.as_str() {
             "--port" => port = value.parse()?,
@@ -34,7 +42,38 @@ fn parse_args() -> Result<Args, BoxError> {
         tap_file: tap_file.ok_or("--tap-file is required")?,
         ca_dir,
         shape_file,
+        live,
     })
+}
+
+/// The live view: standard error, the home folder shortened to `~`, and the local clock.
+fn live_output() -> Live {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let stderr = std::io::stderr().as_fd().try_clone_to_owned().map(std::fs::File::from);
+    Live::new(
+        tokio::fs::File::from_std(stderr.expect("duplicate standard error")),
+        home,
+        local_utc_offset(),
+    )
+}
+
+/// Seconds east of UTC, from `date +%z`; UTC when that is unavailable.
+fn local_utc_offset() -> i64 {
+    let shown = std::process::Command::new("date").arg("+%z").output().ok();
+    let text = shown.map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
+    let Some(text) = text.filter(|t| t.len() == 5) else {
+        return 0;
+    };
+    let (sign, digits) = text.split_at(1);
+    let (Ok(hours), Ok(minutes)) = (digits[..2].parse::<i64>(), digits[2..].parse::<i64>()) else {
+        return 0;
+    };
+    let seconds = hours * 3600 + minutes * 60;
+    if sign == "-" {
+        -seconds
+    } else {
+        seconds
+    }
 }
 
 #[tokio::main]
@@ -49,6 +88,7 @@ async fn main() -> Result<(), BoxError> {
             roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
         },
         upstream_addr: None,
+        live: args.live.then(live_output),
     })
     .await?;
     let listener = TcpListener::bind(("127.0.0.1", args.port)).await?;

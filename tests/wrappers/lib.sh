@@ -29,6 +29,18 @@ STUB
   chmod +x "$HOME/bin/$1"
 }
 
+# expected_label <command>: "<command>:<every byte of $PWD as %xx>@", built a different way than the wrapper
+expected_label() {
+  rest=$PWD
+  encoded=
+  while [ -n "$rest" ]; do
+    char=${rest%"${rest#?}"}
+    rest=${rest#?}
+    encoded="$encoded$(printf '%%%02x' "'$char")"
+  done
+  printf '%s:%s@' "$1" "$encoded"
+}
+
 # seen <agent> <field>: a recorded value
 seen() {
   sed -n "s/^$2=//p" "$HOME/seen.$1"

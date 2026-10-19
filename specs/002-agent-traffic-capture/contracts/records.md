@@ -14,7 +14,10 @@ Consumer: any application that reads the JSONL tap file. One JSON object per lin
 | `reply_end` | `{stop_reason}` | The reply ends |
 | `error` | `{error_type}` | The upstream reports an error. No message text. |
 | `unparsed` | `{side}` where side is `request` or `reply` | The request or reply could not be read (too large, or still compressed) |
-| `unsupported` | `{host, path}` | A claimed host's adapter declined to read the request. The bytes were relayed untouched. No content. |
+| `unsupported` | `{host, path, label?}` | A claimed host's adapter declined to read the request. The bytes were relayed untouched. No content. |
+| `tunnel` | `{host, port, label?}` | A connection to a host no adapter claims was tunnelled, unread. Adapter name `none`. |
+
+`exchange_start` and `tunnel`/`unsupported` carry `label: {command, dir}` only when the connection told the proxy which agent command and directory started it (see the wrappers in the README); it is metadata, not message content.
 
 ## Finished record
 
