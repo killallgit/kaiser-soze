@@ -10,6 +10,7 @@ pub mod common;
 pub mod exchange;
 pub mod proxy;
 pub mod redact;
+pub mod shape;
 pub mod sink;
 pub mod sse;
 pub mod ws;

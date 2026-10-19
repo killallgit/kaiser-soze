@@ -13,7 +13,7 @@ trap : INT
 mkdir -p target/dev
 cargo build || exit 1
 # --foreground keeps timeout in this process group so Ctrl-C reaches the proxy
-timeout --foreground "$timeout_seconds" "${CARGO_TARGET_DIR:-target}/debug/soze" --tap-file target/dev/tap.jsonl --ca-dir target/dev/ca
+timeout --foreground "$timeout_seconds" "${CARGO_TARGET_DIR:-target}/debug/soze" --tap-file target/dev/tap.jsonl --shape-file target/dev/shapes.jsonl --ca-dir target/dev/ca
 status=$?
 # 124: timeout stopped the proxy; 130: interrupted
 if [ "$status" -eq 124 ] || [ "$status" -eq 130 ]; then

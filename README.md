@@ -14,7 +14,7 @@ Hosts an adapter claims (Codex: `chatgpt.com`, `api.openai.com`; Claude Code: `a
    task dev            # tap file and CA under target/dev/, stops after DEV_TIMEOUT seconds (default 300, max 600)
    ```
 
-   Or run the binary: `soze --tap-file out.jsonl [--port 0] [--ca-dir ~/.config/soze]`.
+   Or run the binary: `soze --tap-file out.jsonl [--shape-file shapes.jsonl] [--port 0] [--ca-dir ~/.config/soze]`. `--shape-file` writes the keys and types of each distinct request and reply event, never values.
 
 2. Run an agent through it. The CA is created on first run, is name-constrained to the adapter hosts, and is never installed into a trust store. The agent trusts it through its own variable:
 

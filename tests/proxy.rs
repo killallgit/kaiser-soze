@@ -166,6 +166,7 @@ async fn start_proxy_with(
         adapters,
         ca_dir: dir.join("ca"),
         tap_file: dir.join("tap.jsonl"),
+        shape_file: Some(dir.join("shapes.jsonl")),
         upstream_roots: upstream.roots.clone(),
         upstream_addr: Some(upstream.addr),
     })
@@ -464,6 +465,43 @@ async fn taps_an_anthropic_stream_through_the_claude_adapter() {
     assert_eq!(fold(&tapped, 1), records);
     let raw = std::fs::read_to_string(dir.path().join("tap.jsonl")).unwrap();
     assert!(!raw.contains(SECRET));
+}
+
+#[tokio::test]
+async fn writes_the_shape_of_each_request_and_event_without_their_values() {
+    // It logs keys and types of the request and every distinct event, and no header or body value
+    let upstream = start_upstream(anthropic_events()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let adapter: Arc<dyn Adapter> = Arc::new(ClaudeAdapter::new(vec![CLAIMED.to_string()]));
+    let (proxy, tap_roots) = start_proxy(&upstream, dir.path(), adapter).await;
+    let (_, tunnel) = connect_tunnel(proxy, CLAIMED).await;
+    let mut client = http_client(tunnel, CLAIMED, tap_roots).await;
+    let body =
+        r#"{"model":"m1","stream":true,"max_tokens":8,"system":"s","messages":[{"role":"user","content":"hi"}]}"#;
+    let request = Request::post("/v1/messages")
+        .header("x-api-key", SECRET)
+        .body(Full::new(Bytes::from(body)))
+        .unwrap();
+
+    let response = client.send_request(request).await.unwrap();
+    response.into_body().collect().await.unwrap();
+
+    let shapes_file = dir.path().join("shapes.jsonl");
+    wait_until(|| {
+        std::fs::read_to_string(&shapes_file)
+            .unwrap_or_default()
+            .contains("message_stop")
+    })
+    .await;
+    let lines = tap_lines(&shapes_file);
+    let kinds: Vec<&str> = lines.iter().filter_map(|l| l["kind"].as_str()).collect();
+    assert!(kinds.contains(&"message_start"));
+    assert_eq!(kinds.iter().filter(|k| **k == "content_block_delta").count(), 1);
+    let request_shape = lines.iter().find(|l| l["direction"] == "request").unwrap();
+    assert_eq!(request_shape["shape"]["messages"][0]["role"], "string=user");
+    assert_eq!(request_shape["shape"]["model"], "string");
+    let raw = std::fs::read_to_string(&shapes_file).unwrap();
+    assert!(!raw.contains(SECRET) && !raw.contains("\"hi\""));
 }
 
 fn claude() -> Arc<dyn Adapter> {
