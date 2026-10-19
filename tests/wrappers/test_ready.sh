@@ -12,7 +12,7 @@ ready_home() {
 claude_gets_the_proxy_and_the_node_ca() {
   ready_home
   claude </dev/null
-  eq "$(seen claude proxy)" "http://127.0.0.1:48731" proxy
+  eq "$(seen claude proxy)" "http://$(expected_label claude)127.0.0.1:48731" proxy
   eq "$(seen claude node_ca)" "$HOME/.config/soze/ca.pem" node_ca
   eq "$(seen claude codex_ca)" "" codex_ca
 }
@@ -20,7 +20,7 @@ claude_gets_the_proxy_and_the_node_ca() {
 codex_gets_the_proxy_and_the_codex_ca() {
   ready_home
   codex </dev/null
-  eq "$(seen codex proxy)" "http://127.0.0.1:48731" proxy
+  eq "$(seen codex proxy)" "http://$(expected_label codex)127.0.0.1:48731" proxy
   eq "$(seen codex codex_ca)" "$HOME/.config/soze/ca.pem" codex_ca
   eq "$(seen codex node_ca)" "" node_ca
 }
@@ -28,7 +28,7 @@ codex_gets_the_proxy_and_the_codex_ca() {
 agent_gets_the_proxy_only() {
   ready_home
   agent </dev/null
-  eq "$(seen agent proxy)" "http://127.0.0.1:48731" proxy
+  eq "$(seen agent proxy)" "http://$(expected_label agent)127.0.0.1:48731" proxy
   eq "$(seen agent node_ca)" "" node_ca
   eq "$(seen agent codex_ca)" "" codex_ca
 }
@@ -40,7 +40,7 @@ port_and_ca_dir_can_be_overridden() {
   SOZE_PORT=50123
   SOZE_CA_DIR="$HOME/other"
   claude </dev/null
-  eq "$(seen claude proxy)" "http://127.0.0.1:50123" proxy
+  eq "$(seen claude proxy)" "http://$(expected_label claude)127.0.0.1:50123" proxy
   eq "$(seen claude node_ca)" "$HOME/other/ca.pem" node_ca
 }
 
@@ -52,6 +52,26 @@ arguments_status_and_stdin_pass_through() {
   eq "$code" 7 status
   eq "$(sed -n 's/^arg=//p' "$HOME/seen.claude" | tr '\n' '|')" "a b|-p|c|" arguments
   eq "$(cat "$HOME/stdin.claude")" typed stdin
+}
+
+without_od_the_address_has_no_label() {
+  ready_home
+  for tool in env cat tr sed; do
+    ln -s "$(command -v "$tool")" "$HOME/bin/$tool"
+  done
+  saved=$PATH
+  PATH="$HOME/bin"
+  claude </dev/null
+  PATH=$saved
+  eq "$(seen claude proxy)" "http://127.0.0.1:48731" proxy
+}
+
+a_directory_with_odd_characters_is_encoded() {
+  ready_home
+  mkdir "$HOME/a b%c"
+  cd "$HOME/a b%c"
+  claude </dev/null
+  eq "$(seen claude proxy)" "http://$(expected_label claude)127.0.0.1:48731" proxy
 }
 
 the_variables_are_not_left_in_the_shell() {
@@ -66,5 +86,7 @@ case_run codex_gets_the_proxy_and_the_codex_ca codex_gets_the_proxy_and_the_code
 case_run agent_gets_the_proxy_only agent_gets_the_proxy_only
 case_run port_and_ca_dir_can_be_overridden port_and_ca_dir_can_be_overridden
 case_run arguments_status_and_stdin_pass_through arguments_status_and_stdin_pass_through
+case_run without_od_the_address_has_no_label without_od_the_address_has_no_label
+case_run a_directory_with_odd_characters_is_encoded a_directory_with_odd_characters_is_encoded
 case_run the_variables_are_not_left_in_the_shell the_variables_are_not_left_in_the_shell
 finish

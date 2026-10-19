@@ -48,6 +48,18 @@ Open a new shell, start the proxy on the wrappers' port (`task dev` uses it, or 
 - **Known limit:** the proxy address is fixed when the agent starts. If soze stops mid-session, that session loses its connection; start a new one.
 - `agent` (Cursor) gets the proxy only: its host is tunnelled, so nothing is parsed from it.
 
+## The live view
+
+`task dev` prints one short line per request and per reply, so you can see traffic arriving without reading the tap file. `LIVE=0 task dev` turns it off; `soze --live` turns it on for the binary. Lines go to standard error and never hold message text, system text or tool names and inputs: only counts, token numbers, the stop reason, block kinds, and the agent command and directory.
+
+```
+12:03:41  #3 codex  -> 7 msgs  4 tools  warmup  ~/Code/kaiser-soze
+12:03:44  #3 codex  <- completed  2.1s  in 1203 out 88  text,tool_call
+12:03:45  #5 none  tunnel api2.cursor.sh:443  agent
+```
+
+The directory comes from the wrappers: they set the proxy address to `http://<command>:<directory>@127.0.0.1:<port>` and `soze` reads it from the connection. A missing or malformed label is ignored and never affects the connection. Claude Code, Codex and Cursor's `agent` were each checked and all pass the label on. If a terminal stalls, lines are dropped and counted, and the tap file and forwarding are not delayed.
+
 ## The tap file
 
 Each line has `exchange`, `adapter`, `event`, `mono_us`, `wall_ms`, `start`, `end` and `payload`. Credential headers are redacted before anything is written.

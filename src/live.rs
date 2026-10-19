@@ -77,12 +77,8 @@ impl LiveState {
                 )
             }
             "unsupported" => {
-                let (command, dir) = label_of(payload);
-                (
-                    format!("unsupported {}", payload["path"].as_str().unwrap_or("-")),
-                    command,
-                    dir,
-                )
+                let path = short_path(payload["path"].as_str().unwrap_or("-"));
+                (format!("unsupported {path}"), label_of(payload).0, None)
             }
             "unparsed" => (
                 format!("unparsed {}", payload["side"].as_str().unwrap_or("-")),
@@ -95,12 +91,12 @@ impl LiveState {
                 None,
             ),
             "tunnel" => {
-                let (command, dir) = label_of(payload);
+                let command = label_of(payload).0;
                 let host = payload["host"].as_str().unwrap_or("-");
                 (
                     format!("tunnel {host}:{}", payload["port"].as_u64().unwrap_or_default()),
                     command,
-                    dir,
+                    None,
                 )
             }
             _ => return None,
@@ -147,6 +143,16 @@ impl LiveState {
             return head.chars().take(MAX_COLUMNS).collect();
         };
         format!("{head}  {shown}").chars().take(MAX_COLUMNS).collect()
+    }
+}
+
+/// The first two path parts. Deeper parts can carry account or organization ids.
+fn short_path(path: &str) -> String {
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    match parts.len() {
+        0 => "/".to_string(),
+        1 | 2 => format!("/{}", parts.join("/")),
+        _ => format!("/{}/…", parts[..2].join("/")),
     }
 }
 
@@ -391,7 +397,21 @@ mod tests {
             "label": {"command": "agent", "dir": "/Users/me/Code/x"}});
         assert_eq!(
             state.line(&tap(6, "none", "tunnel", T0, tunnel)).as_deref(),
-            Some("12:03:41  #6 none  tunnel api2.cursor.sh:443  agent  ~/Code/x")
+            Some("12:03:41  #6 none  tunnel api2.cursor.sh:443  agent")
+        );
+    }
+
+    #[test]
+    fn an_unsupported_path_keeps_two_parts_so_ids_deeper_down_stay_out_of_the_line() {
+        let mut state = state();
+        let payload = json!({"host": "h", "path": "/api/oauth/organizations/ORG-ID-123/plugins",
+            "label": {"command": "claude", "dir": "/Users/me/p"}});
+
+        let line = state.line(&tap(7, "claude", "unsupported", T0, payload));
+
+        assert_eq!(
+            line.as_deref(),
+            Some("12:03:41  #7 claude  unsupported /api/oauth/…  claude")
         );
     }
 
