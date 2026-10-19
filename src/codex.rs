@@ -63,20 +63,49 @@ impl CodexParser {
 
 fn conversation_event(json: &Value) -> TapEvent {
     let mut messages: Vec<(String, Vec<Value>)> = Vec::new();
+    let mut system = Vec::new();
+    let mut tools = Value::Null;
     for (index, item) in json["input"].as_array().into_iter().flatten().enumerate() {
-        let Some((role, blocks)) = input_item(index, item) else {
-            continue;
-        };
-        match messages.last_mut() {
-            Some((last, joined)) if *last == role => joined.extend(blocks),
-            _ => messages.push((role, blocks)),
+        match (item["type"].as_str().unwrap_or("message"), item["role"].as_str()) {
+            ("additional_tools", _) => tools = item["tools"].clone(),
+            ("message", Some("developer" | "system")) => system.extend(system_entries(&item["content"])),
+            _ => {
+                let Some((role, blocks)) = input_item(index, item) else {
+                    continue;
+                };
+                match messages.last_mut() {
+                    Some((last, joined)) if *last == role => joined.extend(blocks),
+                    _ => messages.push((role, blocks)),
+                }
+            }
         }
     }
     let messages = messages
         .into_iter()
         .map(|(role, blocks)| message(&role, blocks))
         .collect();
-    conversation(json["instructions"].clone(), json["tools"].clone(), messages)
+    let system = match (&json["instructions"], system.is_empty()) {
+        (Value::Null, false) => Value::Array(system),
+        (instructions, _) => instructions.clone(),
+    };
+    let tools = if json["tools"].is_null() {
+        tools
+    } else {
+        json["tools"].clone()
+    };
+    conversation(system, tools, messages)
+}
+
+fn system_entries(content: &Value) -> Vec<Value> {
+    let texts: Vec<&str> = match content {
+        Value::String(text) => vec![text],
+        Value::Array(parts) => parts.iter().filter_map(|part| part["text"].as_str()).collect(),
+        _ => Vec::new(),
+    };
+    texts
+        .into_iter()
+        .map(|text| json!({"type": "text", "text": text}))
+        .collect()
 }
 
 fn input_item(index: usize, item: &Value) -> Option<(String, Vec<Value>)> {
@@ -329,10 +358,10 @@ mod tests {
     }
 
     #[test]
-    fn maps_non_assistant_roles_to_user() {
-        // It keeps the common format to user and assistant, folding developer into user
+    fn maps_roles_other_than_assistant_and_system_ones_to_user() {
+        // It keeps messages to user and assistant, folding any other role into user
         let events = parser().request_events(
-            br#"{"input":[{"type":"message","role":"developer","content":"d"},{"type":"message","role":"user","content":"u"}]}"#,
+            br#"{"input":[{"type":"message","role":"tool","content":"d"},{"type":"message","role":"user","content":"u"}]}"#,
             0,
             1,
         );
@@ -372,6 +401,72 @@ mod tests {
             events[0].payload["messages"],
             json!([message("user", vec![text_block("hi")])])
         );
+    }
+
+    #[test]
+    fn moves_developer_and_system_items_to_system_and_leaves_messages() {
+        // It keeps them in order as text entries and out of messages
+        let body = br#"{"input":[
+            {"type":"message","role":"developer","content":[{"type":"input_text","text":"d1"}]},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+            {"type":"message","role":"system","content":"s1"}]}"#;
+        let mut parser = parser();
+
+        parser.feed(TapInput::RequestBody(Bytes::from_static(body)));
+        let events = parser.feed(TapInput::RequestEnd);
+
+        assert_eq!(
+            events[0].payload["system"],
+            json!([{"type": "text", "text": "d1"}, {"type": "text", "text": "s1"}])
+        );
+        assert_eq!(
+            events[0].payload["messages"],
+            json!([message("user", vec![text_block("hi")])])
+        );
+    }
+
+    #[test]
+    fn reads_tools_from_an_additional_tools_item() {
+        // It passes the item's tools through unchanged and keeps it out of messages
+        let body = br#"{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"n","tools":[]}]}]}"#;
+        let mut parser = parser();
+
+        parser.feed(TapInput::RequestBody(Bytes::from_static(body)));
+        let events = parser.feed(TapInput::RequestEnd);
+
+        assert_eq!(
+            events[0].payload["tools"],
+            json!([{"type": "namespace", "name": "n", "tools": []}])
+        );
+        assert_eq!(events[0].payload["messages"], json!([]));
+    }
+
+    #[test]
+    fn top_level_instructions_and_tools_win_over_the_input_forms() {
+        // It ignores developer text and additional tools when the request has the top-level fields
+        let body = br#"{"instructions":"top","tools":[{"name":"top"}],"input":[
+            {"type":"message","role":"developer","content":"d"},
+            {"type":"additional_tools","tools":[{"name":"item"}]}]}"#;
+        let mut parser = parser();
+
+        parser.feed(TapInput::RequestBody(Bytes::from_static(body)));
+        let events = parser.feed(TapInput::RequestEnd);
+
+        assert_eq!(events[0].payload["system"], "top");
+        assert_eq!(events[0].payload["tools"], json!([{"name": "top"}]));
+    }
+
+    #[test]
+    fn a_request_without_system_or_tools_keeps_both_null() {
+        // It leaves system and tools null
+        let body = br#"{"input":[{"type":"message","role":"user","content":"hi"}]}"#;
+        let mut parser = parser();
+
+        parser.feed(TapInput::RequestBody(Bytes::from_static(body)));
+        let events = parser.feed(TapInput::RequestEnd);
+
+        assert!(events[0].payload["system"].is_null());
+        assert!(events[0].payload["tools"].is_null());
     }
 
     #[test]
