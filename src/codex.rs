@@ -91,14 +91,18 @@ fn input_item(index: usize, item: &Value) -> Option<(String, Vec<Value>)> {
             Some((role.to_string(), content_parts(&location, &item["content"])))
         }
         "reasoning" => Some(("assistant".into(), vec![reasoning_of(item)])),
-        "function_call" => {
-            let input = item["arguments"].as_str().map_or(Value::Null, parse_arguments);
+        kind @ ("function_call" | "custom_tool_call") => {
+            let input = if kind == "function_call" {
+                item["arguments"].as_str().map_or(Value::Null, parse_arguments)
+            } else {
+                item["input"].clone()
+            };
             Some((
                 "assistant".into(),
                 vec![tool_call_block(item["call_id"].clone(), item["name"].clone(), input)],
             ))
         }
-        "function_call_output" => {
+        "function_call_output" | "custom_tool_call_output" => {
             let output = match &item["output"] {
                 Value::Array(_) => Value::Array(content_parts(&location, &item["output"])),
                 other => other.clone(),
@@ -171,7 +175,7 @@ fn stream_event(data: &str, start: u64, end: u64) -> Vec<TapEvent> {
                 .into_iter()
                 .collect()
         }
-        "response.function_call_arguments.delta" => delta()
+        "response.function_call_arguments.delta" | "response.custom_tool_call_input.delta" => delta()
             .map(|json| block_delta(index, Delta::InputJson(json)))
             .into_iter()
             .collect(),
@@ -198,7 +202,7 @@ fn block_start_of(index: u64, item: &Value) -> BlockStart {
     let (kind, id, name) = match item["type"].as_str().unwrap_or_default() {
         "message" => ("text", Value::Null, Value::Null),
         "reasoning" => ("reasoning", Value::Null, Value::Null),
-        "function_call" => ("tool_call", item["call_id"].clone(), item["name"].clone()),
+        "function_call" | "custom_tool_call" => ("tool_call", item["call_id"].clone(), item["name"].clone()),
         _ => ("other", Value::Null, Value::Null),
     };
     BlockStart { index, kind, id, name }
@@ -368,6 +372,58 @@ mod tests {
             events[0].payload["messages"],
             json!([message("user", vec![text_block("hi")])])
         );
+    }
+
+    #[test]
+    fn maps_custom_tool_calls_and_their_output_in_a_request() {
+        // It keeps the raw tool input string as the call input, and the output as a tool result
+        let body = br#"{"input":[
+            {"type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":"*** Begin Patch"},
+            {"type":"custom_tool_call_output","call_id":"c1","output":[{"type":"input_text","text":"done"}]}]}"#;
+        let mut parser = parser();
+
+        parser.feed(TapInput::RequestBody(Bytes::from_static(body)));
+        let events = parser.feed(TapInput::RequestEnd);
+
+        assert_eq!(
+            events[0].payload["messages"],
+            json!([
+                message(
+                    "assistant",
+                    vec![tool_call_block(
+                        json!("c1"),
+                        json!("apply_patch"),
+                        json!("*** Begin Patch")
+                    )]
+                ),
+                message(
+                    "user",
+                    vec![tool_result_block(json!("c1"), json!([text_block("done")]), false)]
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn streams_a_custom_tool_call_as_a_tool_call_block() {
+        // It starts a tool_call block from the item and passes the input text through as deltas
+        let stream = concat!(
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"custom_tool_call\",\"call_id\":\"c1\",\"name\":\"apply_patch\"}}\n\n",
+            "data: {\"type\":\"response.custom_tool_call_input.delta\",\"output_index\":0,\"delta\":\"*** Begin\"}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"custom_tool_call\"}}\n\n",
+        )
+        .as_bytes();
+        let mut parser = parser();
+
+        let mut events = parser.feed(TapInput::ResponseBody(Bytes::from_static(stream)));
+        events.extend(parser.feed(TapInput::ResponseEnd));
+
+        assert_eq!(kinds(&events), ["block_start", "block_delta", "block_stop"]);
+        assert_eq!(
+            events[0].payload,
+            json!({"index": 0, "kind": "tool_call", "id": "c1", "name": "apply_patch"})
+        );
+        assert_eq!(events[1].payload, json!({"index": 0, "input_json": "*** Begin"}));
     }
 
     #[test]
