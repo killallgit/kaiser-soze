@@ -156,10 +156,30 @@ a_yes_answer_edits_and_any_other_answer_does_not() {
   zsh_home
   printf 'n\n' | installer install > /dev/null 2>/dev/null
   cmp "$HOME/original" "$HOME/.zshrc"
-  printf '\n' | installer install > /dev/null 2>/dev/null
+  printf 'x\n' | installer install > /dev/null 2>/dev/null
   cmp "$HOME/original" "$HOME/.zshrc"
   printf 'y\n' | installer install > /dev/null 2>/dev/null
   eq "$(grep -cxF "$BEGIN" "$HOME/.zshrc")" 1 block
+}
+
+enter_alone_means_yes() {
+  zsh_home
+  printf '\n' | installer install > /dev/null 2>/dev/null
+  eq "$(grep -cxF "$BEGIN" "$HOME/.zshrc")" 1 block
+}
+
+edit_names_another_file_and_leaves_the_first_alone() {
+  zsh_home
+  printf 'e\n%s\n\n' "$HOME/other" | installer install > /dev/null 2>/dev/null
+  cmp "$HOME/original" "$HOME/.zshrc"
+  eq "$(grep -cxF "$BEGIN" "$HOME/other")" 1 block
+}
+
+edit_then_no_edits_nothing() {
+  zsh_home
+  printf 'e\n%s\nn\n' "$HOME/other" | installer install > /dev/null 2>/dev/null
+  cmp "$HOME/original" "$HOME/.zshrc"
+  [ ! -e "$HOME/other" ]
 }
 
 a_read_only_start_up_file_is_not_touched_and_the_block_is_printed() {
@@ -223,6 +243,9 @@ case_run unbalanced_markers_are_left_alone unbalanced_markers_are_left_alone
 case_run nothing_is_written_under_agent_folders nothing_is_written_under_agent_folders
 case_run asked_but_not_answered_nothing_is_edited_and_the_block_is_printed asked_but_not_answered_nothing_is_edited_and_the_block_is_printed
 case_run a_yes_answer_edits_and_any_other_answer_does_not a_yes_answer_edits_and_any_other_answer_does_not
+case_run enter_alone_means_yes enter_alone_means_yes
+case_run edit_names_another_file_and_leaves_the_first_alone edit_names_another_file_and_leaves_the_first_alone
+case_run edit_then_no_edits_nothing edit_then_no_edits_nothing
 case_run a_read_only_start_up_file_is_not_touched_and_the_block_is_printed a_read_only_start_up_file_is_not_touched_and_the_block_is_printed
 case_run uninstall_with_a_read_only_start_up_file_removes_the_file_and_says_what_to_delete uninstall_with_a_read_only_start_up_file_removes_the_file_and_says_what_to_delete
 case_run rc_option_and_environment_choose_the_start_up_file rc_option_and_environment_choose_the_start_up_file

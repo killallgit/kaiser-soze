@@ -35,7 +35,7 @@ Hosts an adapter claims (Codex: `chatgpt.com`, `api.openai.com`; Claude Code: `a
 Shell functions send each command through the proxy when it is running, with no arguments to remember. They work in zsh and bash.
 
 ```sh
-task wrappers:install              # adds ~/.config/soze/wrappers.sh, then asks before adding one marked block to ~/.zshrc or ~/.bashrc
+task wrappers:install              # adds ~/.config/soze/wrappers.sh, then asks `[Y/n/e(dit)]` before adding one marked block to ~/.zshrc or ~/.bashrc (Enter or `y` adds it, `n` leaves it, `e` names another file)
 task wrappers:install -- --dry-run # shows what would change, writes nothing
 task wrappers:uninstall            # removes both; a backup of the start-up file is kept as <file>.soze-backup
 task wrappers:install -- --yes     # skip the question

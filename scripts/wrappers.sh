@@ -53,15 +53,27 @@ editable() {
   fi
 }
 
-# Asks before touching the start-up file. Only an explicit y or yes answers yes; no answer is no.
+# Asks before touching the start-up file. Returns 0 for yes (Enter or y), 2 for edit (name another
+# file), 1 for no. No input at all, or any other answer, is no.
 confirm() {
   [ "$yes" = 1 ] && return 0
-  printf 'Add the soze block to %s? [y/N] ' "$rc" >&2
+  printf 'Add the soze block to %s? [Y/n/e(dit)] ' "$rc" >&2
   read -r answer || return 1
   case $answer in
-    y | Y | yes | YES) return 0 ;;
+    '' | y | Y | yes | YES) return 0 ;;
+    e | E | edit) return 2 ;;
     *) return 1 ;;
   esac
+}
+
+# Reads the start-up file to use instead; an empty answer keeps the current one.
+choose_file() {
+  printf 'Start-up file to edit instead: ' >&2
+  read -r file || return 0
+  case $file in
+    '~/'*) file=$HOME/${file#'~/'} ;;
+  esac
+  [ -z "$file" ] || rc=$file
 }
 
 # Says what to do by hand when the start-up file is left alone.
@@ -84,15 +96,22 @@ if [ "$action" = install ]; then
   fi
   mkdir -p "$(dirname "$dest")" || exit 1
   cmp -s "$here/soze-wrappers.sh" "$dest" || cp "$here/soze-wrappers.sh" "$dest" || exit 1
-  has_block && exit 0
-  if ! editable; then
-    by_hand "Not editing $rc: it cannot be written. Add this to it, or to a start-up file you can edit, then open a new shell:" "$block"
-    exit 0
-  fi
-  if ! confirm; then
-    by_hand "Left $rc alone. To finish by hand, add this to it, then open a new shell:" "$block"
-    exit 0
-  fi
+  while :; do
+    has_block && exit 0
+    if ! editable; then
+      by_hand "Not editing $rc: it cannot be written. Add this to it, or to a start-up file you can edit, then open a new shell:" "$block"
+      exit 0
+    fi
+    confirm
+    case $? in
+      0) break ;;
+      2) choose_file ;;
+      *)
+        by_hand "Left $rc alone. To finish by hand, add this to it, then open a new shell:" "$block"
+        exit 0
+        ;;
+    esac
+  done
   backup
   # a file without a final newline gets one, so the block starts on its own line
   [ ! -s "$rc" ] || [ -z "$(tail -c 1 "$rc")" ] || echo >> "$rc"
