@@ -1,6 +1,5 @@
 use kaiser_soze::claude::ClaudeAdapter;
 use kaiser_soze::codex::CodexAdapter;
-use kaiser_soze::config::config_dir;
 use kaiser_soze::live::Live;
 use kaiser_soze::proxy::{Proxy, ProxyConfig};
 use kaiser_soze::BoxError;
@@ -12,7 +11,6 @@ use tokio::net::TcpListener;
 struct Args {
     port: u16,
     tap_file: PathBuf,
-    config_dir: PathBuf,
     shape_file: Option<PathBuf>,
     live: bool,
 }
@@ -22,7 +20,6 @@ fn parse_args() -> Result<Args, BoxError> {
     let mut tap_file = None;
     let mut shape_file = None;
     let mut live = false;
-    let mut config_flag = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         if flag == "--live" {
@@ -34,18 +31,12 @@ fn parse_args() -> Result<Args, BoxError> {
             "--port" => port = value.parse()?,
             "--tap-file" => tap_file = Some(PathBuf::from(value)),
             "--shape-file" => shape_file = Some(PathBuf::from(value)),
-            "--config-dir" => config_flag = Some(PathBuf::from(value)),
             _ => return Err("unknown flag".into()),
         }
     }
     Ok(Args {
         port,
         tap_file: tap_file.ok_or("--tap-file is required")?,
-        config_dir: config_dir(
-            config_flag,
-            std::env::var("SOZE_CONFIG_DIR").ok(),
-            &std::env::var("HOME")?,
-        ),
         shape_file,
         live,
     })
@@ -84,9 +75,10 @@ fn local_utc_offset() -> i64 {
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
     let args = parse_args()?;
+    let ca_dir = PathBuf::from(std::env::var("HOME")?).join(".config/soze");
     let proxy = Proxy::new(ProxyConfig {
         adapters: vec![Arc::new(CodexAdapter::default()), Arc::new(ClaudeAdapter::default())],
-        ca_dir: args.config_dir.clone(),
+        ca_dir: ca_dir.clone(),
         tap_file: args.tap_file,
         shape_file: args.shape_file,
         upstream_roots: rustls::RootCertStore {
@@ -98,7 +90,7 @@ async fn main() -> Result<(), BoxError> {
     .await?;
     let listener = TcpListener::bind(("127.0.0.1", args.port)).await?;
     eprintln!("listening on {}", listener.local_addr()?);
-    eprintln!("ca certificate {}", args.config_dir.join("ca.pem").display());
+    eprintln!("ca certificate {}", ca_dir.join("ca.pem").display());
     proxy.serve(listener).await;
     Ok(())
 }

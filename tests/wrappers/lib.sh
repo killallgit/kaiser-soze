@@ -9,7 +9,7 @@ new_home() {
   export HOME
   mkdir -p "$HOME/bin" "$HOME/.config/soze"
   PATH="$HOME/bin:$ORIG_PATH"
-  unset HTTPS_PROXY https_proxy SOZE_OFF SOZE_PORT SOZE_CONFIG_DIR NODE_EXTRA_CA_CERTS CODEX_CA_CERTIFICATE
+  unset HTTPS_PROXY https_proxy SOZE_OFF SOZE_PORT NODE_EXTRA_CA_CERTS CODEX_CA_CERTIFICATE
 }
 
 # A stub agent: records its environment, arguments and stdin under $HOME, exits with status $2.
