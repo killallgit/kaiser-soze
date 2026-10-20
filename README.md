@@ -14,13 +14,13 @@ Hosts an adapter claims (Codex: `chatgpt.com`, `api.openai.com`; Claude Code: `a
    task dev            # tap file and CA under target/dev/, stops after DEV_TIMEOUT seconds (default 300, max 600)
    ```
 
-   Or run the binary: `soze --tap-file out.jsonl [--shape-file shapes.jsonl] [--port 0] [--config-dir ~/.config/soze]`. `--shape-file` writes the keys and types of each distinct request and reply event, never values. The config directory holds the CA. It is the flag, else `SOZE_CONFIG_DIR`, else `~/.config/soze`.
+   Or run the binary: `soze --tap-file out.jsonl [--shape-file shapes.jsonl] [--port 0]`. `--shape-file` writes the keys and types of each distinct request and reply event, never values. The CA is always `~/.config/soze/ca.pem`, made on first run.
 
 2. Run an agent through it. The CA is created on first run, is name-constrained to the adapter hosts, and is never installed into a trust store. The agent trusts it through its own variable:
 
    ```sh
-   HTTPS_PROXY=http://127.0.0.1:<port> CODEX_CA_CERTIFICATE=<config-dir>/ca.pem codex exec ...
-   HTTPS_PROXY=http://127.0.0.1:<port> NODE_EXTRA_CA_CERTS=<config-dir>/ca.pem claude -p "..." </dev/null
+   HTTPS_PROXY=http://127.0.0.1:<port> CODEX_CA_CERTIFICATE=~/.config/soze/ca.pem codex exec ...
+   HTTPS_PROXY=http://127.0.0.1:<port> NODE_EXTRA_CA_CERTS=~/.config/soze/ca.pem claude -p "..." </dev/null
    ```
 
 3. Read the tap file. Message content is stored there and is never printed in a terminal, chat log or commit, so look at shapes and counts:
@@ -49,7 +49,7 @@ Open a new shell, start the proxy on the wrappers' port (`task dev` uses it, or 
 - **They fail open.** The proxy is used only when something is listening on the port, the CA file is readable, and `HTTPS_PROXY` is not already set. In every other case, including soze not running or broken, the real command runs exactly as without the wrappers.
 - **Bypass one command** with `SOZE_OFF=1 claude` or `command claude`.
 - **Without shell functions** (a start-up file you cannot edit): `task wrappers:install` also copies `soze-wrap` to `~/.local/bin`, so `soze-wrap claude -p "..."` runs one command through the same wrappers. Put `~/.local/bin` on `PATH`.
-- **Settings:** `SOZE_PORT` (default 48731) and `SOZE_CONFIG_DIR` (default `~/.config/soze`). `task dev` and the wrappers share that directory, so no extra setting is needed. Point both at another directory with `SOZE_CONFIG_DIR` (or `soze --config-dir`).
+- **Settings:** `SOZE_PORT` (default 48731). The CA is always `~/.config/soze/ca.pem`, made on first run, so `task dev` and the wrappers need no setting.
 - **Known limit:** the proxy address is fixed when the agent starts. If soze stops mid-session, that session loses its connection; start a new one.
 - `agent` (Cursor) gets the proxy only: its host is tunnelled, so nothing is parsed from it.
 
