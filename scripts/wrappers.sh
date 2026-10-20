@@ -1,6 +1,6 @@
 #!/bin/sh
-# Installs or removes the soze agent wrappers: one file under ~/.config/soze and one marked block
-# in the start-up file. It asks before editing that file and leaves it alone if it cannot be written.
+# Installs or removes the soze agent wrappers: one file under ~/.config/soze, soze-wrap in
+# ~/.local/bin, and one marked block in the start-up file. It asks before editing that file and leaves it alone if it cannot be written.
 # Usage: wrappers.sh install|uninstall [--dry-run] [--yes] [--rc FILE]   (SOZE_RC names the file too)
 here=$(cd "$(dirname "$0")" && pwd) || exit 1
 usage="usage: wrappers.sh install|uninstall [--dry-run] [--yes] [--rc FILE]"
@@ -34,6 +34,7 @@ if [ -z "$rc" ]; then
 fi
 
 dest=$HOME/.config/soze/wrappers.sh
+bin=$HOME/.local/bin/soze-wrap
 begin='# >>> soze wrappers >>>'
 end='# <<< soze wrappers <<<'
 block="$begin
@@ -91,11 +92,15 @@ backup() {
 if [ "$action" = install ]; then
   if [ "$dry" = 1 ]; then
     echo "would copy the wrappers file to $dest"
+    echo "would copy soze-wrap to $bin"
     has_block || printf 'would append to %s:\n%s\n' "$rc" "$block"
     exit 0
   fi
   mkdir -p "$(dirname "$dest")" || exit 1
   cmp -s "$here/soze-wrappers.sh" "$dest" || cp "$here/soze-wrappers.sh" "$dest" || exit 1
+  mkdir -p "$(dirname "$bin")" || exit 1
+  cmp -s "$here/soze-wrap" "$bin" || cp "$here/soze-wrap" "$bin" || exit 1
+  chmod +x "$bin"
   while :; do
     has_block && exit 0
     if ! editable; then
@@ -133,6 +138,7 @@ fi
 if [ "$dry" = 1 ]; then
   [ "$begins" -eq 0 ] || echo "would remove the soze block from $rc"
   [ ! -e "$dest" ] || echo "would remove $dest"
+  [ ! -e "$bin" ] || echo "would remove $bin"
   exit 0
 fi
 if [ "$begins" -gt 0 ] && ! editable; then
@@ -146,6 +152,6 @@ elif [ "$begins" -gt 0 ]; then
   rm -f "$tmp"
   [ "$status" -eq 0 ] || exit "$status"
 fi
-rm -f "$dest"
+rm -f "$dest" "$bin"
 rmdir "$(dirname "$dest")" 2>/dev/null
 exit 0

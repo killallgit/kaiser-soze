@@ -1,0 +1,11 @@
+#!/bin/sh
+# Runs one agent through the soze proxy when it is running: soze-wrap claude|codex|agent [args].
+# It uses the same wrappers as the shell functions (SOZE_WRAPPERS names another file), so a
+# shell that cannot load them can still capture. If the wrappers file is missing, the real command runs.
+case ${1:-} in
+  claude | codex | agent) ;;
+  *) echo "usage: soze-wrap claude|codex|agent [args]" >&2; exit 2 ;;
+esac
+wrappers=${SOZE_WRAPPERS:-$HOME/.config/soze/wrappers.sh}
+if [ -r "$wrappers" ]; then . "$wrappers"; fi
+"$@"
