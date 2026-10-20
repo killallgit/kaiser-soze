@@ -33,12 +33,12 @@ agent_gets_the_proxy_only() {
   eq "$(seen agent codex_ca)" "" codex_ca
 }
 
-port_and_ca_dir_can_be_overridden() {
+port_and_config_dir_can_be_overridden() {
   ready_home
   mkdir "$HOME/other"
   printf 'ca' > "$HOME/other/ca.pem"
   SOZE_PORT=50123
-  SOZE_CA_DIR="$HOME/other"
+  SOZE_CONFIG_DIR="$HOME/other"
   claude </dev/null
   eq "$(seen claude proxy)" "http://$(expected_label claude)127.0.0.1:50123" proxy
   eq "$(seen claude node_ca)" "$HOME/other/ca.pem" node_ca
@@ -84,7 +84,7 @@ the_variables_are_not_left_in_the_shell() {
 case_run claude_gets_the_proxy_and_the_node_ca claude_gets_the_proxy_and_the_node_ca
 case_run codex_gets_the_proxy_and_the_codex_ca codex_gets_the_proxy_and_the_codex_ca
 case_run agent_gets_the_proxy_only agent_gets_the_proxy_only
-case_run port_and_ca_dir_can_be_overridden port_and_ca_dir_can_be_overridden
+case_run port_and_config_dir_can_be_overridden port_and_config_dir_can_be_overridden
 case_run arguments_status_and_stdin_pass_through arguments_status_and_stdin_pass_through
 case_run without_od_the_address_has_no_label without_od_the_address_has_no_label
 case_run a_directory_with_odd_characters_is_encoded a_directory_with_odd_characters_is_encoded

@@ -1,7 +1,7 @@
 # Sends claude, codex and agent through the soze proxy when it is running. In every other case
 # the real command runs untouched. Sourced by zsh and bash; keep it POSIX sh.
 #   SOZE_PORT    proxy port, default 48731
-#   SOZE_CA_DIR  directory holding ca.pem, default ~/.config/soze
+#   SOZE_CONFIG_DIR  soze config directory, holding ca.pem, default ~/.config/soze
 #   SOZE_OFF     any value skips the wrappers for that command
 
 _soze_probe() {
@@ -10,7 +10,7 @@ _soze_probe() {
 
 _soze_ready() {
   [ -z "${SOZE_OFF:-}" ] && [ -z "${HTTPS_PROXY:-}${https_proxy:-}" ] &&
-    _soze_probe && [ -r "${SOZE_CA_DIR:-$HOME/.config/soze}/ca.pem" ]
+    _soze_probe && [ -r "${SOZE_CONFIG_DIR:-$HOME/.config/soze}/ca.pem" ]
 }
 
 # Prints "<command>:<every byte of $PWD as %xx>@" for the proxy address, which tells soze which agent
@@ -24,7 +24,7 @@ _soze_label() (
 claude() {
   if _soze_ready 2>/dev/null; then
     env HTTPS_PROXY="http://$(_soze_label claude 2>/dev/null)127.0.0.1:${SOZE_PORT:-48731}" \
-      NODE_EXTRA_CA_CERTS="${SOZE_CA_DIR:-$HOME/.config/soze}/ca.pem" claude "$@"
+      NODE_EXTRA_CA_CERTS="${SOZE_CONFIG_DIR:-$HOME/.config/soze}/ca.pem" claude "$@"
   else
     command claude "$@"
   fi
@@ -33,7 +33,7 @@ claude() {
 codex() {
   if _soze_ready 2>/dev/null; then
     env HTTPS_PROXY="http://$(_soze_label codex 2>/dev/null)127.0.0.1:${SOZE_PORT:-48731}" \
-      CODEX_CA_CERTIFICATE="${SOZE_CA_DIR:-$HOME/.config/soze}/ca.pem" codex "$@"
+      CODEX_CA_CERTIFICATE="${SOZE_CONFIG_DIR:-$HOME/.config/soze}/ca.pem" codex "$@"
   else
     command codex "$@"
   fi

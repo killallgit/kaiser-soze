@@ -7,6 +7,7 @@ pub mod ca;
 pub mod claude;
 pub mod codex;
 pub mod common;
+pub mod config;
 pub mod exchange;
 pub mod label;
 pub mod live;
