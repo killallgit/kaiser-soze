@@ -26,6 +26,20 @@ installs_the_file_and_one_block() {
   cmp "$HOME/expected" "$HOME/.zshrc"
 }
 
+installs_soze_wrap_into_local_bin() {
+  zsh_home
+  installer install --yes
+  cmp "$ROOT/scripts/soze-wrap" "$HOME/.local/bin/soze-wrap"
+  [ -x "$HOME/.local/bin/soze-wrap" ]
+}
+
+uninstall_removes_soze_wrap() {
+  zsh_home
+  installer install --yes
+  installer uninstall
+  [ ! -e "$HOME/.local/bin/soze-wrap" ]
+}
+
 installs_into_bashrc_for_bash() {
   SHELL=/bin/bash
   export SHELL
@@ -54,6 +68,7 @@ dry_run_writes_nothing() {
   zsh_home
   installer install --dry-run > "$HOME/out"
   [ ! -e "$HOME/.config/soze/wrappers.sh" ]
+  [ ! -e "$HOME/.local/bin/soze-wrap" ]
   [ ! -e "$HOME/.zshrc.soze-backup" ]
   cmp "$HOME/original" "$HOME/.zshrc"
   eq "$(grep -c 'export A=1' "$HOME/out")" 0 content
@@ -229,6 +244,8 @@ the_block_is_silent_when_the_wrappers_file_is_gone() {
 }
 
 case_run installs_the_file_and_one_block installs_the_file_and_one_block
+case_run installs_soze_wrap_into_local_bin installs_soze_wrap_into_local_bin
+case_run uninstall_removes_soze_wrap uninstall_removes_soze_wrap
 case_run installs_into_bashrc_for_bash installs_into_bashrc_for_bash
 case_run a_second_install_changes_nothing a_second_install_changes_nothing
 case_run a_changing_install_keeps_a_backup a_changing_install_keeps_a_backup

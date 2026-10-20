@@ -48,6 +48,7 @@ Open a new shell, start the proxy on the wrappers' port (`task dev` uses it, or 
 
 - **They fail open.** The proxy is used only when something is listening on the port, the CA file is readable, and `HTTPS_PROXY` is not already set. In every other case, including soze not running or broken, the real command runs exactly as without the wrappers.
 - **Bypass one command** with `SOZE_OFF=1 claude` or `command claude`.
+- **Without shell functions** (a start-up file you cannot edit): `task wrappers:install` also copies `soze-wrap` to `~/.local/bin`, so `soze-wrap claude -p "..."` runs one command through the same wrappers. Put `~/.local/bin` on `PATH`. With `task dev`, set `SOZE_CA_DIR=<repo>/target/dev/ca`.
 - **Settings:** `SOZE_PORT` (default 48731) and `SOZE_CA_DIR` (default `~/.config/soze`). `task dev` keeps its CA under `target/dev/ca`, so use `SOZE_CA_DIR=$PWD/target/dev/ca claude` while developing.
 - **Known limit:** the proxy address is fixed when the agent starts. If soze stops mid-session, that session loses its connection; start a new one.
 - `agent` (Cursor) gets the proxy only: its host is tunnelled, so nothing is parsed from it.
