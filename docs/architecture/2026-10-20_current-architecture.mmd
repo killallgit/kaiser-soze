@@ -1,0 +1,56 @@
+%% Current architecture only, as of 2026-10-20 (main at 7e23f12). Nothing proposed.
+%% Wire-to-common-scheme mapping is hand-written Rust inside each adapter; there is no config.
+flowchart TB
+    AG["agent: claude, codex, agent<br/>HTTPS_PROXY set by scripts/soze-wrappers.sh<br/>http://command:dir@127.0.0.1:port"]
+    UP["upstream model API"]
+
+    subgraph PROXY["proxy.rs: Proxy, Tunnel"]
+        CONN["handle_connect / open_tunnel<br/>reads label from Proxy-Authorization (label.rs)"]
+        CA["ca.rs<br/>leaf cert per claimed host, TLS terminate"]
+        FWD["forward()<br/>adapter.claim(RequestHead)"]
+        TEE["TeeBody (exchange.rs)<br/>copies each chunk to the tap, never waits"]
+        BLIND["blind TCP tunnel<br/>host no adapter claims"]
+    end
+
+    subgraph ADAPTERS["adapter.rs traits: Adapter, ExchangeParser"]
+        CL["claude.rs<br/>Anthropic Messages, SSE"]
+        CX["codex.rs<br/>OpenAI Responses, SSE and WebSocket"]
+        HELP["helpers: body.rs, sse.rs, ws.rs<br/>common.rs builds the common-scheme events"]
+    end
+
+    subgraph TAP["tap task (exchange.rs run_parser, bounded queue, drops and counts)"]
+        PARSE["parser.feed(TapInput) gives TapEvent<br/>wire fields mapped to common scheme in Rust"]
+        ASM["assembler.rs<br/>events into one whole reply record"]
+        REC["Recorder<br/>stamps exchange id, time, adapter, label<br/>redact.rs strips credential headers"]
+        SHAPE["shape.rs ShapedParser<br/>optional wrapper: logs structure without values"]
+    end
+
+    SINK["sink.rs Sink<br/>bounded queue, file write first"]
+    TAPF[("tap.jsonl")]
+    SHAPEF[("shapes.jsonl")]
+    LIVE["live.rs Live<br/>LiveState.line then Printer<br/>content-free lines, stderr"]
+
+    AG -->|CONNECT| CONN
+    CONN -->|unclaimed host| BLIND
+    BLIND <--> UP
+    BLIND -. "tunnel event" .-> REC
+    CONN -->|claimed host| CA --> FWD
+    FWD -->|request bytes| TEE
+    TEE -->|bytes| UP
+    UP -->|response bytes| TEE
+    TEE -->|bytes| AG
+    FWD -. "claimed, adapter declines: unsupported event" .-> REC
+    FWD -->|claim| CL
+    FWD -->|claim| CX
+    TEE -. "copy of each chunk" .-> PARSE
+    CL --- HELP
+    CX --- HELP
+    CL --> PARSE
+    CX --> PARSE
+    SHAPE -.-> PARSE
+    SHAPE --> SHAPEF
+    PARSE --> ASM --> REC
+    PARSE --> REC
+    REC --> SINK
+    SINK --> TAPF
+    SINK --> LIVE
