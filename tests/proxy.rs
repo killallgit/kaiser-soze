@@ -18,6 +18,7 @@ use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -997,4 +998,114 @@ async fn a_stalled_project_lookup_does_not_hold_the_exchange_open() {
     assert_eq!(kinds, ["in_session", "in_thread"]);
     assert!(records_of(&lines, 1)[0].get("project").is_none());
     drop(release);
+}
+
+fn exchange_ended(tap_file: &Path, exchange: u64) -> bool {
+    tap_lines(tap_file)
+        .iter()
+        .any(|line| line["exchange"] == exchange && line["event"] == "exchange_end")
+}
+
+struct StalledLookups {
+    client: SendRequest<Full<Bytes>>,
+    tap_file: std::path::PathBuf,
+    calls: Arc<AtomicUsize>,
+    stalling: Option<std::sync::mpsc::Sender<()>>,
+    exchanges: u64,
+    _dir: tempfile::TempDir,
+}
+
+impl StalledLookups {
+    async fn start() -> Self {
+        let upstream = start_upstream(anthropic_events()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let (release, stalled) = std::sync::mpsc::channel::<()>();
+        let stalled = Mutex::new(stalled);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let projects = ProjectCache::locating_with({
+            let calls = calls.clone();
+            move |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let _ = stalled.lock().unwrap().recv();
+                None
+            }
+        })
+        .with_negative_ttl(Duration::ZERO);
+        let (proxy, roots) = start_proxy_finding_projects(&upstream, dir.path(), vec![claude()], None, projects).await;
+        let label = basic_label("claude", dir.path());
+        let (_, tunnel) = connect_tunnel_as(proxy, CLAUDE_HOST, Some(&label)).await;
+        Self {
+            client: http_client(tunnel, CLAUDE_HOST, roots).await,
+            tap_file: dir.path().join("tap.jsonl"),
+            calls,
+            stalling: Some(release),
+            exchanges: 0,
+            _dir: dir,
+        }
+    }
+
+    async fn exchange(&mut self) -> u64 {
+        let request = identified_request(&[("x-claude-code-session-id", "s1")]);
+        self.client
+            .send_request(request)
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+        self.exchanges += 1;
+        let exchange = self.exchanges;
+        wait_until(|| exchange_ended(&self.tap_file, exchange)).await;
+        exchange
+    }
+
+    async fn with_the_cap_reached() -> Self {
+        let mut stalled = Self::start().await;
+        for _ in 0..MAX_STALLED {
+            stalled.exchange().await;
+        }
+        wait_until(|| stalled.calls() == MAX_STALLED).await;
+        stalled
+    }
+
+    fn release(&mut self) {
+        self.stalling = None;
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+const MAX_STALLED: usize = 4;
+
+#[tokio::test]
+async fn no_fifth_project_lookup_starts_while_four_hang() {
+    // It skips the lookup, so the exchange ends without a project but with its other edges
+    let mut stalled = StalledLookups::with_the_cap_reached().await;
+
+    let exchange = stalled.exchange().await;
+
+    assert_eq!(stalled.calls(), MAX_STALLED);
+    let lines = tap_lines(&stalled.tap_file);
+    assert!(records_of(&lines, exchange)[0].get("project").is_none());
+    assert_eq!(edges_of(&lines, exchange).len(), 2);
+}
+
+#[tokio::test]
+async fn project_lookups_start_again_once_the_stalled_ones_end() {
+    // It gives the permits back, so a later exchange does its lookup
+    let mut stalled = StalledLookups::with_the_cap_reached().await;
+    stalled.exchange().await;
+
+    stalled.release();
+    for _ in 0..MAX_STALLED * 5 {
+        if stalled.calls() > MAX_STALLED {
+            break;
+        }
+        stalled.exchange().await;
+    }
+
+    assert_eq!(stalled.calls(), MAX_STALLED + 1);
 }

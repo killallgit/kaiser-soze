@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 const CACHE_CAPACITY: usize = 256;
+const NEGATIVE_TTL: Duration = Duration::from_secs(60);
 
 /// The git repository a session worked in, and the branch checked out when it was asked for.
 #[derive(Clone, Debug, PartialEq)]
@@ -50,11 +52,12 @@ pub fn locate(dir: &Path) -> Option<Repository> {
         .and_then(|config| origin_url(&config))
         .map_or_else(
             || fs::canonicalize(&root).unwrap_or(root).display().to_string(),
-            |url| without_credentials(&url),
+            |url| project_id_of(&url),
         );
     Some(Repository { id, git_dir })
 }
 
+/// Follows a `.git` pointer file as written. `commondir` is followed the same way; only `HEAD`, `config` and `commondir` are read there.
 fn git_dir_of(git: &Path) -> Option<PathBuf> {
     if git.is_dir() {
         return Some(git.to_path_buf());
@@ -90,28 +93,49 @@ fn origin_url(config: &str) -> Option<String> {
 }
 
 /// `https://user:token@host/owner/repo.git?x#y` and `git@host:owner/repo.git` both become `host/owner/repo`.
-fn without_credentials(url: &str) -> String {
-    let without_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let without_extras = without_scheme.split(['?', '#']).next().unwrap_or_default();
+/// The host is lowercased and a port is dropped. `host:8443/owner/repo` without a scheme is scp-style, not a port.
+fn project_id_of(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unzip();
+    let without_extras = rest.unwrap_or(url).split(['?', '#']).next().unwrap_or_default();
     let host_and_path = without_extras.rsplit('@').next().unwrap_or_default();
-    let scp_like = host_and_path
-        .find(':')
-        .is_some_and(|colon| !host_and_path[..colon].contains('/'));
-    let id = if scp_like && !url.contains("://") && !url.starts_with(['/', '.']) {
-        host_and_path.replacen(':', "/", 1)
-    } else {
+    let id = if scheme.is_none() && host_and_path.starts_with(['/', '.']) {
         host_and_path.to_string()
+    } else {
+        let (host, after_host) = split_host(host_and_path);
+        let path = if scheme.is_some() {
+            after_host.split_once('/').map_or("", |(_port, path)| path)
+        } else {
+            after_host.strip_prefix([':', '/']).unwrap_or_default()
+        };
+        format!("{}/{path}", host.to_lowercase())
     };
     id.trim_end_matches('/').trim_end_matches(".git").to_string()
 }
 
+/// Splits `host:port/path`, `host:path` and `[::1]:path` into the host and what follows it.
+fn split_host(host_and_path: &str) -> (&str, &str) {
+    let host_end = if host_and_path.starts_with('[') {
+        host_and_path.find(']').map_or(host_and_path.len(), |close| close + 1)
+    } else {
+        host_and_path.find([':', '/']).unwrap_or(host_and_path.len())
+    };
+    host_and_path.split_at(host_end)
+}
+
 type Locate = Box<dyn Fn(&Path) -> Option<Repository> + Send + Sync>;
+
+struct Entry {
+    repository: Option<Repository>,
+    found_at: Instant,
+}
 
 /// Remembers which repository each directory belongs to, so its `config` is read once rather than once per request.
 /// The branch is not remembered: a checkout changes it, so every lookup reads `HEAD` again.
+/// A directory in no repository is looked up again after `negative_ttl`, since `git init` may follow.
 pub struct ProjectCache {
-    found: Mutex<HashMap<PathBuf, Option<Repository>>>,
+    found: Mutex<HashMap<PathBuf, Entry>>,
     locate: Locate,
+    negative_ttl: Duration,
 }
 
 impl Default for ProjectCache {
@@ -126,22 +150,44 @@ impl ProjectCache {
         Self {
             found: Mutex::default(),
             locate: Box::new(locate),
+            negative_ttl: NEGATIVE_TTL,
         }
     }
 
+    pub fn with_negative_ttl(mut self, negative_ttl: Duration) -> Self {
+        self.negative_ttl = negative_ttl;
+        self
+    }
+
     pub fn project_for(&self, dir: &Path) -> Option<Project> {
-        let known = self.found.lock().ok()?.get(dir).cloned();
+        let known = self
+            .found
+            .lock()
+            .ok()?
+            .get(dir)
+            .filter(|entry| !self.expired(entry))
+            .map(|entry| entry.repository.clone());
         if let Some(known) = known {
             return known.as_ref().map(Repository::project);
         }
         let repository = (self.locate)(dir);
         if let Ok(mut found) = self.found.lock() {
-            if found.len() >= CACHE_CAPACITY {
+            if found.len() >= CACHE_CAPACITY && !found.contains_key(dir) {
                 found.clear();
             }
-            found.insert(dir.to_path_buf(), repository.clone());
+            found.insert(
+                dir.to_path_buf(),
+                Entry {
+                    repository: repository.clone(),
+                    found_at: Instant::now(),
+                },
+            );
         }
         repository.as_ref().map(Repository::project)
+    }
+
+    fn expired(&self, entry: &Entry) -> bool {
+        entry.repository.is_none() && entry.found_at.elapsed() >= self.negative_ttl
     }
 }
 
@@ -220,6 +266,37 @@ mod tests {
             for secret in ["pass", "pa/ss", "token", "abc", "frag"] {
                 assert!(!found.as_ref().unwrap().id.contains(secret), "{remote}");
             }
+        }
+    }
+
+    #[test]
+    fn every_form_of_one_remote_gives_one_id() {
+        // It lowercases the host, drops the port and keeps the path as written
+        let remotes = [
+            "ssh://git@GitHub.com:2222/o/r.git",
+            "git@github.com:o/r.git",
+            "https://github.com/o/r",
+            "https://github.com:8443/o/r",
+            "ssh://git@github.com:22/o/r/",
+        ];
+        for remote in remotes {
+            assert_eq!(project_id_of(remote), "github.com/o/r", "{remote}");
+        }
+        assert_eq!(project_id_of("https://github.com/Owner/Repo"), "github.com/Owner/Repo");
+        assert_eq!(project_id_of("git@github.com:8443/o/r"), "github.com/8443/o/r");
+    }
+
+    #[test]
+    fn a_bracketed_ipv6_host_stays_whole() {
+        // It keeps the address, drops the port, and reads the scp colon after the bracket
+        let remotes = [
+            "https://[::1]:8443/o/r",
+            "ssh://git@[::1]:22/o/r.git",
+            "git@[::1]:o/r.git",
+            "https://[::1]/o/r",
+        ];
+        for remote in remotes {
+            assert_eq!(project_id_of(remote), "[::1]/o/r", "{remote}");
         }
     }
 
@@ -338,8 +415,8 @@ mod tests {
     }
 
     #[test]
-    fn the_cache_remembers_a_directory_in_no_repository() {
-        // It does not look again once a directory was found to hold nothing
+    fn the_cache_remembers_a_directory_in_no_repository_within_the_ttl() {
+        // It does not look again while the negative answer is fresh
         let dir = tempfile::tempdir().unwrap();
         let cache = ProjectCache::default();
         assert_eq!(cache.project_for(dir.path()), None);
@@ -347,6 +424,51 @@ mod tests {
         on_main(dir.path(), Some("https://example.com/owner/repo"));
 
         assert_eq!(cache.project_for(dir.path()), None);
+    }
+
+    #[test]
+    fn a_directory_in_no_repository_is_looked_up_again_after_the_ttl() {
+        // It finds a repository created after the negative answer expired
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ProjectCache::default().with_negative_ttl(Duration::ZERO);
+        assert_eq!(cache.project_for(dir.path()), None);
+
+        on_main(dir.path(), Some("https://example.com/owner/repo"));
+
+        assert_eq!(
+            cache.project_for(dir.path()),
+            project("example.com/owner/repo", Some("main"))
+        );
+    }
+
+    #[test]
+    fn a_found_repository_never_expires() {
+        // It keeps answering from the cache even with a zero negative ttl
+        let dir = tempfile::tempdir().unwrap();
+        on_main(dir.path(), Some("https://example.com/owner/repo"));
+        let cache = ProjectCache::default().with_negative_ttl(Duration::ZERO);
+        cache.project_for(dir.path());
+
+        fs::remove_file(dir.path().join(".git/config")).unwrap();
+
+        assert_eq!(
+            cache.project_for(dir.path()),
+            project("example.com/owner/repo", Some("main"))
+        );
+    }
+
+    #[test]
+    fn looking_a_known_directory_up_again_keeps_the_other_entries() {
+        // It replaces the entry in place instead of clearing a full cache
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ProjectCache::default().with_negative_ttl(Duration::ZERO);
+        for n in 0..CACHE_CAPACITY {
+            cache.project_for(&dir.path().join(n.to_string()));
+        }
+
+        cache.project_for(&dir.path().join("0"));
+
+        assert_eq!(cache.found.lock().unwrap().len(), CACHE_CAPACITY);
     }
 
     #[test]
