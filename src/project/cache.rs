@@ -10,9 +10,9 @@ const NEGATIVE_TTL: Duration = Duration::from_secs(60);
 
 type Locate = Box<dyn Fn(&Path) -> Option<Repository> + Send + Sync>;
 
-struct Entry {
-    repository: Option<Repository>,
-    found_at: Instant,
+pub(super) struct Entry {
+    pub(super) repository: Option<Repository>,
+    pub(super) found_at: Instant,
 }
 
 /// Remembers which repository each directory belongs to, so its `config` is read once rather than once per request.
