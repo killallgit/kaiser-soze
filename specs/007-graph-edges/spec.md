@@ -32,10 +32,11 @@ Each exchange is placed in a project, a session and a thread, and a subagent's t
 The project is the git repository a session worked in, so one view can show every agent and harness on a project and the branches and pull requests each worked on.
 
 6. The project is found from the directory the wrapper's connection label gives (see the live debug view). The proxy walks up from that directory to the nearest `.git`. A linked worktree resolves to the repository it belongs to, so a repository and all its worktrees are one project.
-7. The project id is the `origin` remote with the scheme, user and password removed (`host/owner/repo`), so the same repository on two machines is one project. A repository with no remote uses its resolved path. A directory in no repository, or no label at all, gives no project and no `in_project` edge.
-8. The session also records the branch name at the time of the first request, as metadata on the `in_project` edge. Matching a branch to a pull request is a subscriber's job; soze does not call GitHub.
+7. The project id is the `origin` remote with the scheme, user, password and port removed and the host lowercased (`host/owner/repo`, path case kept), so the same repository on two machines is one project. A repository with no remote uses its resolved path. A directory in no repository, or no label at all, gives no project and no `in_project` edge.
+8. The session also reads the branch name on every exchange, as metadata on the `in_project` edge; a checkout between exchanges shows on the next edge. Matching a branch to a pull request is a subscriber's job; soze does not call GitHub.
 9. Only the repository's own metadata is read (`HEAD` and the remote URL in its config). No file contents, no credential stores, and nothing under an agent's folder. Credentials inside a remote URL are removed before anything is written.
-10. Finding the project never delays a request: it runs on the tap side, once per session, and a failure costs only the project edge.
+10. Finding the project never delays a request: it runs on the tap side, once per exchange (the repository is cached per directory and the branch is read again each time), and a failure costs only the project edge.
+    A lookup is skipped, giving no project, when 4 lookups are already in flight.
 
 ## User Story 2 (P2): Continuation and turn
 
@@ -73,6 +74,7 @@ A Codex WebSocket is one exchange but carries many requests, each with its own r
 - Claude Code's parent for a subagent is the main agent. Observed with one level only.
 - The wrapper label is the only source of a directory. Neither harness's headers carry one (checked), so a run started without the wrapper has no project. Claude Code's body `metadata` was not readable (the shape file marks it opaque) and is the one place left unchecked.
 - The parent's `Agent` tool result holds the child's agent id (seen in two parent-side records; the field is not identified). It is not needed for `spawned`, which the child's headers give.
+- Cached project ids refresh: a directory found to be in no repository is looked up again after 60 s.
 - Edges are their own events. The `record` carries the three ids (FR-007) but not the edges.
 
 ## Open questions
@@ -80,7 +82,6 @@ A Codex WebSocket is one exchange but carries many requests, each with its own r
 - Decided: the Claude Code main-agent thread id is the session id, so a session and its main thread share one id.
 - Decided: nested subagents work in both harnesses and each child names its parent in a header (observed two levels deep).
 - Does a run without the wrapper need a project at all? If yes, the options are a Claude Code body `metadata` field (unchecked) or asking the person to use the wrapper. Out of scope until someone needs it.
-- Whether the branch should be re-read per exchange, since an agent can switch branches mid-session.
 
 ## Out of scope
 
