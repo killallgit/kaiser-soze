@@ -10,6 +10,7 @@ pub struct ClaudeParser {
     request: RequestBuffer,
     response_sse: bool,
     response_encoded: bool,
+    message_id: Value,
     stop_reason: Value,
     sse: SseSplitter,
 }
@@ -20,6 +21,7 @@ impl ClaudeParser {
             request: RequestBuffer::new(is_encoded(&head.headers)),
             response_sse: false,
             response_encoded: false,
+            message_id: Value::Null,
             stop_reason: Value::Null,
             sse: SseSplitter::default(),
         }
@@ -54,7 +56,10 @@ impl ClaudeParser {
         };
         let index = json["index"].as_u64().unwrap_or_default();
         match json["type"].as_str().unwrap_or_default() {
-            "message_start" => vec![usage_event(&json["message"]["usage"])],
+            "message_start" => {
+                self.message_id = json["message"]["id"].clone();
+                vec![usage_event(&json["message"]["usage"])]
+            }
             "content_block_start" => vec![block_start(block_start_of(index, &json["content_block"]))],
             "content_block_delta" => block_delta_of(index, &json["delta"]).into_iter().collect(),
             "content_block_stop" => vec![block_stop(index)],
@@ -62,7 +67,7 @@ impl ClaudeParser {
                 self.stop_reason = json["delta"]["stop_reason"].clone();
                 vec![usage_event(&json["usage"])]
             }
-            "message_stop" => vec![reply_end(self.stop_reason.clone())],
+            "message_stop" => vec![reply_end_of_message(self.stop_reason.clone(), self.message_id.clone())],
             "error" => vec![error(json["error"]["type"].clone())],
             _ => Vec::new(),
         }

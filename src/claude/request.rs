@@ -15,7 +15,11 @@ pub(super) fn conversation_event(json: &Value) -> TapEvent {
             })
             .collect()
     });
-    conversation(json["system"].clone(), json["tools"].clone(), messages)
+    let mut event = conversation(json["system"].clone(), json["tools"].clone(), messages);
+    if let Some(previous) = json["diagnostics"]["previous_message_id"].as_str() {
+        event.payload["previous_message_id"] = previous.into();
+    }
+    event
 }
 
 pub(super) fn content_blocks(location: &str, content: &Value) -> Vec<Value> {

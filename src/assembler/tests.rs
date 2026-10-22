@@ -247,3 +247,20 @@ fn usage_fields_merge_across_events() {
     assert_eq!(records[0]["reply"]["usage"]["input"], 9);
     assert_eq!(records[0]["reply"]["usage"]["output"], 4);
 }
+
+#[test]
+fn the_reply_message_id_reaches_the_record_when_the_end_names_one() {
+    // It folds reply_end's message_id into the reply and leaves it out otherwise
+    let mut assembler = Assembler::default();
+    let named = vec![
+        conversation_event(),
+        reply_end_of_message(json!("end_turn"), json!("msg_1")),
+    ];
+    let unnamed = vec![conversation_event(), reply_end(json!("end_turn"))];
+
+    let named_records = feed(&mut assembler, named, 0);
+    let unnamed_records = feed(&mut assembler, unnamed, 0);
+
+    assert_eq!(named_records[0]["reply"]["message_id"], "msg_1");
+    assert!(unnamed_records[0]["reply"].get("message_id").is_none());
+}

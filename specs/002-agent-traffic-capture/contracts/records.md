@@ -6,12 +6,12 @@ Consumer: any application that reads the JSONL tap file. One JSON object per lin
 
 | `event` | `payload` | When |
 |---------|-----------|------|
-| `conversation` | `{system, tools, messages}`, plus `partial: true` and `warmup: true` when they apply (Codex) | The request body is complete |
+| `conversation` | `{system, tools, messages}`, plus `partial: true` and `warmup: true` when they apply (Codex), and `previous_message_id` when the request body has `diagnostics.previous_message_id` (Claude Code) | The request body is complete |
 | `block_start` | `{index, kind, id?, name?}` where kind is `text`, `reasoning` or `tool_call` | A reply block begins |
 | `block_delta` | `{index, text?, input_json?, signature?, encrypted?}` | A chunk of a reply block arrives |
 | `block_stop` | `{index}` | A reply block ends |
 | `usage` | `{input, output, cache_read, cache_write, reasoning}` | The agent reports usage |
-| `reply_end` | `{stop_reason}` | The reply ends |
+| `reply_end` | `{stop_reason, message_id?}` where `message_id` is the reply's message id when the stream named it (Claude Code `message_start`) | The reply ends |
 | `error` | `{error_type}` | The upstream reports an error. No message text. |
 | `unparsed` | `{side}` where side is `request` or `reply` | The request or reply could not be read (too large, or still compressed) |
 | `unsupported` | `{host, path, label?}` | A claimed host's adapter declined to read the request. The bytes were relayed untouched. No content. |
@@ -24,7 +24,7 @@ Consumer: any application that reads the JSONL tap file. One JSON object per lin
 
 | `event` | `payload` |
 |---------|-----------|
-| `record` | `{conversation, reply: {message, usage, stop_reason}, incomplete, dropped, project?, session?, thread?}` |
+| `record` | `{conversation, reply: {message, usage, stop_reason, message_id?}, incomplete, dropped, project?, session?, thread?}` |
 
 ## Guarantees
 
