@@ -38,6 +38,10 @@ names every check that failed. To test a single module, run `task test:unit -- <
   agent run through the proxy uses a harmless prompt, at most 4 calls per task, and `</dev/null`.
   On a timeout, stop and report; do not retry bigger.
 - **Disk.** Debug builds only. Delete scratch tap files and merged worktrees promptly.
+- **Name what an id points at.** Follow every ticket, bead, task, PR or issue id (`T011`, `#22`,
+  `kaiser-soze-7ug`) with a few-word description in parentheses, for example `T011 (previous
+  message id check)`. The reader often does not remember the id, so it should say what the item is
+  at a glance.
 
 ## Git and worktrees
 
