@@ -1,3 +1,5 @@
+use super::printer::PRINT_QUEUE;
+use super::state::MAX_COLUMNS;
 use super::*;
 use serde_json::json;
 use tokio::io::AsyncReadExt;
