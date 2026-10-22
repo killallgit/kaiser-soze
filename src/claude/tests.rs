@@ -1,5 +1,7 @@
 use super::*;
 use crate::adapter::ResponseHead;
+use crate::adapter::{ExchangeParser, TapEvent, TapInput};
+use crate::common::*;
 use bytes::Bytes;
 use serde_json::json;
 
