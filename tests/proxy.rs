@@ -9,6 +9,7 @@ use kaiser_soze::claude::ClaudeAdapter;
 use kaiser_soze::codex::CodexAdapter;
 use kaiser_soze::common::*;
 use kaiser_soze::live::Live;
+use kaiser_soze::project::ProjectCache;
 use kaiser_soze::proxy::{Proxy, ProxyConfig};
 use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
 use rustls::pki_types::pem::PemObject;
@@ -172,15 +173,28 @@ async fn start_proxy_live(
     adapters: Vec<Arc<dyn Adapter>>,
     live: Option<Live>,
 ) -> (SocketAddr, RootCertStore) {
-    let proxy = Proxy::new(ProxyConfig {
-        live,
-        adapters,
-        ca_dir: dir.join("ca"),
-        tap_file: dir.join("tap.jsonl"),
-        shape_file: Some(dir.join("shapes.jsonl")),
-        upstream_roots: upstream.roots.clone(),
-        upstream_addr: Some(upstream.addr),
-    })
+    start_proxy_finding_projects(upstream, dir, adapters, live, ProjectCache::default()).await
+}
+
+async fn start_proxy_finding_projects(
+    upstream: &FakeUpstream,
+    dir: &Path,
+    adapters: Vec<Arc<dyn Adapter>>,
+    live: Option<Live>,
+    projects: ProjectCache,
+) -> (SocketAddr, RootCertStore) {
+    let proxy = Proxy::with_projects(
+        ProxyConfig {
+            live,
+            adapters,
+            ca_dir: dir.join("ca"),
+            tap_file: dir.join("tap.jsonl"),
+            shape_file: Some(dir.join("shapes.jsonl")),
+            upstream_roots: upstream.roots.clone(),
+            upstream_addr: Some(upstream.addr),
+        },
+        projects,
+    )
     .await
     .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -951,4 +965,36 @@ async fn a_request_without_identity_headers_writes_no_edges_and_forwards_the_sam
     for key in ["project", "session", "thread"] {
         assert!(record.get(key).is_none());
     }
+}
+
+#[tokio::test]
+async fn a_stalled_project_lookup_does_not_hold_the_exchange_open() {
+    // It ends the exchange, writes the edges that need no project, and leaves project off the record
+    let upstream = start_upstream(anthropic_events()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (release, stalled) = std::sync::mpsc::channel::<()>();
+    let stalled = Mutex::new(stalled);
+    let projects = ProjectCache::locating_with(move |_| {
+        let _ = stalled.lock().unwrap().recv();
+        None
+    });
+    let (proxy, roots) = start_proxy_finding_projects(&upstream, dir.path(), vec![claude()], None, projects).await;
+    let label = basic_label("claude", dir.path());
+    let (_, tunnel) = connect_tunnel_as(proxy, CLAUDE_HOST, Some(&label)).await;
+    let mut client = http_client(tunnel, CLAUDE_HOST, roots).await;
+    let request = identified_request(&[("x-claude-code-session-id", "s1"), ("x-claude-code-agent-id", "a2")]);
+
+    let response = client.send_request(request).await.unwrap();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    drop(client);
+
+    assert_eq!(body, anthropic_events().concat().as_bytes());
+    let lines = read_events(&dir.path().join("tap.jsonl")).await;
+    let kinds: Vec<&str> = edges_of(&lines, 1)
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["in_session", "in_thread"]);
+    assert!(records_of(&lines, 1)[0].get("project").is_none());
+    drop(release);
 }

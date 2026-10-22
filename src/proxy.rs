@@ -59,7 +59,7 @@ pub struct Proxy {
     shapes: Option<Arc<ShapeLog>>,
     clock: Clock,
     next_exchange: AtomicU64,
-    projects: ProjectCache,
+    projects: Arc<ProjectCache>,
 }
 
 struct Tunnel {
@@ -73,6 +73,11 @@ struct Tunnel {
 
 impl Proxy {
     pub async fn new(config: ProxyConfig) -> Result<Arc<Self>, BoxError> {
+        Self::with_projects(config, ProjectCache::default()).await
+    }
+
+    /// Like `new`, finding the project of each connection's directory with `projects`.
+    pub async fn with_projects(config: ProxyConfig, projects: ProjectCache) -> Result<Arc<Self>, BoxError> {
         let hosts: Vec<String> = config
             .adapters
             .iter()
@@ -97,7 +102,7 @@ impl Proxy {
             shapes,
             clock: Clock::start(),
             next_exchange: AtomicU64::new(1),
-            projects: ProjectCache::default(),
+            projects: Arc::new(projects),
         }))
     }
 
@@ -295,16 +300,21 @@ impl Tunnel {
     }
 
     /// Finds the project on a blocking thread, then writes the edges; forwarding never waits for either.
+    /// A lookup that outlasts `PROJECT_WAIT` finds nothing, and keeps running holding no part of the exchange.
     fn note_edges(&self, tap: &ExchangeTap, exchange: u64, identity: Identity) {
         let tap = tap.clone();
-        let proxy = self.proxy.clone();
+        let projects = self.proxy.projects.clone();
         let dir = self.label.as_ref().map(|label| PathBuf::from(&label.dir));
         tokio::spawn(async move {
             let project = match dir {
-                Some(dir) => tokio::task::spawn_blocking(move || proxy.projects.project_for(&dir))
-                    .await
-                    .ok()
-                    .flatten(),
+                Some(dir) => {
+                    let lookup = tokio::task::spawn_blocking(move || projects.project_for(&dir));
+                    tokio::time::timeout(PROJECT_WAIT, lookup)
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .flatten()
+                }
                 None => None,
             };
             tap.project_looked_up(project.as_ref().map(|project| project.id.clone()));

@@ -5,16 +5,32 @@ use std::sync::Mutex;
 
 const CACHE_CAPACITY: usize = 256;
 
-/// The git repository a session worked in, and the branch checked out when it was found.
+/// The git repository a session worked in, and the branch checked out when it was asked for.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Project {
     pub id: String,
     pub branch: Option<String>,
 }
 
-/// Finds the repository holding `dir`. A linked worktree is the repository it belongs to, on its own branch.
+/// A repository found for a directory: its stable id, and where its own `HEAD` lives.
+#[derive(Clone, Debug)]
+pub struct Repository {
+    id: String,
+    git_dir: PathBuf,
+}
+
+impl Repository {
+    fn project(&self) -> Project {
+        Project {
+            id: self.id.clone(),
+            branch: branch_of(&self.git_dir),
+        }
+    }
+}
+
+/// Finds the repository holding `dir`. A linked worktree is the repository it belongs to, with its own `HEAD`.
 /// Only the repository's `HEAD` and `config` are read.
-pub fn resolve(dir: &Path) -> Option<Project> {
+pub fn locate(dir: &Path) -> Option<Repository> {
     if !dir.is_dir() {
         return None;
     }
@@ -36,10 +52,7 @@ pub fn resolve(dir: &Path) -> Option<Project> {
             || fs::canonicalize(&root).unwrap_or(root).display().to_string(),
             |url| without_credentials(&url),
         );
-    Some(Project {
-        id,
-        branch: branch_of(&git_dir),
-    })
+    Some(Repository { id, git_dir })
 }
 
 fn git_dir_of(git: &Path) -> Option<PathBuf> {
@@ -92,25 +105,43 @@ fn without_credentials(url: &str) -> String {
     id.trim_end_matches('/').trim_end_matches(".git").to_string()
 }
 
-/// Remembers what each directory resolved to, so a repository is read once rather than once per request.
-#[derive(Default)]
+type Locate = Box<dyn Fn(&Path) -> Option<Repository> + Send + Sync>;
+
+/// Remembers which repository each directory belongs to, so its `config` is read once rather than once per request.
+/// The branch is not remembered: a checkout changes it, so every lookup reads `HEAD` again.
 pub struct ProjectCache {
-    found: Mutex<HashMap<PathBuf, Option<Project>>>,
+    found: Mutex<HashMap<PathBuf, Option<Repository>>>,
+    locate: Locate,
+}
+
+impl Default for ProjectCache {
+    fn default() -> Self {
+        Self::locating_with(locate)
+    }
 }
 
 impl ProjectCache {
-    pub fn project_for(&self, dir: &Path) -> Option<Project> {
-        if let Some(known) = self.found.lock().ok()?.get(dir) {
-            return known.clone();
+    /// A cache that finds repositories with `locate` instead of reading the disk.
+    pub fn locating_with(locate: impl Fn(&Path) -> Option<Repository> + Send + Sync + 'static) -> Self {
+        Self {
+            found: Mutex::default(),
+            locate: Box::new(locate),
         }
-        let project = resolve(dir);
+    }
+
+    pub fn project_for(&self, dir: &Path) -> Option<Project> {
+        let known = self.found.lock().ok()?.get(dir).cloned();
+        if let Some(known) = known {
+            return known.as_ref().map(Repository::project);
+        }
+        let repository = (self.locate)(dir);
         if let Ok(mut found) = self.found.lock() {
             if found.len() >= CACHE_CAPACITY {
                 found.clear();
             }
-            found.insert(dir.to_path_buf(), project.clone());
+            found.insert(dir.to_path_buf(), repository.clone());
         }
-        project
+        repository.as_ref().map(Repository::project)
     }
 }
 
@@ -142,13 +173,17 @@ mod tests {
         })
     }
 
+    fn resolved(dir: &Path) -> Option<Project> {
+        ProjectCache::default().project_for(dir)
+    }
+
     #[test]
     fn a_repository_is_its_origin_remote_on_its_branch() {
         // It gives host/owner/repo and the checked-out branch
         let dir = tempfile::tempdir().unwrap();
         on_main(dir.path(), Some("https://example.com/owner/repo.git"));
 
-        assert_eq!(resolve(dir.path()), project("example.com/owner/repo", Some("main")));
+        assert_eq!(resolved(dir.path()), project("example.com/owner/repo", Some("main")));
     }
 
     #[test]
@@ -159,7 +194,7 @@ mod tests {
         let nested = dir.path().join("src/deep");
         fs::create_dir_all(&nested).unwrap();
 
-        assert_eq!(resolve(&nested), project("example.com/owner/repo", Some("main")));
+        assert_eq!(resolved(&nested), project("example.com/owner/repo", Some("main")));
     }
 
     #[test]
@@ -179,7 +214,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             on_main(dir.path(), Some(remote));
 
-            let found = resolve(dir.path());
+            let found = resolved(dir.path());
 
             assert_eq!(found, project("example.com/owner/repo", Some("main")), "{remote}");
             for secret in ["pass", "pa/ss", "token", "abc", "frag"] {
@@ -195,7 +230,7 @@ mod tests {
         on_main(dir.path(), None);
 
         assert_eq!(
-            resolve(dir.path()),
+            resolved(dir.path()),
             project(
                 &fs::canonicalize(dir.path()).unwrap().display().to_string(),
                 Some("main")
@@ -215,7 +250,7 @@ mod tests {
         write(&admin.join("commondir"), "../..\n");
         write(&linked.join(".git"), &format!("gitdir: {}\n", admin.display()));
 
-        assert_eq!(resolve(&linked), project("example.com/owner/repo", Some("feature")));
+        assert_eq!(resolved(&linked), project("example.com/owner/repo", Some("feature")));
     }
 
     #[test]
@@ -230,7 +265,7 @@ mod tests {
         write(&admin.join("commondir"), "../..\n");
         write(&linked.join(".git"), &format!("gitdir: {}\n", admin.display()));
 
-        let found = resolve(&linked).unwrap();
+        let found = resolved(&linked).unwrap();
 
         assert_eq!(Path::new(&found.id), fs::canonicalize(&main).unwrap());
     }
@@ -245,7 +280,7 @@ mod tests {
             Some("https://example.com/owner/repo"),
         );
 
-        assert_eq!(resolve(dir.path()), project("example.com/owner/repo", None));
+        assert_eq!(resolved(dir.path()), project("example.com/owner/repo", None));
     }
 
     #[test]
@@ -253,7 +288,7 @@ mod tests {
         // It finds no project
         let dir = tempfile::tempdir().unwrap();
 
-        assert_eq!(resolve(dir.path()), None);
+        assert_eq!(resolved(dir.path()), None);
     }
 
     #[test]
@@ -262,21 +297,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         on_main(dir.path(), Some("https://example.com/owner/repo"));
 
-        assert_eq!(resolve(&dir.path().join("gone")), None);
+        assert_eq!(resolved(&dir.path().join("gone")), None);
     }
 
     #[test]
-    fn the_cache_answers_again_without_reading_the_disk() {
-        // It returns the stored answer after the repository is gone
+    fn the_cache_keeps_the_repository_but_reads_the_branch_again() {
+        // It answers the id from the cache and the branch from the current HEAD
+        let dir = tempfile::tempdir().unwrap();
+        repository(
+            dir.path(),
+            "ref: refs/heads/a\n",
+            Some("https://example.com/owner/repo"),
+        );
+        let cache = ProjectCache::default();
+        cache.project_for(dir.path());
+
+        write(&dir.path().join(".git/HEAD"), "ref: refs/heads/b\n");
+        fs::remove_file(dir.path().join(".git/config")).unwrap();
+
+        assert_eq!(
+            cache.project_for(dir.path()),
+            project("example.com/owner/repo", Some("b"))
+        );
+    }
+
+    #[test]
+    fn a_cached_repository_on_a_detached_head_gives_no_branch() {
+        // It keeps the project and drops the branch once HEAD stops naming one
         let dir = tempfile::tempdir().unwrap();
         on_main(dir.path(), Some("https://example.com/owner/repo"));
         let cache = ProjectCache::default();
-        let first = cache.project_for(dir.path());
+        cache.project_for(dir.path());
 
-        fs::remove_dir_all(dir.path().join(".git")).unwrap();
+        write(
+            &dir.path().join(".git/HEAD"),
+            "0123456789abcdef0123456789abcdef01234567\n",
+        );
 
-        assert_eq!(cache.project_for(dir.path()), first);
-        assert!(first.is_some());
+        assert_eq!(cache.project_for(dir.path()), project("example.com/owner/repo", None));
+    }
+
+    #[test]
+    fn the_cache_remembers_a_directory_in_no_repository() {
+        // It does not look again once a directory was found to hold nothing
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ProjectCache::default();
+        assert_eq!(cache.project_for(dir.path()), None);
+
+        on_main(dir.path(), Some("https://example.com/owner/repo"));
+
+        assert_eq!(cache.project_for(dir.path()), None);
     }
 
     #[test]
