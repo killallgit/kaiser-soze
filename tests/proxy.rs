@@ -831,3 +831,124 @@ async fn an_unclaimed_host_writes_a_tunnel_event_with_the_label() {
         serde_json::json!({"host": UNCLAIMED, "port": 443, "label": {"command": "agent", "dir": "/Users/me/p"}})
     );
 }
+
+fn basic_label(command: &str, dir: &Path) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let text = format!("{command}:{}", dir.display());
+    let mut encoded = String::new();
+    for chunk in text.as_bytes().chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
+        for i in 0..=chunk.len() {
+            encoded.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
+        }
+        encoded.push_str(&"=".repeat(3 - chunk.len()));
+    }
+    format!("Basic {encoded}")
+}
+
+fn repository_with_origin(root: &Path) {
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(
+        root.join(".git/config"),
+        "[remote \"origin\"]\n\turl = https://user:token@example.com/owner/repo.git\n",
+    )
+    .unwrap();
+}
+
+fn identified_request(headers: &[(&str, &str)]) -> Request<Full<Bytes>> {
+    let mut request = claude_request("/v1/messages", CLAUDE_BODY);
+    for (name, value) in headers {
+        request.headers_mut().insert(
+            hyper::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            value.parse().unwrap(),
+        );
+    }
+    request
+}
+
+fn edges_of(lines: &[Value], exchange: u64) -> Vec<&Value> {
+    lines
+        .iter()
+        .filter(|line| line["exchange"] == exchange && line["event"] == "edge")
+        .map(|line| &line["payload"])
+        .collect()
+}
+
+#[tokio::test]
+async fn identity_headers_and_a_labelled_repository_write_edges_after_exchange_start() {
+    // It writes in_project, in_session, in_thread and spawned, and the record carries the ids
+    let upstream = start_upstream(anthropic_events()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let repository = dir.path().join("repo");
+    repository_with_origin(&repository);
+    let (proxy, roots) = start_proxy(&upstream, dir.path(), claude()).await;
+    let label = basic_label("claude", &repository);
+    let (_, tunnel) = connect_tunnel_as(proxy, CLAUDE_HOST, Some(&label)).await;
+    let mut client = http_client(tunnel, CLAUDE_HOST, roots).await;
+    let request = identified_request(&[
+        ("x-claude-code-session-id", "s1"),
+        ("x-claude-code-agent-id", "a2"),
+        ("x-claude-code-parent-agent-id", "a1"),
+    ]);
+
+    let response = client.send_request(request).await.unwrap();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+
+    assert_eq!(body, anthropic_events().concat().as_bytes());
+    let lines = read_events(&dir.path().join("tap.jsonl")).await;
+    let edges = edges_of(&lines, 1);
+    let relations: Vec<(&str, &str, &str)> = edges
+        .iter()
+        .map(|e| {
+            (
+                e["kind"].as_str().unwrap(),
+                e["from"].as_str().unwrap(),
+                e["to"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        relations,
+        [
+            ("in_project", "session:s1", "project:example.com/owner/repo"),
+            ("in_session", "thread:a2", "session:s1"),
+            ("in_thread", "exchange:1", "thread:a2"),
+            ("spawned", "thread:a2", "thread:a1"),
+        ]
+    );
+    assert_eq!(edges[0]["branch"], "main");
+    let position = |kind: &str| lines.iter().position(|line| line["event"] == kind).unwrap();
+    assert!(position("exchange_start") < position("edge"));
+    let record = &records_of(&lines, 1)[0];
+    assert_eq!(record["project"], "example.com/owner/repo");
+    assert_eq!(record["session"], "s1");
+    assert_eq!(record["thread"], "a2");
+    let raw = std::fs::read_to_string(dir.path().join("tap.jsonl")).unwrap();
+    assert!(!raw.contains("token"));
+}
+
+#[tokio::test]
+async fn a_request_without_identity_headers_writes_no_edges_and_forwards_the_same_bytes() {
+    // It taps as before: exchange_start, no edge, no ids on the record
+    let upstream = start_upstream(anthropic_events()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (proxy, roots) = start_proxy(&upstream, dir.path(), claude()).await;
+    let (_, tunnel) = connect_tunnel(proxy, CLAUDE_HOST).await;
+    let mut client = http_client(tunnel, CLAUDE_HOST, roots).await;
+
+    let response = client.send_request(identified_request(&[])).await.unwrap();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+
+    assert_eq!(body, anthropic_events().concat().as_bytes());
+    let lines = read_events(&dir.path().join("tap.jsonl")).await;
+    assert_eq!(count(&lines, "exchange_start"), 1);
+    assert_eq!(count(&lines, "edge"), 0);
+    let record = &records_of(&lines, 1)[0];
+    for key in ["project", "session", "thread"] {
+        assert!(record.get(key).is_none());
+    }
+}

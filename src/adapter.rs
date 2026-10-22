@@ -1,3 +1,4 @@
+use crate::graph::Identity;
 use bytes::Bytes;
 use serde_json::Value;
 
@@ -39,6 +40,18 @@ pub trait Adapter: Send + Sync {
     fn name(&self) -> &'static str;
     fn hosts(&self) -> &[String];
     fn claim(&self, head: &RequestHead) -> Option<Box<dyn ExchangeParser>>;
+
+    /// The session, thread and turn the request headers name. A tool that sends none keeps this default.
+    fn identity(&self, _head: &RequestHead) -> Identity {
+        Identity::default()
+    }
+}
+
+pub fn header<'a>(head: &'a RequestHead, name: &str) -> Option<&'a str> {
+    head.headers
+        .iter()
+        .find(|(header, _)| header == name)
+        .map(|(_, value)| value.as_str())
 }
 
 pub trait ExchangeParser: Send {

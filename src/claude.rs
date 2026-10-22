@@ -1,6 +1,7 @@
-use crate::adapter::{Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
+use crate::adapter::{header, Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
 use crate::body::{is_encoded, RequestBuffer};
 use crate::common::*;
+use crate::graph::Identity;
 use crate::sse::{SseEvent, SseSplitter};
 use serde_json::Value;
 
@@ -32,6 +33,22 @@ impl Adapter for ClaudeAdapter {
     fn claim(&self, head: &RequestHead) -> Option<Box<dyn ExchangeParser>> {
         let path = head.path.split('?').next().unwrap_or_default();
         (path == MESSAGES_PATH).then(|| Box::new(ClaudeParser::new(head)) as Box<dyn ExchangeParser>)
+    }
+
+    /// The main agent has no agent id and is the session itself; a subagent's parent is the agent that
+    /// launched it, else the main agent.
+    fn identity(&self, head: &RequestHead) -> Identity {
+        let owned = |name| header(head, name).map(str::to_string);
+        let session = owned("x-claude-code-session-id");
+        let thread = owned("x-claude-code-agent-id").or_else(|| session.clone());
+        let subagent = header(head, "x-claude-code-request-class") == Some("subagent");
+        let parent_thread = owned("x-claude-code-parent-agent-id").or(session.clone().filter(|_| subagent));
+        Identity {
+            session,
+            thread,
+            parent_thread,
+            turn: owned("x-claude-code-prompt-id"),
+        }
     }
 }
 
@@ -238,6 +255,80 @@ mod tests {
             path: path.into(),
             headers: Vec::new(),
         }
+    }
+
+    fn head_with(headers: &[(&str, &str)]) -> RequestHead {
+        RequestHead {
+            headers: headers.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect(),
+            ..head("/v1/messages")
+        }
+    }
+
+    fn identity_of(headers: &[(&str, &str)]) -> Identity {
+        ClaudeAdapter::default().identity(&head_with(headers))
+    }
+
+    fn ids(session: &str, thread: &str, parent: Option<&str>) -> Identity {
+        Identity {
+            session: Some(session.into()),
+            thread: Some(thread.into()),
+            parent_thread: parent.map(Into::into),
+            turn: None,
+        }
+    }
+
+    #[test]
+    fn the_main_agent_is_the_session_thread_with_no_parent() {
+        // It uses the session id as the thread when no agent id is sent
+        let identity = identity_of(&[
+            ("x-claude-code-session-id", "s1"),
+            ("x-claude-code-request-class", "main"),
+        ]);
+
+        assert_eq!(identity, ids("s1", "s1", None));
+    }
+
+    #[test]
+    fn a_subagent_is_its_own_thread_under_the_main_agent() {
+        // It names the agent as the thread and the session as its parent
+        let identity = identity_of(&[
+            ("x-claude-code-session-id", "s1"),
+            ("x-claude-code-agent-id", "a1"),
+            ("x-claude-code-request-class", "subagent"),
+        ]);
+
+        assert_eq!(identity, ids("s1", "a1", Some("s1")));
+    }
+
+    #[test]
+    fn a_nested_subagent_names_the_agent_that_launched_it() {
+        // It takes the parent agent id over the main agent
+        let identity = identity_of(&[
+            ("x-claude-code-session-id", "s1"),
+            ("x-claude-code-agent-id", "a2"),
+            ("x-claude-code-parent-agent-id", "a1"),
+            ("x-claude-code-request-class", "subagent"),
+        ]);
+
+        assert_eq!(identity, ids("s1", "a2", Some("a1")));
+    }
+
+    #[test]
+    fn the_prompt_id_is_the_turn() {
+        // It reads the turn from the prompt id
+        let identity = identity_of(&[("x-claude-code-session-id", "s1"), ("x-claude-code-prompt-id", "p1")]);
+
+        assert_eq!(identity.turn.as_deref(), Some("p1"));
+    }
+
+    #[test]
+    fn no_ids_give_an_empty_identity() {
+        // It reads nothing it was not sent
+        assert_eq!(
+            identity_of(&[("x-claude-code-request-class", "subagent")]),
+            Identity::default()
+        );
+        assert_eq!(identity_of(&[]), Identity::default());
     }
 
     fn parser() -> Box<dyn ExchangeParser> {

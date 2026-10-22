@@ -1,5 +1,6 @@
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
 use crate::assembler::Assembler;
+use crate::graph::Identity;
 use crate::sink::Sink;
 use crate::ws::WsDecoder;
 use bytes::Bytes;
@@ -9,11 +10,17 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::{mpsc, watch};
 
 const TAP_QUEUE: usize = 256;
 const UNSET: u64 = u64::MAX;
+
+/// How long a record waits for the project lookup before it is written without one.
+pub const PROJECT_WAIT: Duration = Duration::from_millis(250);
+
+/// `None` while the lookup runs; then `Some` of what it found.
+type ProjectLookup = Option<Option<String>>;
 
 #[derive(Clone, Copy)]
 pub struct Stamp {
@@ -108,6 +115,9 @@ pub struct Recorder {
     pub exchange: u64,
     pub adapter: &'static str,
     refused: Arc<AtomicU64>,
+    identity: Identity,
+    project: Arc<watch::Sender<ProjectLookup>>,
+    project_wait: Duration,
 }
 
 impl Recorder {
@@ -117,7 +127,49 @@ impl Recorder {
             exchange,
             adapter,
             refused: Arc::default(),
+            identity: Identity::default(),
+            project: Arc::new(watch::channel(Some(None)).0),
+            project_wait: Duration::ZERO,
         }
+    }
+
+    /// Makes this recorder's records carry the session and thread of its exchange.
+    pub fn knowing(mut self, identity: Identity) -> Self {
+        self.identity = identity;
+        self
+    }
+
+    /// Makes this recorder's records wait up to `up_to` for `project_looked_up`.
+    pub fn awaiting_project(mut self, up_to: Duration) -> Self {
+        self.project.send_replace(None);
+        self.project_wait = up_to;
+        self
+    }
+
+    /// Ends the wait: later records carry the project when one was found.
+    pub fn project_looked_up(&self, project: Option<String>) {
+        self.project.send_replace(Some(project));
+    }
+
+    async fn settled_project(&self) -> Option<String> {
+        let mut lookup = self.project.subscribe();
+        let settled = tokio::time::timeout(self.project_wait, lookup.wait_for(Option::is_some)).await;
+        let found = settled.ok()?.ok()?.clone();
+        found.flatten()
+    }
+
+    fn with_ids(&self, mut record: Value, project: Option<String>) -> Value {
+        let ids = [
+            ("project", project.as_ref()),
+            ("session", self.identity.session.as_ref()),
+            ("thread", self.identity.thread.as_ref()),
+        ];
+        for (key, id) in ids {
+            if let Some(id) = id {
+                record[key] = json!(id);
+            }
+        }
+        record
     }
 
     /// Live lines of this exchange the sink refused.
@@ -147,6 +199,12 @@ impl Recorder {
     pub async fn write_reliable(&self, stamp: Stamp, kind: &str, payload: Value) {
         self.sink.write_reliable(self.line(stamp, kind, payload, (0, 0))).await;
     }
+
+    async fn write_record(&self, stamp: Stamp, record: Value) {
+        let project = self.settled_project().await;
+        self.write_reliable(stamp, "record", self.with_ids(record, project))
+            .await;
+    }
 }
 
 enum Msg {
@@ -175,8 +233,17 @@ impl ExchangeTap {
         }
     }
 
+    pub fn project_looked_up(&self, project: Option<String>) {
+        self.recorder.project_looked_up(project);
+    }
+
     pub fn note(&self, kind: &str, payload: Value) {
         self.recorder.write(self.clock.stamp(), kind, payload, (0, 0));
+    }
+
+    /// Like `note`, but waits for room in the output queue. Only a tap-side task calls this.
+    pub async fn note_reliable(&self, kind: &str, payload: Value) {
+        self.recorder.write_reliable(self.clock.stamp(), kind, payload).await;
     }
 
     pub fn send(&self, input: TapInput) {
@@ -237,12 +304,12 @@ async fn run_parser(
             } = event;
             recorder.write(stamp, &kind, payload, (start, end));
             for record in records {
-                recorder.write_reliable(stamp, "record", record).await;
+                recorder.write_record(stamp, record).await;
             }
         }
     }
     if let Some(record) = assembler.finish(dropped()) {
-        recorder.write_reliable(clock.stamp(), "record", record).await;
+        recorder.write_record(clock.stamp(), record).await;
     }
     let mut summary = stats.summary();
     summary["sink_dropped"] = json!(recorder.sink.dropped());
@@ -325,8 +392,10 @@ impl<B: Body<Data = Bytes> + Unpin> Body for TeeBody<B> {
 mod tests {
     use super::*;
     use crate::adapter::TapInput;
+    use crate::graph::Identity;
     use std::sync::atomic::AtomicUsize;
     use std::sync::mpsc::Receiver;
+    use std::time::Duration;
 
     struct BlocksUntilReleased {
         release: Receiver<()>,
@@ -493,9 +562,13 @@ mod tests {
     }
 
     async fn run_to_the_end(events: Vec<TapEvent>) -> Vec<Value> {
+        run_recorded(events, |recorder| recorder).await
+    }
+
+    async fn run_recorded(events: Vec<TapEvent>, configure: impl FnOnce(Recorder) -> Recorder) -> Vec<Value> {
         let dir = tempfile::tempdir().unwrap();
         let tap_file = dir.path().join("tap.jsonl");
-        let recorder = Recorder::new(Sink::open(&tap_file).await.unwrap(), 1, "test");
+        let recorder = configure(Recorder::new(Sink::open(&tap_file).await.unwrap(), 1, "test"));
         let tap = ExchangeTap::spawn(recorder, Clock::start(), Box::new(Emits { events, release: None }));
 
         tap.send(TapInput::ResponseEnd);
@@ -526,6 +599,123 @@ mod tests {
         );
         assert_eq!(lines[6]["payload"]["incomplete"], false);
         assert_eq!(lines[6]["payload"]["dropped"], 0);
+    }
+
+    #[tokio::test]
+    async fn a_record_carries_the_ids_the_recorder_knows() {
+        // It adds project, session and thread to the record and to no other line
+        let known = Identity {
+            session: Some("s1".into()),
+            thread: Some("t1".into()),
+            ..Identity::default()
+        };
+
+        let lines = run_recorded(closed_reply(), |recorder| {
+            let recorder = recorder.knowing(known).awaiting_project(Duration::from_secs(5));
+            recorder.project_looked_up(Some("host/owner/repo".into()));
+            recorder
+        })
+        .await;
+
+        let ids = |line: &Value| {
+            [
+                &line["payload"]["project"],
+                &line["payload"]["session"],
+                &line["payload"]["thread"],
+            ]
+            .map(Value::clone)
+        };
+        let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+        assert_eq!(ids(record), [json!("host/owner/repo"), json!("s1"), json!("t1")]);
+        let others = lines.iter().filter(|line| line["event"] != "record");
+        assert!(others.map(ids).all(|ids| ids.iter().all(Value::is_null)));
+    }
+
+    #[tokio::test]
+    async fn a_record_waits_for_a_lookup_that_finishes_after_the_reply() {
+        // It carries the project found while the record was already due
+        let lines = run_recorded(closed_reply(), |recorder| {
+            let recorder = recorder.awaiting_project(Duration::from_secs(5));
+            let lookup = recorder.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                lookup.project_looked_up(Some("host/owner/repo".into()));
+            });
+            recorder
+        })
+        .await;
+
+        let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+        assert_eq!(record["payload"]["project"], "host/owner/repo");
+    }
+
+    #[tokio::test]
+    async fn a_record_stops_waiting_for_a_lookup_that_never_finishes() {
+        // It is written without a project once the bound passes
+        let lines = run_recorded(closed_reply(), |recorder| {
+            recorder.awaiting_project(Duration::from_millis(20))
+        })
+        .await;
+
+        let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+        assert!(record["payload"].get("project").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_lookup_that_finds_nothing_lets_the_record_go_without_waiting() {
+        // It does not wait out the bound once the lookup has answered
+        let started = Instant::now();
+
+        let lines = run_recorded(closed_reply(), |recorder| {
+            let recorder = recorder.awaiting_project(Duration::from_secs(30));
+            recorder.project_looked_up(None);
+            recorder
+        })
+        .await;
+
+        let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+        assert!(record["payload"].get("project").is_none());
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn a_reliable_note_waits_for_room_in_a_full_queue() {
+        // It delivers the line once the queue drains, where a plain note would drop it
+        let (sink, mut drained) = Sink::detached(1);
+        let recorder = Recorder::new(sink, 1, "test");
+        let tap = ExchangeTap::spawn(
+            recorder.clone(),
+            Clock::start(),
+            Box::new(Emits {
+                events: Vec::new(),
+                release: None,
+            }),
+        );
+        recorder.write(Clock::start().stamp(), "filler", json!({}), (0, 0));
+        let noted = tokio::spawn(async move { tap.note_reliable("edge", json!({"kind": "in_thread"})).await });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut kinds = Vec::new();
+        while let Ok(Some(line)) = tokio::time::timeout(Duration::from_secs(2), drained.recv()).await {
+            kinds.push(line["event"].as_str().unwrap().to_string());
+            if line["event"] == "edge" {
+                break;
+            }
+        }
+
+        noted.await.unwrap();
+        assert_eq!(kinds, ["filler", "edge"]);
+    }
+
+    #[tokio::test]
+    async fn a_record_omits_the_ids_nobody_knows() {
+        // It leaves the keys out instead of writing nulls
+        let lines = run_to_the_end(closed_reply()).await;
+
+        let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+        for key in ["project", "session", "thread"] {
+            assert!(record["payload"].get(key).is_none());
+        }
     }
 
     #[tokio::test]

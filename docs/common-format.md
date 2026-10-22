@@ -50,3 +50,25 @@ model, so a proxy sees Cursor's private protocol, never the model request.
 | usage | `response.completed.usage` | `message_start.usage` + `message_delta.usage` |
 
 A reply ends at `response.completed` (Codex) or `message_stop` (Claude Code).
+
+## The graph
+
+Status: proposed. Observed on Claude Code 2.1.302 and Codex 0.163.0 with one subagent run each. The ids below are header names and body key names only; no values are stored here.
+
+Topology nodes are `project` (a git repository, the root), `session` (one run of a harness), `thread` (one agent's conversation inside a session: the main agent or a subagent) and `exchange` (one model request and its reply). Content nodes are the message blocks above.
+
+| Edge | Meaning | Claude Code | Codex |
+|---|---|---|---|
+| `in_project` | session belongs to the repository it ran in | from the working directory the wrapper labels the connection with, resolved to the repository's origin remote | same |
+| `in_session` | thread belongs to a session | `x-claude-code-session-id` | `session-id` header, `client_metadata.session_id` |
+| `in_thread` | exchange belongs to a thread | main agent when no `x-claude-code-agent-id`, else that agent id | `thread-id` header, `client_metadata.thread_id` |
+| `spawned` | child thread to the parent thread that launched it | child sends `x-claude-code-request-class: subagent`, `x-claude-code-agent-id`, `x-claude-code-agent-type`, and `x-claude-code-parent-agent-id` when launched by another subagent (observed two levels) | child sends `x-codex-parent-thread-id` and `x-openai-subagent: collab_spawn`; the child has a new `thread-id` and the parent's `session-id`; also `parent_thread_id` in `x-codex-turn-metadata` (observed two levels) |
+| `continues` | exchange follows the previous exchange of its thread | `diagnostics.previous_message_id` against the earlier reply's `message.id` (unverified) | same `thread-id`, ordered by time (a socket carries many) |
+| `turn` | exchanges answering one user prompt | `x-claude-code-prompt-id` | `turn_id` in the `x-codex-turn-metadata` header and `client_metadata` |
+| `calls` | `tool_call` to its `tool_result` | `id` to `call_id` | `call_id` |
+| `follows`, `contains` | order of messages, nesting of blocks | by position | by position |
+
+- The subagent shares its parent's session id in both harnesses, so `in_session` alone does not separate agents. `in_thread` and `spawned` do.
+- Claude Code has no thread id. A subagent is told apart by its agent id, and the main agent is the session itself.
+- The parent's `Agent` or `spawn_agent` tool call does not carry the child's id. The link is made on the child's side (Codex) or in the parent's tool result (Claude Code).
+- The request headers above are already in the tap's `exchange_start` payload with credentials redacted. Body ids are not yet.

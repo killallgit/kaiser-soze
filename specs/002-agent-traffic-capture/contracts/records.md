@@ -15,6 +15,7 @@ Consumer: any application that reads the JSONL tap file. One JSON object per lin
 | `error` | `{error_type}` | The upstream reports an error. No message text. |
 | `unparsed` | `{side}` where side is `request` or `reply` | The request or reply could not be read (too large, or still compressed) |
 | `unsupported` | `{host, path, label?}` | A claimed host's adapter declined to read the request. The bytes were relayed untouched. No content. |
+| `edge` | `{kind, from, to, branch?}` | One relation of the exchange, written after `exchange_start`: `in_project` (session to project, with the branch), `in_session` (thread to session), `in_thread` (exchange to thread), `spawned` (thread to parent thread). Nodes are named `project:<id>`, `session:<id>`, `thread:<id>`, `exchange:<n>`. Only ids from request headers; an edge whose ends are unknown is not written. |
 | `tunnel` | `{host, port, label?}` | A connection to a host no adapter claims was tunnelled, unread. Adapter name `none`. |
 
 `exchange_start` and `tunnel`/`unsupported` carry `label: {command, dir}` only when the connection told the proxy which agent command and directory started it (see the wrappers in the README); it is metadata, not message content.
@@ -23,14 +24,14 @@ Consumer: any application that reads the JSONL tap file. One JSON object per lin
 
 | `event` | `payload` |
 |---------|-----------|
-| `record` | `{conversation, reply: {message, usage, stop_reason}, incomplete, dropped}` |
+| `record` | `{conversation, reply: {message, usage, stop_reason}, incomplete, dropped, project?, session?, thread?}` |
 
 ## Guarantees
 
 - Within an exchange, lines appear in the order the events occurred.
 - A `record` line is written once per reply, when the reply ends. If an exchange ends while a reply is open (a cut-off stream), one more `record` is written for it. A Claude Code exchange has one reply; a Codex WebSocket can have many.
 - A `record` line (and the closing `exchange_end` line) is not lost because the output queue is busy. Live lines may be dropped there and counted; the `record` waits for room. The one live line that is refused while its own `record` is being built is not in that record's `dropped` count.
-- A `record` equals the fold of its reply's live events. For an incomplete record it equals the fold of the events that were written.
+- A `record` equals the fold of its reply's live events, plus the `project`, `session` and `thread` ids of its exchange when known. For an incomplete record it equals the fold of the events that were written.
 - `incomplete` is true when `dropped` is above 0 (counting live lines lost on the output side), the stream was cut off, the request or reply was unparsed, or assembly stopped at the 32 MiB bound.
 - A reply item that is not text, reasoning or a tool call is left out and does not set `incomplete`.
 - Image blocks never contain bytes.
