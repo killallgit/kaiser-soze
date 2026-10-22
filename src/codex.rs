@@ -1,6 +1,7 @@
-use crate::adapter::{Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
+use crate::adapter::{header, Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
 use crate::body::{is_encoded, RequestBuffer, MAX_REQUEST_BODY};
 use crate::common::*;
+use crate::graph::Identity;
 use crate::sse::{SseEvent, SseSplitter};
 use serde_json::{json, Value};
 
@@ -33,6 +34,18 @@ impl Adapter for CodexAdapter {
         head.path
             .ends_with("/responses")
             .then(|| Box::new(CodexParser::new(is_encoded(&head.headers))) as Box<dyn ExchangeParser>)
+    }
+
+    fn identity(&self, head: &RequestHead) -> Identity {
+        let owned = |name| header(head, name).map(str::to_string);
+        let turn_metadata =
+            header(head, "x-codex-turn-metadata").and_then(|json| serde_json::from_str::<Value>(json).ok());
+        Identity {
+            session: owned("session-id"),
+            thread: owned("thread-id"),
+            parent_thread: owned("x-codex-parent-thread-id"),
+            turn: turn_metadata.and_then(|metadata| metadata["turn_id"].as_str().map(str::to_string)),
+        }
     }
 }
 
@@ -415,6 +428,68 @@ mod tests {
 
     fn parser() -> CodexParser {
         CodexParser::new(false)
+    }
+
+    fn identity_of(headers: &[(&str, &str)]) -> Identity {
+        let head = RequestHead {
+            method: "POST".into(),
+            host: "chatgpt.com".into(),
+            path: "/backend-api/codex/responses".into(),
+            headers: headers.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect(),
+        };
+        CodexAdapter::default().identity(&head)
+    }
+
+    #[test]
+    fn the_session_and_thread_headers_are_read() {
+        // It reads both ids and finds no parent or turn
+        let identity = identity_of(&[("session-id", "s1"), ("thread-id", "t1")]);
+
+        assert_eq!(
+            identity,
+            Identity {
+                session: Some("s1".into()),
+                thread: Some("t1".into()),
+                parent_thread: None,
+                turn: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_parent_thread_header_gives_the_parent() {
+        // It reads the thread that launched this one
+        let identity = identity_of(&[("thread-id", "t2"), ("x-codex-parent-thread-id", "t1")]);
+
+        assert_eq!(identity.parent_thread.as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn the_turn_comes_from_the_turn_metadata_json() {
+        // It reads turn_id out of the header's JSON
+        let identity = identity_of(&[("x-codex-turn-metadata", r#"{"turn_id":"u1","session_id":"s9"}"#)]);
+
+        assert_eq!(identity.turn.as_deref(), Some("u1"));
+    }
+
+    #[test]
+    fn malformed_turn_metadata_gives_no_turn_and_keeps_the_rest() {
+        // It still reads session and thread
+        let identity = identity_of(&[
+            ("session-id", "s1"),
+            ("thread-id", "t1"),
+            ("x-codex-turn-metadata", "{not json"),
+        ]);
+
+        assert_eq!(identity.turn, None);
+        assert_eq!(identity.session.as_deref(), Some("s1"));
+        assert_eq!(identity.thread.as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn no_ids_give_an_empty_identity() {
+        // It reads nothing it was not sent
+        assert_eq!(identity_of(&[]), Identity::default());
     }
 
     fn kinds(events: &[TapEvent]) -> Vec<&str> {

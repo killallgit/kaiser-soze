@@ -1,8 +1,10 @@
 use crate::adapter::{claims_host, Adapter, RequestHead, ResponseHead, TapInput};
 use crate::ca::Ca;
-use crate::exchange::{Clock, ExchangeTap, Recorder, Side, TeeBody};
+use crate::exchange::{Clock, ExchangeTap, Recorder, Side, TeeBody, PROJECT_WAIT};
+use crate::graph::{self, Identity};
 use crate::label::{self, Label};
 use crate::live::Live;
+use crate::project::ProjectCache;
 use crate::redact::redact_headers;
 use crate::shape::{ShapeLog, ShapedParser};
 use crate::sink::Sink;
@@ -57,6 +59,7 @@ pub struct Proxy {
     shapes: Option<Arc<ShapeLog>>,
     clock: Clock,
     next_exchange: AtomicU64,
+    projects: ProjectCache,
 }
 
 struct Tunnel {
@@ -94,6 +97,7 @@ impl Proxy {
             shapes,
             clock: Clock::start(),
             next_exchange: AtomicU64::new(1),
+            projects: ProjectCache::default(),
         }))
     }
 
@@ -263,7 +267,10 @@ impl Tunnel {
     ) -> ExchangeTap {
         let proxy = &self.proxy;
         let exchange = proxy.next_exchange.fetch_add(1, Ordering::Relaxed);
-        let recorder = Recorder::new(proxy.sink.clone(), exchange, self.adapter.name());
+        let identity = self.adapter.identity(head);
+        let recorder = Recorder::new(proxy.sink.clone(), exchange, self.adapter.name())
+            .knowing(identity.clone())
+            .awaiting_project(PROJECT_WAIT);
         let parser: Box<dyn crate::adapter::ExchangeParser> = match &proxy.shapes {
             Some(log) => Box::new(ShapedParser::new(log.clone(), parser, exchange, head)),
             None => parser,
@@ -283,7 +290,28 @@ impl Tunnel {
                 self.label.as_ref(),
             ),
         );
+        self.note_edges(&tap, exchange, identity);
         tap
+    }
+
+    /// Finds the project on a blocking thread, then writes the edges; forwarding never waits for either.
+    fn note_edges(&self, tap: &ExchangeTap, exchange: u64, identity: Identity) {
+        let tap = tap.clone();
+        let proxy = self.proxy.clone();
+        let dir = self.label.as_ref().map(|label| PathBuf::from(&label.dir));
+        tokio::spawn(async move {
+            let project = match dir {
+                Some(dir) => tokio::task::spawn_blocking(move || proxy.projects.project_for(&dir))
+                    .await
+                    .ok()
+                    .flatten(),
+                None => None,
+            };
+            tap.project_looked_up(project.as_ref().map(|project| project.id.clone()));
+            for edge in graph::edges(exchange, &identity, project.as_ref()) {
+                tap.note_reliable("edge", edge).await;
+            }
+        });
     }
 }
 
