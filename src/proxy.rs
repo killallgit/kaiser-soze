@@ -1,7 +1,7 @@
 use crate::adapter::{claims_host, Adapter, RequestHead, ResponseHead, TapInput};
 use crate::ca::Ca;
 use crate::exchange::{Clock, ExchangeTap, Recorder, Side, TeeBody, PROJECT_WAIT};
-use crate::graph::{self, Identity};
+use crate::graph::{self, Identity, Threads};
 use crate::label::{self, Label};
 use crate::live::Live;
 use crate::project::ProjectCache;
@@ -26,7 +26,7 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -63,6 +63,7 @@ pub struct Proxy {
     next_exchange: AtomicU64,
     projects: Arc<ProjectCache>,
     lookups: Arc<Semaphore>,
+    threads: Arc<Mutex<Threads>>,
 }
 
 struct Tunnel {
@@ -107,6 +108,7 @@ impl Proxy {
             next_exchange: AtomicU64::new(1),
             projects: Arc::new(projects),
             lookups: Arc::new(Semaphore::new(MAX_PROJECT_LOOKUPS)),
+            threads: Arc::default(),
         }))
     }
 
@@ -279,7 +281,8 @@ impl Tunnel {
         let identity = self.adapter.identity(head);
         let recorder = Recorder::new(proxy.sink.clone(), exchange, self.adapter.name())
             .knowing(identity.clone())
-            .awaiting_project(PROJECT_WAIT);
+            .awaiting_project(PROJECT_WAIT)
+            .tracking(proxy.threads.clone());
         let parser: Box<dyn crate::adapter::ExchangeParser> = match &proxy.shapes {
             Some(log) => Box::new(ShapedParser::new(log.clone(), parser, exchange, head)),
             None => parser,

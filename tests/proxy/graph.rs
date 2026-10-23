@@ -229,6 +229,7 @@ const MAX_STALLED: usize = 4;
 #[tokio::test]
 async fn no_fifth_project_lookup_starts_while_four_hang() {
     // It skips the lookup, so the exchange ends without a project but with its other edges
+    // (in_session, in_thread, and continues from the stalled exchanges before it)
     let mut stalled = StalledLookups::with_the_cap_reached().await;
 
     let exchange = stalled.exchange().await;
@@ -236,7 +237,7 @@ async fn no_fifth_project_lookup_starts_while_four_hang() {
     assert_eq!(stalled.calls(), MAX_STALLED);
     let lines = tap_lines(&stalled.tap_file);
     assert!(records_of(&lines, exchange)[0].get("project").is_none());
-    assert_eq!(edges_of(&lines, exchange).len(), 2);
+    assert_eq!(edges_of(&lines, exchange).len(), 3);
 }
 
 #[tokio::test]

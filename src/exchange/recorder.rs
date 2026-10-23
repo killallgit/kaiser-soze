@@ -1,9 +1,9 @@
 use super::clock::Stamp;
-use crate::graph::Identity;
+use crate::graph::{Identity, Step, Threads};
 use crate::sink::Sink;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::watch;
 
@@ -22,6 +22,7 @@ pub struct Recorder {
     pub(super) identity: Identity,
     pub(super) project: Arc<watch::Sender<ProjectLookup>>,
     pub(super) project_wait: Duration,
+    threads: Option<Arc<Mutex<Threads>>>,
 }
 
 impl Recorder {
@@ -34,12 +35,19 @@ impl Recorder {
             identity: Identity::default(),
             project: Arc::new(watch::channel(Some(None)).0),
             project_wait: Duration::ZERO,
+            threads: None,
         }
     }
 
     /// Makes this recorder's records carry the session and thread of its exchange.
     pub fn knowing(mut self, identity: Identity) -> Self {
         self.identity = identity;
+        self
+    }
+
+    /// Makes this recorder's records add their `turn` and `continues` edges to `threads`.
+    pub fn tracking(mut self, threads: Arc<Mutex<Threads>>) -> Self {
+        self.threads = Some(threads);
         self
     }
 
@@ -71,6 +79,11 @@ impl Recorder {
         for (key, id) in ids {
             if let Some(id) = id {
                 record[key] = json!(id);
+            }
+        }
+        if record.get("turn").is_none() {
+            if let Some(turn) = &self.identity.turn {
+                record["turn"] = json!(turn);
             }
         }
         record
@@ -106,7 +119,30 @@ impl Recorder {
 
     pub(super) async fn write_record(&self, stamp: Stamp, record: Value) {
         let project = self.settled_project().await;
-        self.write_reliable(stamp, "record", self.with_ids(record, project))
-            .await;
+        let record = self.with_ids(record, project);
+        let edges = self.step_edges(&record);
+        self.write_reliable(stamp, "record", record).await;
+        for edge in edges {
+            self.write_reliable(stamp, "edge", edge).await;
+        }
+    }
+
+    fn step_edges(&self, record: &Value) -> Vec<Value> {
+        let Some(threads) = &self.threads else {
+            return Vec::new();
+        };
+        let text = |value: &Value| value.as_str().map(String::from);
+        let step = Step {
+            thread: self.identity.thread.clone(),
+            exchange: self.exchange,
+            n: record["step"].as_u64().unwrap_or(1),
+            turn: text(&record["turn"]),
+            previous_message_id: text(&record["conversation"]["previous_message_id"]),
+            message_id: text(&record["reply"]["message_id"]),
+        };
+        threads
+            .lock()
+            .map(|mut threads| threads.edges(&step))
+            .unwrap_or_default()
     }
 }

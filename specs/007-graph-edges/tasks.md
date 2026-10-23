@@ -18,8 +18,8 @@ Order inside a task pair: the test task first, and it must fail before the code 
 ## Phase 2: US2, continuation and turn (P2)
 
 - [X] T011 [US2] Check, without printing values, that Claude Code's request body has `diagnostics.previous_message_id` and that it equals the previous reply's `message.id`: read the field in a throwaway test fixture shaped from the shape file, then one live run reporting only `equal: true/false`. If false, remove `continues` for Claude Code from the vocabulary and stop this story for that lane.
-- [ ] T012 [US2] Add failing tests for the step id (`step:<exchange>.<n>`): Claude Code is always `.1`; a Codex socket with three requests gives `.1` to `.3`. Implement in the Codex and Claude parsers.
-- [ ] T013 [US2] Add failing tests, then implement, `continues` (Claude Code by `previous_message_id`, Codex by arrival order on the same thread) with a bounded per-thread state of 1024 threads, and `turn` (Claude Code `x-claude-code-prompt-id`; Codex the header turn for the first step and `client_metadata.turn_id` after).
+- [x] T012 [US2] Add failing tests for the step id (`step:<exchange>.<n>`): Claude Code is always `.1`; a Codex socket with three requests gives `.1` to `.3`. Implement in the Codex and Claude parsers.
+- [x] T013 [US2] Add failing tests, then implement, `continues` (Claude Code by `previous_message_id`, Codex by arrival order on the same thread) with a bounded per-thread state of 1024 threads, and `turn` (Claude Code `x-claude-code-prompt-id`; Codex the header turn for the first step and `client_metadata.turn_id` after).
 
 ## Phase 3: US3, tool calls (P2)
 

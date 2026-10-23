@@ -1,12 +1,13 @@
 use super::*;
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
 use crate::graph::Identity;
+use crate::graph::Threads;
 use crate::sink::Sink;
 use bytes::Bytes;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 struct BlocksUntilReleased {
@@ -241,6 +242,86 @@ async fn a_record_carries_the_ids_the_recorder_knows() {
     assert_eq!(ids(record), [json!("host/owner/repo"), json!("s1"), json!("t1")]);
     let others = lines.iter().filter(|line| line["event"] != "record");
     assert!(others.map(ids).all(|ids| ids.iter().all(Value::is_null)));
+}
+
+#[tokio::test]
+async fn a_record_carries_the_turn_its_exchange_belongs_to() {
+    // It groups replies of one user turn without saying the turn ended
+    let known = Identity {
+        turn: Some("p1".into()),
+        ..Identity::default()
+    };
+
+    let lines = run_recorded(closed_reply(), |recorder| recorder.knowing(known)).await;
+
+    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+    assert_eq!(record["payload"]["turn"], "p1");
+    assert!(lines
+        .iter()
+        .filter(|line| line["event"] != "record")
+        .all(|line| line["payload"].get("turn").is_none()));
+}
+
+#[tokio::test]
+async fn a_record_takes_its_step_and_turn_from_its_own_request() {
+    // A later Codex step names its own turn; a request that names none is step 1 of the header turn
+    let known = Identity {
+        turn: Some("u1".into()),
+        ..Identity::default()
+    };
+    let mut later = closed_reply();
+    later[0].payload["step"] = json!(2);
+    later[0].payload["turn"] = json!("u2");
+
+    let stepped = run_recorded(later, |recorder| recorder.knowing(known.clone())).await;
+    let plain = run_recorded(closed_reply(), |recorder| recorder.knowing(known)).await;
+
+    let record = |lines: &[Value]| lines.iter().find(|line| line["event"] == "record").unwrap()["payload"].clone();
+    assert_eq!(
+        (record(&stepped)["step"].clone(), record(&stepped)["turn"].clone()),
+        (json!(2), json!("u2"))
+    );
+    assert_eq!(
+        (record(&plain)["step"].clone(), record(&plain)["turn"].clone()),
+        (json!(1), json!("u1"))
+    );
+}
+
+#[tokio::test]
+async fn a_record_writes_the_turn_and_continues_edges_of_its_step() {
+    // A second exchange on the same thread continues the first, and both name their turn
+    let known = |turn: &str| Identity {
+        thread: Some("t1".into()),
+        turn: Some(turn.into()),
+        ..Identity::default()
+    };
+    let threads = Arc::new(Mutex::new(Threads::default()));
+    let edges = |lines: &[Value]| -> Vec<(String, String, String)> {
+        lines
+            .iter()
+            .filter(|line| {
+                line["event"] == "edge" && ["turn", "continues"].contains(&line["payload"]["kind"].as_str().unwrap())
+            })
+            .map(|line| ["kind", "from", "to"].map(|key| line["payload"][key].as_str().unwrap().to_string()))
+            .map(|[kind, from, to]| (kind, from, to))
+            .collect()
+    };
+
+    let first = run_recorded(closed_reply(), |r| r.knowing(known("u1")).tracking(threads.clone())).await;
+    let second = run_recorded(closed_reply(), |mut r| {
+        r.exchange = 2;
+        r.knowing(known("u1")).tracking(threads.clone())
+    })
+    .await;
+
+    assert_eq!(edges(&first), [("turn".into(), "step:1.1".into(), "turn:u1".into())]);
+    assert_eq!(
+        edges(&second),
+        [
+            ("turn".into(), "step:2.1".into(), "turn:u1".into()),
+            ("continues".into(), "step:2.1".into(), "step:1.1".into())
+        ]
+    );
 }
 
 #[tokio::test]

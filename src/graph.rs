@@ -1,5 +1,6 @@
 use crate::project::Project;
 use serde_json::{json, Value};
+use std::collections::{HashMap, VecDeque};
 
 /// Which session, thread and turn an exchange belongs to, as its request headers say.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -34,6 +35,74 @@ pub fn edges(exchange: u64, identity: &Identity, project: Option<&Project>) -> V
         edges.push(edge("spawned", thread, parent));
     }
     edges
+}
+
+/// How many threads the tracker remembers before it forgets the least recently started one.
+pub const THREAD_BOUND: usize = 1024;
+
+/// One request and its reply: the unit `turn` and `continues` link.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Step {
+    pub thread: Option<String>,
+    pub exchange: u64,
+    pub n: u64,
+    pub turn: Option<String>,
+    pub previous_message_id: Option<String>,
+    pub message_id: Option<String>,
+}
+
+#[derive(Default)]
+struct Seen {
+    last: String,
+    replies: HashMap<String, String>,
+}
+
+/// Remembers the last step of each thread, bounded, so a step can say which one it continues.
+#[derive(Default)]
+pub struct Threads {
+    seen: HashMap<String, Seen>,
+    order: VecDeque<String>,
+}
+
+impl Threads {
+    /// The `turn` and `continues` edges one finished step adds, then remembers the step.
+    /// A previous message id continues the step that replied with it, or nothing when that
+    /// reply is unknown; without one the step continues the thread's last step.
+    pub fn edges(&mut self, step: &Step) -> Vec<Value> {
+        let node = format!("step:{}.{}", step.exchange, step.n);
+        let mut edges = Vec::new();
+        if let Some(turn) = &step.turn {
+            edges.push(edge("turn", &node, &format!("turn:{turn}")));
+        }
+        let Some(thread) = &step.thread else {
+            return edges;
+        };
+        if !self.seen.contains_key(thread) {
+            self.order.push_back(thread.clone());
+            if self.order.len() > THREAD_BOUND {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.seen.remove(&oldest);
+                }
+            }
+        }
+        let seen = self.seen.entry(thread.clone()).or_default();
+        let before = match &step.previous_message_id {
+            Some(id) => seen.replies.get(id),
+            None if seen.last.is_empty() => None,
+            None => Some(&seen.last),
+        };
+        if let Some(before) = before {
+            edges.push(edge("continues", &node, before));
+        }
+        seen.last = node.clone();
+        if let Some(id) = &step.message_id {
+            if seen.replies.len() >= THREAD_BOUND {
+                seen.replies.clear();
+            }
+            seen.replies.insert(id.clone(), node);
+        }
+        edges
+    }
 }
 
 fn edge(kind: &str, from: &str, to: &str) -> Value {
@@ -138,5 +207,96 @@ mod tests {
             relations(&edges(7, &identity, None)),
             [("in_thread", "exchange:7", "thread:t1")]
         );
+    }
+
+    fn step(thread: &str, exchange: u64, n: u64) -> Step {
+        Step {
+            thread: Some(thread.into()),
+            exchange,
+            n,
+            turn: None,
+            previous_message_id: None,
+            message_id: None,
+        }
+    }
+
+    #[test]
+    fn a_step_in_a_turn_gives_a_turn_edge() {
+        // It links the step to the turn its request named
+        let mut threads = Threads::default();
+        let step = Step {
+            turn: Some("u1".into()),
+            ..step("t1", 7, 2)
+        };
+
+        assert_eq!(relations(&threads.edges(&step)), [("turn", "step:7.2", "turn:u1")]);
+    }
+
+    #[test]
+    fn a_later_step_on_a_thread_continues_the_one_before_it() {
+        // Without a previous message id it follows arrival order, across exchanges and within a socket
+        let mut threads = Threads::default();
+
+        let first = threads.edges(&step("t1", 7, 1));
+        let second = threads.edges(&step("t1", 7, 2));
+        let third = threads.edges(&step("t1", 8, 1));
+        let other = threads.edges(&step("t2", 9, 1));
+
+        assert!(first.is_empty() && other.is_empty());
+        assert_eq!(relations(&second), [("continues", "step:7.2", "step:7.1")]);
+        assert_eq!(relations(&third), [("continues", "step:8.1", "step:7.2")]);
+    }
+
+    #[test]
+    fn a_previous_message_id_continues_the_step_that_replied_with_it() {
+        // It follows the id, not arrival order, and skips a step whose reply it never saw
+        let mut threads = Threads::default();
+        let reply = |exchange, message_id: &str| Step {
+            message_id: Some(message_id.into()),
+            ..step("t1", exchange, 1)
+        };
+        threads.edges(&reply(1, "m1"));
+        threads.edges(&reply(2, "m2"));
+
+        let follows_first = Step {
+            previous_message_id: Some("m1".into()),
+            ..step("t1", 3, 1)
+        };
+        let follows_unknown = Step {
+            previous_message_id: Some("gone".into()),
+            ..step("t1", 4, 1)
+        };
+
+        assert_eq!(
+            relations(&threads.edges(&follows_first)),
+            [("continues", "step:3.1", "step:1.1")]
+        );
+        assert!(threads.edges(&follows_unknown).is_empty());
+    }
+
+    #[test]
+    fn a_step_without_a_thread_gives_no_continues_edge() {
+        // It cannot be ordered against anything
+        let mut threads = Threads::default();
+        let nameless = Step {
+            thread: None,
+            ..step("t1", 7, 1)
+        };
+
+        threads.edges(&nameless);
+
+        assert!(threads.edges(&nameless).is_empty());
+    }
+
+    #[test]
+    fn the_tracker_forgets_the_oldest_thread_past_its_bound() {
+        // It keeps at most THREAD_BOUND threads, so a long run does not grow without limit
+        let mut threads = Threads::default();
+        threads.edges(&step("first", 1, 1));
+        for exchange in 2..=THREAD_BOUND as u64 + 1 {
+            threads.edges(&step(&format!("t{exchange}"), exchange, 1));
+        }
+
+        assert!(threads.edges(&step("first", 9999, 1)).is_empty());
     }
 }

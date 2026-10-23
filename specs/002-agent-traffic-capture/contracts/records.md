@@ -6,7 +6,7 @@ Consumer: any application that reads the JSONL tap file. One JSON object per lin
 
 | `event` | `payload` | When |
 |---------|-----------|------|
-| `conversation` | `{system, tools, messages}`, plus `partial: true` and `warmup: true` when they apply (Codex), and `previous_message_id` when the request body has `diagnostics.previous_message_id` (Claude Code) | The request body is complete |
+| `conversation` | `{system, tools, messages}`, plus `partial: true` and `warmup: true` when they apply (Codex), `previous_message_id` when the request body has `diagnostics.previous_message_id` (Claude Code), and `step` (Codex: 1-based request count on the socket) and `turn` (Codex: `client_metadata.turn_id` when the request has one) | The request body is complete |
 | `block_start` | `{index, kind, id?, name?}` where kind is `text`, `reasoning` or `tool_call` | A reply block begins |
 | `block_delta` | `{index, text?, input_json?, signature?, encrypted?}` | A chunk of a reply block arrives |
 | `block_stop` | `{index}` | A reply block ends |
@@ -15,7 +15,7 @@ Consumer: any application that reads the JSONL tap file. One JSON object per lin
 | `error` | `{error_type}` | The upstream reports an error. No message text. |
 | `unparsed` | `{side}` where side is `request` or `reply` | The request or reply could not be read (too large, or still compressed) |
 | `unsupported` | `{host, path, label?}` | A claimed host's adapter declined to read the request. The bytes were relayed untouched. No content. |
-| `edge` | `{kind, from, to, branch?}` | One relation of the exchange, written after `exchange_start`: `in_project` (session to project, with the branch), `in_session` (thread to session), `in_thread` (exchange to thread), `spawned` (thread to parent thread). Nodes are named `project:<id>`, `session:<id>`, `thread:<id>`, `exchange:<n>`. Only ids from request headers; an edge whose ends are unknown is not written. |
+| `edge` | `{kind, from, to, branch?}` | One relation of the exchange, written after `exchange_start`: `in_project` (session to project, with the branch), `in_session` (thread to session), `in_thread` (exchange to thread), `spawned` (thread to parent thread). Nodes are named `project:<id>`, `session:<id>`, `thread:<id>`, `exchange:<n>`. Only ids from request headers; an edge whose ends are unknown is not written. After each `record` the exchange also writes, per step, `turn` (`step:<exchange>.<n>` to `turn:<id>`) and `continues` (the step to the step before it on the thread: the one whose reply `message_id` equals this request's `previous_message_id`, else the thread's last step). The thread state is bounded at 1024 threads. |
 | `tunnel` | `{host, port, label?}` | A connection to a host no adapter claims was tunnelled, unread. Adapter name `none`. |
 
 `exchange_start` and `tunnel`/`unsupported` carry `label: {command, dir}` only when the connection told the proxy which agent command and directory started it (see the wrappers in the README); it is metadata, not message content.
@@ -24,7 +24,7 @@ Consumer: any application that reads the JSONL tap file. One JSON object per lin
 
 | `event` | `payload` |
 |---------|-----------|
-| `record` | `{conversation, reply: {message, usage, stop_reason, message_id?}, incomplete, dropped, project?, session?, thread?}` |
+| `record` | `{conversation, reply: {message, usage, stop_reason, message_id?}, incomplete, dropped, step, turn?, project?, session?, thread?}`; `step` is the conversation's step, 1 when it names none (Claude Code); `turn` is the conversation's turn, else the exchange's header turn. A turn id groups replies; it does not say the turn ended |
 
 ## Guarantees
 
