@@ -73,6 +73,11 @@ impl Recorder {
                 record[key] = json!(id);
             }
         }
+        if record.get("turn").is_none() {
+            if let Some(turn) = &self.identity.turn {
+                record["turn"] = json!(turn);
+            }
+        }
         record
     }
 

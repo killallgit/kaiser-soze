@@ -10,6 +10,7 @@ pub struct CodexParser {
     pub(super) history: History,
     request: RequestBuffer,
     response_encoded: bool,
+    steps: u64,
     sse: SseSplitter,
 }
 
@@ -19,6 +20,7 @@ impl CodexParser {
             history: History::default(),
             request: RequestBuffer::new(request_encoded),
             response_encoded: false,
+            steps: 0,
             sse: SseSplitter::default(),
         }
     }
@@ -26,7 +28,15 @@ impl CodexParser {
     pub(super) fn request_events(&mut self, body: &[u8], start: u64, end: u64) -> Vec<TapEvent> {
         let event = match serde_json::from_slice::<Value>(body) {
             Ok(json) if json["type"].as_str().is_some_and(|kind| kind != "response.create") => return Vec::new(),
-            Ok(json) => self.history.join(&json),
+            Ok(json) => {
+                self.steps += 1;
+                let mut event = self.history.join(&json);
+                event.payload["step"] = self.steps.into();
+                if let Some(turn) = json["client_metadata"]["turn_id"].as_str() {
+                    event.payload["turn"] = turn.into();
+                }
+                event
+            }
             Err(_) => {
                 self.history.broken = true;
                 unparsed(Side::Request)

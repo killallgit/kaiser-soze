@@ -134,7 +134,7 @@ async fn concurrent_exchanges_of_both_agents_stay_separate_and_share_one_shape()
         assert_eq!(fold(&lines, exchange), records);
         let mut fields: Vec<&String> = records[0].as_object().unwrap().keys().collect();
         fields.sort();
-        assert_eq!(fields, ["conversation", "dropped", "incomplete", "reply"]);
+        assert_eq!(fields, ["conversation", "dropped", "incomplete", "reply", "step"]);
         texts.push(
             records[0]["reply"]["message"]["blocks"][0]["text"]
                 .as_str()

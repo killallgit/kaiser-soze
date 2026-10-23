@@ -244,6 +244,49 @@ async fn a_record_carries_the_ids_the_recorder_knows() {
 }
 
 #[tokio::test]
+async fn a_record_carries_the_turn_its_exchange_belongs_to() {
+    // It groups replies of one user turn without saying the turn ended
+    let known = Identity {
+        turn: Some("p1".into()),
+        ..Identity::default()
+    };
+
+    let lines = run_recorded(closed_reply(), |recorder| recorder.knowing(known)).await;
+
+    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+    assert_eq!(record["payload"]["turn"], "p1");
+    assert!(lines
+        .iter()
+        .filter(|line| line["event"] != "record")
+        .all(|line| line["payload"].get("turn").is_none()));
+}
+
+#[tokio::test]
+async fn a_record_takes_its_step_and_turn_from_its_own_request() {
+    // A later Codex step names its own turn; a request that names none is step 1 of the header turn
+    let known = Identity {
+        turn: Some("u1".into()),
+        ..Identity::default()
+    };
+    let mut later = closed_reply();
+    later[0].payload["step"] = json!(2);
+    later[0].payload["turn"] = json!("u2");
+
+    let stepped = run_recorded(later, |recorder| recorder.knowing(known.clone())).await;
+    let plain = run_recorded(closed_reply(), |recorder| recorder.knowing(known)).await;
+
+    let record = |lines: &[Value]| lines.iter().find(|line| line["event"] == "record").unwrap()["payload"].clone();
+    assert_eq!(
+        (record(&stepped)["step"].clone(), record(&stepped)["turn"].clone()),
+        (json!(2), json!("u2"))
+    );
+    assert_eq!(
+        (record(&plain)["step"].clone(), record(&plain)["turn"].clone()),
+        (json!(1), json!("u1"))
+    );
+}
+
+#[tokio::test]
 async fn a_record_waits_for_a_lookup_that_finishes_after_the_reply() {
     // It carries the project found while the record was already due
     let lines = run_recorded(closed_reply(), |recorder| {

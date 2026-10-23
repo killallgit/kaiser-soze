@@ -6,7 +6,7 @@ Consumer: any application that reads the JSONL tap file. One JSON object per lin
 
 | `event` | `payload` | When |
 |---------|-----------|------|
-| `conversation` | `{system, tools, messages}`, plus `partial: true` and `warmup: true` when they apply (Codex), and `previous_message_id` when the request body has `diagnostics.previous_message_id` (Claude Code) | The request body is complete |
+| `conversation` | `{system, tools, messages}`, plus `partial: true` and `warmup: true` when they apply (Codex), `previous_message_id` when the request body has `diagnostics.previous_message_id` (Claude Code), and `step` (Codex: 1-based request count on the socket) and `turn` (Codex: `client_metadata.turn_id` when the request has one) | The request body is complete |
 | `block_start` | `{index, kind, id?, name?}` where kind is `text`, `reasoning` or `tool_call` | A reply block begins |
 | `block_delta` | `{index, text?, input_json?, signature?, encrypted?}` | A chunk of a reply block arrives |
 | `block_stop` | `{index}` | A reply block ends |
@@ -24,7 +24,7 @@ Consumer: any application that reads the JSONL tap file. One JSON object per lin
 
 | `event` | `payload` |
 |---------|-----------|
-| `record` | `{conversation, reply: {message, usage, stop_reason, message_id?}, incomplete, dropped, project?, session?, thread?}` |
+| `record` | `{conversation, reply: {message, usage, stop_reason, message_id?}, incomplete, dropped, step, turn?, project?, session?, thread?}`; `step` is the conversation's step, 1 when it names none (Claude Code); `turn` is the conversation's turn, else the exchange's header turn. A turn id groups replies; it does not say the turn ended |
 
 ## Guarantees
 

@@ -183,6 +183,38 @@ fn maps_a_websocket_request_message_like_an_http_body() {
 }
 
 #[test]
+fn each_request_on_a_socket_is_the_next_step_and_names_its_own_turn() {
+    // Two prompts on one socket land in different turns; a request without a turn names none
+    let mut parser = parser();
+    let mut conversation = |body: Value| {
+        let text = body.to_string();
+        let events = parser.feed(TapInput::WsMessage {
+            from_client: true,
+            text,
+            start: 0,
+            end: 1,
+        });
+        events[0].payload.clone()
+    };
+
+    let first = conversation(json!({"type":"response.create","input":[],"client_metadata":{"turn_id":"u1"}}));
+    let second = conversation(json!({"type":"response.create","input":[],"client_metadata":{"turn_id":"u1"}}));
+    let third = conversation(json!({"type":"response.create","input":[],"client_metadata":{"turn_id":"u2"}}));
+    let bare = conversation(json!({"type":"response.create","input":[]}));
+
+    assert_eq!(
+        [&first["step"], &second["step"], &third["step"]],
+        [&json!(1), &json!(2), &json!(3)]
+    );
+    assert_eq!(
+        [&first["turn"], &second["turn"], &third["turn"]],
+        [&json!("u1"), &json!("u1"), &json!("u2")]
+    );
+    assert_eq!(bare["step"], 4);
+    assert!(bare.get("turn").is_none());
+}
+
+#[test]
 fn moves_developer_and_system_items_to_system_and_leaves_messages() {
     // It keeps them in order as text entries and out of messages
     let body = br#"{"input":[
