@@ -1,12 +1,13 @@
 use super::*;
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
 use crate::graph::Identity;
+use crate::graph::Threads;
 use crate::sink::Sink;
 use bytes::Bytes;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 struct BlocksUntilReleased {
@@ -283,6 +284,43 @@ async fn a_record_takes_its_step_and_turn_from_its_own_request() {
     assert_eq!(
         (record(&plain)["step"].clone(), record(&plain)["turn"].clone()),
         (json!(1), json!("u1"))
+    );
+}
+
+#[tokio::test]
+async fn a_record_writes_the_turn_and_continues_edges_of_its_step() {
+    // A second exchange on the same thread continues the first, and both name their turn
+    let known = |turn: &str| Identity {
+        thread: Some("t1".into()),
+        turn: Some(turn.into()),
+        ..Identity::default()
+    };
+    let threads = Arc::new(Mutex::new(Threads::default()));
+    let edges = |lines: &[Value]| -> Vec<(String, String, String)> {
+        lines
+            .iter()
+            .filter(|line| {
+                line["event"] == "edge" && ["turn", "continues"].contains(&line["payload"]["kind"].as_str().unwrap())
+            })
+            .map(|line| ["kind", "from", "to"].map(|key| line["payload"][key].as_str().unwrap().to_string()))
+            .map(|[kind, from, to]| (kind, from, to))
+            .collect()
+    };
+
+    let first = run_recorded(closed_reply(), |r| r.knowing(known("u1")).tracking(threads.clone())).await;
+    let second = run_recorded(closed_reply(), |mut r| {
+        r.exchange = 2;
+        r.knowing(known("u1")).tracking(threads.clone())
+    })
+    .await;
+
+    assert_eq!(edges(&first), [("turn".into(), "step:1.1".into(), "turn:u1".into())]);
+    assert_eq!(
+        edges(&second),
+        [
+            ("turn".into(), "step:2.1".into(), "turn:u1".into()),
+            ("continues".into(), "step:2.1".into(), "step:1.1".into())
+        ]
     );
 }
 
