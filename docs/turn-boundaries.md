@@ -2,11 +2,22 @@
 
 Answers kaiser-soze-168.2 (user-turn boundaries for the verbal-kint consumer). Status words: **observed** means the wire carries it and soze writes it; **inferred** means a consumer can guess it from observed data; **unavailable** means no traffic shows it.
 
+## What soze writes
+
+The **tap** is the one file `soze` writes (`tap.jsonl`), one JSON event per line. For each reply it holds two forms of the same data:
+
+- **Live events** (`conversation`, `block_delta`, `reply_end`, and so on) arrive as the reply streams.
+- **One `record`** is the common-schema object for that reply, built by folding the live events together. Consumers that want a finished reply read the `record`.
+
+`edge` lines in the same file link records into the graph. There is no second output.
+
+Codex has an internal helper, the **conversation rebuild** (`History` in `src/codex/history.rs`). Codex over WebSocket sends only new items plus a `previous_response_id`, so the parser joins them onto the running conversation to fill `record.conversation` in full. It is not an output. It keeps the last reply's id only to detect a request that does not chain, and it does not write that id to the tap.
+
 ## Three identities
 
 | Unit | Meaning | Claude Code | Codex |
 |---|---|---|---|
-| Reply | one model response | `message_id` on `reply_end` and `record.reply` (observed) | the response id is read to chain history but not written to the tap (unavailable today) |
+| Reply | one model response | `message_id` on `reply_end` and `record.reply` (observed) | the response id is read by the conversation rebuild but not written to the tap (unavailable today; the fix is a `message_id` on the Codex `reply_end`) |
 | Step | one request and its reply | always `step` 1 (observed) | `step` counts requests on the socket, from 1 (observed) |
 | User turn | everything answering one prompt | `x-claude-code-prompt-id` header (observed; expected stable across a tool loop, not yet checked live) | `turn_id`: header for the first request, `client_metadata.turn_id` in each later body (observed) |
 
@@ -34,7 +45,7 @@ A turn id **groups** replies. It never says the turn **ended**. `reply_end` and 
 
 - Turn completion, permission waits and session end: a harness hook or wrapper signal (168.3).
 - A stable key for resume and for "newest turn": exchange ids restart per run, so catch-up must key on thread plus turn plus step with a time order, or on a message id for Claude Code. Choosing it belongs to the delivery contract (168.4).
-- The Codex reply id: add it to the tap if consumers need it.
+- The Codex reply id: write it as `message_id` on the Codex `reply_end`, as Claude Code already does.
 
 ## Catch-up without skips or duplicates
 
