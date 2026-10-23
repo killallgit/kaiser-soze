@@ -96,6 +96,14 @@ pub fn reply_end(stop_reason: Value) -> TapEvent {
     live("reply_end", json!({"stop_reason": stop_reason}))
 }
 
+pub fn reply_end_of_message(stop_reason: Value, message_id: Value) -> TapEvent {
+    let mut event = reply_end(stop_reason);
+    if !message_id.is_null() {
+        event.payload["message_id"] = message_id;
+    }
+    event
+}
+
 pub fn error(error_type: Value) -> TapEvent {
     live("error", json!({"error_type": error_type}))
 }

@@ -179,6 +179,19 @@ fn maps_a_messages_request_split_across_chunks_to_a_conversation() {
 }
 
 #[test]
+fn the_previous_message_id_in_the_request_diagnostics_rides_on_the_conversation() {
+    // It carries diagnostics.previous_message_id and leaves it out when the body has none
+    let with_id = br#"{"messages":[],"diagnostics":{"previous_message_id":"msg_0"}}"#;
+    let without_id = br#"{"messages":[],"diagnostics":{}}"#;
+
+    let linked = request(with_id, 64);
+    let unlinked = request(without_id, 64);
+
+    assert_eq!(linked[0].payload["previous_message_id"], "msg_0");
+    assert!(unlinked[0].payload.get("previous_message_id").is_none());
+}
+
+#[test]
 fn an_image_inside_a_tool_result_becomes_a_reference() {
     // It never copies the bytes of a nested image
     let body = br#"{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"see"},{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"QUJDREVGRw=="}}]}]}]}"#;
@@ -253,7 +266,26 @@ fn maps_a_text_stream_split_mid_line_and_mid_json() {
     assert_eq!(events[1].payload, json!({"index": 0, "kind": "text"}));
     assert_eq!(events[2].payload, json!({"index": 0, "text": "ok"}));
     assert_eq!(events[4].payload["output"], 4);
-    assert_eq!(events[5].payload, json!({"stop_reason": "end_turn"}));
+    assert_eq!(
+        events[5].payload,
+        json!({"stop_reason": "end_turn", "message_id": "msg_1"})
+    );
+}
+
+#[test]
+fn a_reply_without_a_message_start_ends_with_no_message_id() {
+    // It leaves message_id out of reply_end when the stream never named the message
+    let wire = sse(&[
+        (
+            "message_delta",
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#,
+        ),
+        ("message_stop", r#"{"type":"message_stop"}"#),
+    ]);
+
+    let events = stream(&wire, 64);
+
+    assert_eq!(events[1].payload, json!({"stop_reason": "end_turn"}));
 }
 
 #[test]

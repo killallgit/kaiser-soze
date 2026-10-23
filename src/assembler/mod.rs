@@ -42,6 +42,7 @@ struct Reply {
     skipped: HashSet<u64>,
     usage: Map<String, Value>,
     stop_reason: Value,
+    message_id: Value,
     bytes: usize,
     truncated: bool,
     unparsed: bool,
@@ -88,6 +89,7 @@ impl Assembler {
             "usage" => self.merge_usage(payload),
             "reply_end" => {
                 self.reply.stop_reason = payload["stop_reason"].clone();
+                self.reply.message_id = payload["message_id"].clone();
                 return vec![self.take_record(dropped, false)];
             }
             "unparsed" => self.reply.unparsed = true,
@@ -170,7 +172,7 @@ impl Assembler {
                 )
             })
             .collect();
-        json!({
+        let mut record = json!({
             "conversation": conversation,
             "reply": {
                 "message": message("assistant", blocks),
@@ -179,7 +181,11 @@ impl Assembler {
             },
             "incomplete": incomplete,
             "dropped": dropped,
-        })
+        });
+        if !reply.message_id.is_null() {
+            record["reply"]["message_id"] = reply.message_id;
+        }
+        record
     }
 }
 
