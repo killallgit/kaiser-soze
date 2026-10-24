@@ -1,3 +1,7 @@
+mod calls;
+
+pub use calls::Calls;
+
 use crate::project::Project;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
@@ -52,6 +56,10 @@ pub struct Step {
     pub turn: Option<String>,
     pub previous_message_id: Option<String>,
     pub message_id: Option<String>,
+    /// Call ids of the `tool_result` blocks in the request.
+    pub results: Vec<String>,
+    /// Ids of the `tool_call` blocks in the reply.
+    pub calls: Vec<String>,
 }
 
 #[derive(Default)]
@@ -60,15 +68,17 @@ struct Seen {
     replies: HashMap<String, String>,
 }
 
-/// Remembers the last step of each thread, bounded, so a step can say which one it continues.
+/// Remembers the last step and the open tool calls of each thread, bounded, so a step can say which
+/// step it continues and which call its results answer.
 #[derive(Default)]
 pub struct Threads {
     seen: HashMap<String, Seen>,
     order: VecDeque<String>,
+    calls: Calls,
 }
 
 impl Threads {
-    /// The `turn` and `continues` edges one finished step adds, then remembers the step.
+    /// The `turn`, `continues` and `calls` edges one finished step adds, then remembers the step.
     /// A previous message id continues the step that replied with it, or nothing when that
     /// reply is unknown; without one the step continues the thread's last step.
     pub fn edges(&mut self, step: &Step) -> Vec<Value> {
@@ -103,6 +113,7 @@ impl Threads {
             }
             seen.replies.insert(id.clone(), node);
         }
+        edges.extend(self.calls.edges(thread, &step.results, &step.calls));
         edges
     }
 }
@@ -219,6 +230,8 @@ mod tests {
             turn: None,
             previous_message_id: None,
             message_id: None,
+            results: Vec::new(),
+            calls: Vec::new(),
         }
     }
 

@@ -347,6 +347,61 @@ async fn a_later_step_that_names_no_turn_does_not_take_the_header_turn() {
 }
 
 #[tokio::test]
+async fn a_result_in_a_later_request_writes_one_calls_edge_for_its_call() {
+    // The first reply calls c1; the next request carries the result and the one after resends it
+    use crate::common::*;
+    let calling = vec![
+        conversation(json!("sys"), json!([]), vec![message("user", vec![text_block("hi")])]),
+        block_start(BlockStart {
+            index: 0,
+            kind: "tool_call",
+            id: json!("c1"),
+            name: json!("shell"),
+        }),
+        block_stop(0),
+        reply_end(json!("tool_use")),
+    ];
+    let answering = |extra: &str| {
+        let result = message("user", vec![tool_result_block(json!("c1"), json!("done"), false)]);
+        let mut events = closed_reply();
+        events[0] = conversation(
+            json!("sys"),
+            json!([]),
+            vec![result, message("user", vec![text_block(extra)])],
+        );
+        events
+    };
+    let threads = Arc::new(Mutex::new(Threads::default()));
+    let known = Identity {
+        thread: Some("t1".into()),
+        ..Identity::default()
+    };
+    let calls = |lines: &[Value]| -> Vec<(String, String)> {
+        lines
+            .iter()
+            .filter(|line| line["payload"]["kind"] == "calls")
+            .map(|line| ["from", "to"].map(|key| line["payload"][key].as_str().unwrap().to_string()))
+            .map(|[from, to]| (from, to))
+            .collect()
+    };
+    let run = |exchange: u64, events: Vec<TapEvent>| {
+        let (known, threads) = (known.clone(), threads.clone());
+        run_recorded(events, move |mut r| {
+            r.exchange = exchange;
+            r.knowing(known).tracking(threads)
+        })
+    };
+
+    let first = run(1, calling).await;
+    let second = run(2, answering("a")).await;
+    let third = run(3, answering("b")).await;
+
+    assert!(calls(&first).is_empty());
+    assert_eq!(calls(&second), [("call:c1".to_string(), "result:c1".to_string())]);
+    assert!(calls(&third).is_empty());
+}
+
+#[tokio::test]
 async fn a_record_waits_for_a_lookup_that_finishes_after_the_reply() {
     // It carries the project found while the record was already due
     let lines = run_recorded(closed_reply(), |recorder| {

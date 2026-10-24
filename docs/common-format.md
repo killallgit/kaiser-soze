@@ -65,7 +65,7 @@ Topology nodes are `project` (a git repository, the root), `session` (one run of
 | `spawned` | implemented | child thread to the parent thread that launched it | child sends `x-claude-code-request-class: subagent`, `x-claude-code-agent-id`, `x-claude-code-agent-type`, and `x-claude-code-parent-agent-id` when launched by another subagent (observed two levels) | child sends `x-codex-parent-thread-id` and `x-openai-subagent: collab_spawn`; the child has a new `thread-id` and the parent's `session-id`; also `parent_thread_id` in `x-codex-turn-metadata` (observed two levels) |
 | `continues` | implemented | exchange follows the previous exchange of its thread | `diagnostics.previous_message_id` against the earlier reply's `message.id` (both ids are captured in the tap as `previous_message_id` on `conversation` and `message_id` on `reply_end`; equal in one live run: the second request of a `claude -p --continue` pair named the first reply) | same `thread-id`, ordered by time (a socket carries many) |
 | `turn` | implemented | exchanges answering one user prompt | `x-claude-code-prompt-id` | `turn_id` in the `x-codex-turn-metadata` header and `client_metadata` |
-| `calls` | proposed | `tool_call` to its `tool_result` | `id` to `call_id` | `call_id` |
+| `calls` | implemented | `tool_call` to its `tool_result` | `id` to `call_id` | `call_id` |
 | `follows`, `contains` | no new data | order of messages, nesting of blocks | by position | by position |
 
 - The subagent shares its parent's session id in both harnesses, so `in_session` alone does not separate agents. `in_thread` and `spawned` do.

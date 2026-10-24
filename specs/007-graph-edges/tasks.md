@@ -23,7 +23,7 @@ Order inside a task pair: the test task first, and it must fail before the code 
 
 ## Phase 3: US3, tool calls (P2)
 
-- [ ] T014 [US3] Add failing tests, then implement, `calls`: a `tool_call` block id seen in a reply and a `tool_result` `call_id` in a later request of the same thread give one edge; an unmatched result or call gives none. Bounded state of 4096 open calls per run.
+- [x] T014 [US3] Add failing tests, then implement, `calls`: a `tool_call` block id seen in a reply and a `tool_result` `call_id` in a later request of the same thread give one edge; an unmatched result or call gives none. Bounded state of 4096 open calls per run.
 
 ## Phase 4: Polish
 
