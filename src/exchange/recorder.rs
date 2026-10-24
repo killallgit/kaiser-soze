@@ -143,7 +143,24 @@ impl Recorder {
             turn: text(&record["turn"]),
             previous_message_id: text(&record["conversation"]["previous_message_id"]),
             message_id: text(&record["reply"]["message_id"]),
+            results: block_ids(&record["conversation"]["messages"], "tool_result", "call_id"),
+            calls: block_ids(&record["reply"]["message"], "tool_call", "id"),
         };
         threads.lock().unwrap_or_else(PoisonError::into_inner).edges(&step)
     }
+}
+
+/// The `key` of each block of `kind` in a message or a list of messages.
+fn block_ids(messages: &Value, kind: &str, key: &str) -> Vec<String> {
+    let messages = match messages {
+        Value::Array(messages) => messages.as_slice(),
+        message => std::slice::from_ref(message),
+    };
+    messages
+        .iter()
+        .filter_map(|message| message["blocks"].as_array())
+        .flatten()
+        .filter(|block| block["kind"] == kind)
+        .filter_map(|block| block[key].as_str().map(String::from))
+        .collect()
 }

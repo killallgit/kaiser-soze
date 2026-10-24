@@ -1,4 +1,7 @@
+mod calls;
+
 use crate::project::Project;
+use calls::Calls;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 
@@ -52,6 +55,10 @@ pub struct Step {
     pub turn: Option<String>,
     pub previous_message_id: Option<String>,
     pub message_id: Option<String>,
+    /// Call ids of the `tool_result` blocks in the request.
+    pub results: Vec<String>,
+    /// Ids of the `tool_call` blocks in the reply.
+    pub calls: Vec<String>,
 }
 
 #[derive(Default)]
@@ -60,15 +67,17 @@ struct Seen {
     replies: HashMap<String, String>,
 }
 
-/// Remembers the last step of each thread, bounded, so a step can say which one it continues.
+/// Remembers the last step and the open tool calls of each thread, bounded, so a step can say which
+/// step it continues and which call its results answer.
 #[derive(Default)]
 pub struct Threads {
     seen: HashMap<String, Seen>,
     order: VecDeque<String>,
+    calls: Calls,
 }
 
 impl Threads {
-    /// The `turn` and `continues` edges one finished step adds, then remembers the step.
+    /// The `turn`, `continues` and `calls` edges one finished step adds, then remembers the step.
     /// A previous message id continues the step that replied with it, or nothing when that
     /// reply is unknown; without one the step continues the thread's last step.
     pub fn edges(&mut self, step: &Step) -> Vec<Value> {
@@ -103,6 +112,7 @@ impl Threads {
             }
             seen.replies.insert(id.clone(), node);
         }
+        edges.extend(self.calls.edges(thread, &step.results, &step.calls));
         edges
     }
 }
@@ -219,6 +229,8 @@ mod tests {
             turn: None,
             previous_message_id: None,
             message_id: None,
+            results: Vec::new(),
+            calls: Vec::new(),
         }
     }
 
@@ -322,5 +334,25 @@ mod tests {
 
         assert!(forgotten.is_empty());
         assert_eq!(relations(&newest).len(), 1);
+    }
+
+    #[test]
+    fn a_step_without_a_thread_gives_no_calls_edge() {
+        // A call can only be answered within its thread, so an unknown thread pairs nothing
+        let mut threads = Threads::default();
+        let calling = Step {
+            calls: vec!["c1".into()],
+            thread: None,
+            ..step("t1", 7, 1)
+        };
+        let answering = Step {
+            results: vec!["c1".into()],
+            thread: None,
+            ..step("t1", 8, 1)
+        };
+
+        threads.edges(&calling);
+
+        assert!(threads.edges(&answering).iter().all(|e| e["kind"] != "calls"));
     }
 }
