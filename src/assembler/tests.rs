@@ -264,3 +264,14 @@ fn the_reply_message_id_reaches_the_record_when_the_end_names_one() {
     assert_eq!(named_records[0]["reply"]["message_id"], "msg_1");
     assert!(unnamed_records[0]["reply"].get("message_id").is_none());
 }
+
+#[test]
+fn a_record_without_a_request_names_no_step() {
+    // An unparsed request leaves no step, so it cannot collide with the real first one
+    let mut assembler = Assembler::default();
+    let events = vec![unparsed(Side::Request), reply_end(json!("end_turn"))];
+
+    let records = feed(&mut assembler, events, 0);
+
+    assert!(records[0].get("step").is_none());
+}

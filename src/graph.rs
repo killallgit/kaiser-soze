@@ -40,6 +40,9 @@ pub fn edges(exchange: u64, identity: &Identity, project: Option<&Project>) -> V
 /// How many threads the tracker remembers before it forgets the least recently started one.
 pub const THREAD_BOUND: usize = 1024;
 
+/// How many reply ids one thread remembers; past it the thread forgets them all but the newest.
+pub const REPLY_BOUND: usize = 1024;
+
 /// One request and its reply: the unit `turn` and `continues` link.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Step {
@@ -53,7 +56,7 @@ pub struct Step {
 
 #[derive(Default)]
 struct Seen {
-    last: String,
+    last: Option<String>,
     replies: HashMap<String, String>,
 }
 
@@ -88,15 +91,14 @@ impl Threads {
         let seen = self.seen.entry(thread.clone()).or_default();
         let before = match &step.previous_message_id {
             Some(id) => seen.replies.get(id),
-            None if seen.last.is_empty() => None,
-            None => Some(&seen.last),
+            None => seen.last.as_ref(),
         };
         if let Some(before) = before {
             edges.push(edge("continues", &node, before));
         }
-        seen.last = node.clone();
+        seen.last = Some(node.clone());
         if let Some(id) = &step.message_id {
-            if seen.replies.len() >= THREAD_BOUND {
+            if seen.replies.len() >= REPLY_BOUND {
                 seen.replies.clear();
             }
             seen.replies.insert(id.clone(), node);
@@ -298,5 +300,27 @@ mod tests {
         }
 
         assert!(threads.edges(&step("first", 9999, 1)).is_empty());
+    }
+
+    #[test]
+    fn a_thread_forgets_old_reply_ids_past_its_bound_and_keeps_the_newest() {
+        // A request naming a forgotten reply gets no edge; one naming the newest still does
+        let mut threads = Threads::default();
+        for exchange in 1..=REPLY_BOUND as u64 + 1 {
+            threads.edges(&Step {
+                message_id: Some(format!("m{exchange}")),
+                ..step("t1", exchange, 1)
+            });
+        }
+        let after = |id: String| Step {
+            previous_message_id: Some(id),
+            ..step("t1", 9999, 1)
+        };
+
+        let forgotten = threads.edges(&after("m1".into()));
+        let newest = threads.edges(&after(format!("m{}", REPLY_BOUND + 1)));
+
+        assert!(forgotten.is_empty());
+        assert_eq!(relations(&newest).len(), 1);
     }
 }

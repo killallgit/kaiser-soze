@@ -3,7 +3,7 @@ use crate::graph::{Identity, Step, Threads};
 use crate::sink::Sink;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tokio::sync::watch;
 
@@ -81,7 +81,8 @@ impl Recorder {
                 record[key] = json!(id);
             }
         }
-        if record.get("turn").is_none() {
+        // The header turn is the first request's; a later step that names none may be a new turn.
+        if record.get("turn").is_none() && record["step"] == 1 {
             if let Some(turn) = &self.identity.turn {
                 record["turn"] = json!(turn);
             }
@@ -132,17 +133,17 @@ impl Recorder {
             return Vec::new();
         };
         let text = |value: &Value| value.as_str().map(String::from);
+        let Some(n) = record["step"].as_u64() else {
+            return Vec::new();
+        };
         let step = Step {
             thread: self.identity.thread.clone(),
             exchange: self.exchange,
-            n: record["step"].as_u64().unwrap_or(1),
+            n,
             turn: text(&record["turn"]),
             previous_message_id: text(&record["conversation"]["previous_message_id"]),
             message_id: text(&record["reply"]["message_id"]),
         };
-        threads
-            .lock()
-            .map(|mut threads| threads.edges(&step))
-            .unwrap_or_default()
+        threads.lock().unwrap_or_else(PoisonError::into_inner).edges(&step)
     }
 }

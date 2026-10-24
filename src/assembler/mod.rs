@@ -172,7 +172,7 @@ impl Assembler {
                 )
             })
             .collect();
-        let step = conversation["step"].as_u64().unwrap_or(1);
+        let step = (!conversation.is_null()).then(|| conversation["step"].as_u64().unwrap_or(1));
         let turn = conversation["turn"].clone();
         let mut record = json!({
             "conversation": conversation,
@@ -183,8 +183,10 @@ impl Assembler {
             },
             "incomplete": incomplete,
             "dropped": dropped,
-            "step": step,
         });
+        if let Some(step) = step {
+            record["step"] = json!(step);
+        }
         if !turn.is_null() {
             record["turn"] = turn;
         }

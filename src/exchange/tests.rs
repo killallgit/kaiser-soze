@@ -325,6 +325,28 @@ async fn a_record_writes_the_turn_and_continues_edges_of_its_step() {
 }
 
 #[tokio::test]
+async fn a_later_step_that_names_no_turn_does_not_take_the_header_turn() {
+    // The header turn belongs to the first request of a socket; a later step may be a new turn
+    let known = Identity {
+        turn: Some("u1".into()),
+        ..Identity::default()
+    };
+    let mut later = closed_reply();
+    later[0].payload["step"] = json!(2);
+
+    let lines = run_recorded(later, |recorder| {
+        recorder
+            .knowing(known)
+            .tracking(Arc::new(Mutex::new(Threads::default())))
+    })
+    .await;
+
+    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+    assert!(record["payload"].get("turn").is_none());
+    assert!(lines.iter().all(|line| line["payload"]["kind"] != "turn"));
+}
+
+#[tokio::test]
 async fn a_record_waits_for_a_lookup_that_finishes_after_the_reply() {
     // It carries the project found while the record was already due
     let lines = run_recorded(closed_reply(), |recorder| {
