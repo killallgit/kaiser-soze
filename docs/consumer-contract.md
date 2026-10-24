@@ -24,11 +24,11 @@ vk owns the `Source` seam in `src/source.rs`. A source lists `Conversation { id,
 
 Soze keeps `project`, `session` and `thread` distinct and leaves interpretation of native ids in the adapters.
 
-- **Scope.** A conversation is `(adapter, thread id)`. Native ids come from the harness, so they survive a soze restart; exchange ids do not. Two harnesses cannot collide because the adapter name is part of the key.
-- **Main thread.** Claude Code's main agent sends no agent id, so its thread is the session id. A Codex main thread has no parent header. Both are defined by the *absence* of a header, and a missing header is also what an unidentified request looks like. Claude Code also sends other requests with no agent id (utility calls, and any request class other than `subagent`; the full set of classes is not verified).
-- **Proposal.** Add an explicit `role` per thread, set by the adapter only from positive evidence: `subagent` (observed today: Claude `request-class: subagent`, Codex `x-openai-subagent`), `main` (needs a header or a value proven to mean main, checked live), else `unknown`. vk lists and plays `main` only. `unknown` threads are never promoted to main.
+- **Scope.** A conversation is `(adapter, thread id)`. Native ids come from the harness, so they survive a soze restart; exchange ids do not. Two harnesses cannot collide because the adapter name is part of the key. Edge node ids (`thread:<id>`) carry no adapter, so the key is built from the `adapter` field of the tap line.
+- **Main thread.** Claude Code's main agent sends no agent id, so its thread is the session id. A Codex main thread has no parent header. Both are defined by the *absence* of a header, and a missing header is also what an unidentified request looks like. The adapter reads only `request-class: subagent`; any other value, and the set of classes Claude Code sends, is unverified. A `subagent` request that carries a session id but no agent id would get thread = parent = session, a `spawned` self-edge that no test covers.
+- **Proposal.** Add an explicit `role` per thread, set by the adapter only from positive evidence: `subagent` (Claude `request-class: subagent` is read by the code; Codex `x-openai-subagent` is in docs/common-format.md from Codex 0.163.0 but the code reads only `x-codex-parent-thread-id`), `main` (needs a header or value proven live to mean main; only a synthetic test uses `request-class: main` today), else `unknown`. vk lists and plays `main` only. `unknown` threads are never promoted to main.
 - **Catalog.** `title` is unknown, so vk shows `workspace` (directory, else project id and branch) plus start time, and soze offers no title. Worktrees of one repository share a project id and differ in directory and branch, so they stay separate conversations.
-- **Late or missing edges.** The edges are written after `exchange_start`, so a consumer briefly sees a thread with no role. Until the role is known the thread is `unknown`, not main.
+- **Late or missing edges.** Records already carry `session` and `thread`, so the thread is known at once; the edges are written after `exchange_start`, so the `role` would arrive after it. Until the role is known the thread is `unknown`, not main.
 - **Replacement (`/clear`).** A new session id in the same window is a new conversation. Soze cannot see the window, so `replaces` stays unset. A wrapper could link them (unverified).
 - **Restart.** Conversations come back by native id on their next request; soze cannot list idle sessions it has not seen traffic from, so the catalog is *observed traffic*, not a complete list of live sessions.
 
@@ -42,11 +42,11 @@ Walk: a main thread with two nested subagents gives three threads in one session
 | Tool running or permission wait | **unknown**: both look like a tool-call reply followed by silence | unknown, same |
 | Turn likely over | derived: a non-tool stop and no new request | derived: completed response with no tool call |
 | Session exited | unknown from traffic | unknown |
-| Capture loss | observed: `incomplete`, `dropped`, `refused` counts | same |
+| Capture loss | observed: `incomplete` and `dropped` on the record, and `tap_dropped` and `sink_dropped` on `exchange_end`. `dropped` is per exchange, so on a Codex socket it is cumulative across replies | same |
 | Soze or consumer disconnected | consumer side | consumer side |
 
 - **Permission wait vs long tool.** Traffic cannot separate them. Waiting-for-user needs a harness signal.
-- **Options.** (a) A supplemental signal path: a wrapper sends child-exit, and later a harness hook sends waiting/activity events into the same stream. (b) Keep vk's existing polling of harness state as transitional enrichment. Recommendation: (b) now, plus the wrapper exit signal, and design (a) for hooks later.
+- **Options.** (a) A supplemental signal path: a wrapper sends child-exit, and later a harness hook sends waiting/activity events into the same stream. (b) Keep vk's existing polling as transitional enrichment. That is the `claude agents --json` command, run every 1 s while busy and every 5 s otherwise, mapping `status` and `waitingFor` to `State` (an unknown status becomes Idle). It exists for Claude only, so Codex has nothing to keep. Recommendation: (b) now, plus the wrapper exit signal, and design (a) for hooks later.
 - **Reaching vk.** Traffic-derived activity should arrive as events (`activity: streaming | tool_pending | quiet`), not only as snapshots, with `stale` after a quiet interval. vk's `State` would gain an `Unknown` variant, and the phone list would need a way to show "unknown" instead of guessing idle.
 
 ## Delivery contract (168.4)
@@ -56,7 +56,7 @@ Required behaviors, independent of transport:
 | Behavior | Requirement | Gap today |
 |---|---|---|
 | Identity across restarts | records keyed by `(adapter, thread, turn, step)`, plus a run id because exchange ids restart | no run id |
-| Ordering | one total order per run (file order of the single sink); per-exchange order is preserved | no sequence number on lines |
+| Ordering | per-exchange order is preserved; across exchanges only file order, and the file is appended across runs with no run marker, so `wall_ms` is the only cross-run hint. Live lines can be dropped while records and edges are reliable, so file order is not gap-free | no sequence number on lines |
 | Schema compatibility | every stream starts with a schema version | none written |
 | Snapshot to live | a snapshot carries the cursor it was taken at; live resumes from that cursor | no cursor |
 | Resume | a consumer resumes from `(run, sequence)`; an unknown run restarts from a fresh snapshot | no cursor |
@@ -71,8 +71,8 @@ Walks: *join after answer* takes a snapshot then follows from its cursor; *updat
 ## Assistant text (168.5)
 
 - **Eligible prose.** `text` blocks of assistant replies on a `main` thread. Excluded: `reasoning`, `tool_call`, `tool_result`, `image`, and every subagent thread by default. No commentary/final marker is observed in either harness, so soze offers none.
-- **Committed blocks vs deltas.** The record is a committed whole reply; live `block_delta` events are incremental, with block indexes local to one reply. vk assumes whole append-only blocks, so the smallest compatible change is to deliver committed blocks only: a text block is eligible once its `block_stop` arrives. Revisions and corrections need a block key `(message_id, index)`, which Claude Code can give and Codex cannot yet.
-- **Traces** (synthetic): live text then its record, where the record replaces the live copy by `(message_id, index)`; an extended block, where a later delta of the same key appends; duplicated delivery, dropped by key; a missing delta, detected by the `dropped` count and `incomplete`, so the block is not played as final; a correction, which needs revision semantics soze does not have; several replies on one Codex socket, separated by `step`.
+- **Committed blocks vs deltas.** The record is a committed whole reply; live `block_delta` events are incremental, with block indexes local to one reply. vk assumes whole append-only blocks, so the smallest compatible change is to deliver committed blocks only: a text block is eligible once its `block_stop` arrives. The Claude `message_id` is read at `message_start` but written only on `reply_end`, after the deltas, so a live consumer cannot key deltas by it. Live text pairs with its record by `(exchange, step, index)`; `(message_id, index)` is a stable key only once the reply has ended, and Codex has no reply id yet.
+- **Traces** (synthetic): live text then its record, where the record replaces the live copy by `(exchange, step, index)`; an extended block, where a later delta of the same key appends; duplicated delivery, dropped by key (Claude Code only, and not for an interrupted reply, which has no `message_id`); a missing delta, detected by the `dropped` count and `incomplete`, so the block is not played as final; a correction, which needs revision semantics soze does not have; several replies on one Codex socket, separated by `step`.
 - **Belongs in vk:** prose eligibility, speech-specific text cleanup, and the main-only default. **Must survive normalization:** thread, role, turn, step, reply id, block index, run id, and the `incomplete` flag.
 - **Smallest vk change.** None to the `Source` trait. A soze `Source` maps a turn's committed text blocks to `Event::Turn` with `finished` set by a stated rule (derived, see Lifecycle); `Newest` maps to the newest closed turn.
 
