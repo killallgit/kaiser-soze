@@ -51,7 +51,9 @@ impl Adapter for CodexAdapter {
             session: owned("session-id"),
             thread: owned("thread-id"),
             parent_thread: owned("x-codex-parent-thread-id"),
-            turn: turn_metadata.and_then(|metadata| metadata["turn_id"].as_str().map(str::to_string)),
+            turn: turn_metadata
+                .and_then(|metadata| metadata["turn_id"].as_str().map(str::to_string))
+                .filter(|turn| !turn.is_empty()),
         }
     }
 }

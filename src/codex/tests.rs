@@ -53,6 +53,14 @@ fn the_turn_comes_from_the_turn_metadata_json() {
 }
 
 #[test]
+fn an_empty_turn_id_in_the_turn_metadata_names_no_turn() {
+    // The prewarm request sends turn_id as an empty string
+    let identity = identity_of(&[("x-codex-turn-metadata", r#"{"turn_id":"","session_id":"s9"}"#)]);
+
+    assert_eq!(identity.turn, None);
+}
+
+#[test]
 fn malformed_turn_metadata_gives_no_turn_and_keeps_the_rest() {
     // It still reads session and thread
     let identity = identity_of(&[
@@ -212,6 +220,21 @@ fn each_request_on_a_socket_is_the_next_step_and_names_its_own_turn() {
     );
     assert_eq!(bare["step"], 4);
     assert!(bare.get("turn").is_none());
+}
+
+#[test]
+fn a_request_with_an_empty_turn_id_names_no_turn() {
+    // The prewarm request is a step but belongs to no turn
+    let mut parser = parser();
+    let events = parser.feed(TapInput::WsMessage {
+        from_client: true,
+        text: json!({"type":"response.create","input":[],"client_metadata":{"turn_id":""}}).to_string(),
+        start: 0,
+        end: 1,
+    });
+
+    assert_eq!(events[0].payload["step"], 1);
+    assert!(events[0].payload.get("turn").is_none());
 }
 
 #[test]
