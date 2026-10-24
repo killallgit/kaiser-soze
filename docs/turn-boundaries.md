@@ -30,7 +30,7 @@ A turn id **groups** replies. It never says the turn **ended**. `reply_end` and 
 | Question | Answer |
 |---|---|
 | Is this reply the last of its turn? | **Inferred**: the stop reason is not a tool call (`end_turn` for Claude Code, a completed Codex response with no tool-call item). A hook, a subagent or a queued prompt can still follow, so it is a hint. |
-| Did the turn end with no final reply? | **Unavailable**: silence is a long tool, a permission wait, or a dead process (168.3). |
+| Did the turn end with no final reply? | **Unavailable**: silence is a long tool, a permission wait, or a dead process (168.3, waiting, activity and session-end signals). |
 | Did the user send a new prompt? | **Observed late**: a new turn id appears on the next request. Nothing shows it before then. |
 
 ## Walks
@@ -43,10 +43,10 @@ A turn id **groups** replies. It never says the turn **ended**. `reply_end` and 
 
 ## What needs another signal
 
-- Turn completion, permission waits and session end: a harness hook or wrapper signal (168.3).
-- A stable key for resume and for "newest turn": exchange ids restart per run, so catch-up must key on thread plus turn plus step with a time order, or on a message id for Claude Code. Choosing it belongs to the delivery contract (168.4).
+- Turn completion, permission waits and session end: a harness hook or wrapper signal (168.3, waiting, activity and session-end signals).
+- A stable key for resume and for "newest turn": exchange ids restart per run, so catch-up must key on thread plus turn plus step with a time order, or on a message id for Claude Code. Choosing it belongs to the delivery contract (168.4, delivery contract).
 - The Codex reply id: write it as `message_id` on the Codex `reply_end`, as Claude Code already does.
 
 ## Catch-up without skips or duplicates
 
-Latest catch-up is safe only if each reply has a key that survives a proxy restart. Claude Code has one (`message_id`). Codex does not yet. Until it does, a consumer joining after a restart can show a Codex reply twice or miss one; this is the open point for 168.4.
+Latest catch-up is safe only if each reply has a key that survives a proxy restart. Claude Code has one (`message_id`). Codex does not yet. Until it does, a consumer joining after a restart can show a Codex reply twice or miss one; this is the open point for 168.4 (delivery contract).
