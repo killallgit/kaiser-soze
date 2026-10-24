@@ -1,4 +1,5 @@
-use serde_json::{json, Value};
+use super::edge;
+use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 
 /// How many calls are remembered as open before the oldest is forgotten.
@@ -18,12 +19,12 @@ impl Calls {
     /// The step's own calls are remembered after its results, as the request comes first.
     pub fn edges(&mut self, thread: &str, results: &[String], calls: &[String]) -> Vec<Value> {
         let mut edges = Vec::new();
-        for id in results {
+        for id in results.iter().filter(|id| !id.is_empty()) {
             if self.open.remove(&(thread.to_string(), id.clone())).is_some() {
-                edges.push(json!({"kind": "calls", "from": format!("call:{id}"), "to": format!("result:{id}")}));
+                edges.push(edge("calls", &format!("call:{id}"), &format!("result:{id}")));
             }
         }
-        for id in calls {
+        for id in calls.iter().filter(|id| !id.is_empty()) {
             self.remember((thread.to_string(), id.clone()));
         }
         edges
@@ -92,6 +93,15 @@ mod tests {
         let mut calls = Calls::default();
 
         assert!(calls.edges("t1", &ids(&["gone"]), &ids(&["c1"])).is_empty());
+    }
+
+    #[test]
+    fn an_empty_id_is_ignored() {
+        // An empty id names nothing, so it cannot pair unrelated calls and results
+        let mut calls = Calls::default();
+        calls.edges("t1", &[], &ids(&[""]));
+
+        assert!(calls.edges("t1", &ids(&[""]), &[]).is_empty());
     }
 
     #[test]

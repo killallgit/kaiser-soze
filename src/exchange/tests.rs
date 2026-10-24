@@ -380,8 +380,10 @@ async fn a_result_in_a_later_request_writes_one_calls_edge_for_its_call() {
         lines
             .iter()
             .filter(|line| line["payload"]["kind"] == "calls")
-            .map(|line| ["from", "to"].map(|key| line["payload"][key].as_str().unwrap().to_string()))
-            .map(|[from, to]| (from, to))
+            .map(|line| {
+                let end = |key: &str| line["payload"][key].as_str().unwrap().to_string();
+                (end("from"), end("to"))
+            })
             .collect()
     };
     let run = |exchange: u64, events: Vec<TapEvent>| {

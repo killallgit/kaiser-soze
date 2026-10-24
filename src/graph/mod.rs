@@ -1,8 +1,7 @@
 mod calls;
 
-pub use calls::Calls;
-
 use crate::project::Project;
+use calls::Calls;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 
@@ -335,5 +334,25 @@ mod tests {
 
         assert!(forgotten.is_empty());
         assert_eq!(relations(&newest).len(), 1);
+    }
+
+    #[test]
+    fn a_step_without_a_thread_gives_no_calls_edge() {
+        // A call can only be answered within its thread, so an unknown thread pairs nothing
+        let mut threads = Threads::default();
+        let calling = Step {
+            calls: vec!["c1".into()],
+            thread: None,
+            ..step("t1", 7, 1)
+        };
+        let answering = Step {
+            results: vec!["c1".into()],
+            thread: None,
+            ..step("t1", 8, 1)
+        };
+
+        threads.edges(&calling);
+
+        assert!(threads.edges(&answering).iter().all(|e| e["kind"] != "calls"));
     }
 }
