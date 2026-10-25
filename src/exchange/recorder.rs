@@ -81,10 +81,8 @@ impl Recorder {
                 record[key] = json!(id);
             }
         }
-        if record.get("turn").is_none() {
-            if let Some(turn) = step.and_then(|step| step.turn.as_ref()) {
-                record["turn"] = json!(turn);
-            }
+        if let Some(turn) = step.and_then(|step| step.turn.as_ref()) {
+            record["turn"] = json!(turn);
         }
         record
     }

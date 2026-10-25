@@ -173,7 +173,7 @@ impl Assembler {
                 )
             })
             .collect();
-        let claimed = claimed(&conversation);
+        let claim = claimed(&conversation);
         let mut record = json!({
             "conversation": conversation,
             "reply": {
@@ -184,7 +184,7 @@ impl Assembler {
             "incomplete": incomplete,
             "dropped": dropped,
         });
-        if let Some(Claimed { step, turn }) = claimed {
+        if let Some(Claimed { step, turn }) = claim {
             record["step"] = json!(step);
             if let Some(turn) = turn {
                 record["turn"] = json!(turn);

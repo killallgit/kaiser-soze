@@ -88,7 +88,6 @@ mod tests {
 
     #[test]
     fn an_empty_turn_id_is_no_turn() {
-        // The prewarm request sends turn_id as an empty string
         assert_eq!(named_turn(Some("")), None);
         assert_eq!(named_turn(None), None);
         assert_eq!(named_turn(Some("u1")).as_deref(), Some("u1"));
@@ -153,6 +152,28 @@ mod tests {
         assert_eq!(step.message_id.as_deref(), Some("m2"));
         assert_eq!(step.results, ["c1", "c2"]);
         assert_eq!(step.calls, ["c3"]);
+    }
+
+    #[test]
+    fn a_conversation_that_states_no_step_claims_step_one() {
+        // A Claude request states no step, a Codex one states its own
+        let claude = claimed(&json!({"messages": []})).unwrap();
+        let codex = claimed(&json!({"step": 3, "turn": "u2"})).unwrap();
+
+        assert_eq!(claude, Claimed { step: 1, turn: None });
+        assert_eq!(
+            codex,
+            Claimed {
+                step: 3,
+                turn: Some("u2".into())
+            }
+        );
+    }
+
+    #[test]
+    fn no_conversation_claims_nothing() {
+        // A reply with no request in front of it claims no step
+        assert_eq!(claimed(&Value::Null), None);
     }
 
     #[test]
