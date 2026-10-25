@@ -1,1 +1,18 @@
 /CLAUDE.local.md
+# killall-agents:start
+/.claude/agents/builder.md
+/.claude/agents/grunt.md
+/.claude/agents/hall-monitor.md
+/.claude/agents/planner.md
+/.claude/agents/reviewer.md
+/.codex/agents/builder.toml
+/.codex/agents/grunt.toml
+/.codex/agents/hall-monitor.toml
+/.codex/agents/planner.toml
+/.codex/agents/reviewer.toml
+/.cursor/agents/builder.md
+/.cursor/agents/grunt.md
+/.cursor/agents/hall-monitor.md
+/.cursor/agents/planner.md
+/.cursor/agents/reviewer.md
+# killall-agents:end
