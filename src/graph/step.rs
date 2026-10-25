@@ -38,6 +38,21 @@ impl Step {
     }
 }
 
+/// The step and turn a request states for itself.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Claimed {
+    pub step: u64,
+    pub turn: Option<String>,
+}
+
+/// What a request claims, none without a conversation. A Claude exchange is one request, so it is step 1.
+pub fn claimed(conversation: &Value) -> Option<Claimed> {
+    (!conversation.is_null()).then(|| Claimed {
+        step: conversation["step"].as_u64().unwrap_or(1),
+        turn: conversation["turn"].as_str().map(String::from),
+    })
+}
+
 /// The turn a request names; an empty id, as a warm-up request sends, names none.
 pub fn named_turn(turn: Option<&str>) -> Option<String> {
     turn.filter(|turn| !turn.is_empty()).map(String::from)
