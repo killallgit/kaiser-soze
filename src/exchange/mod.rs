@@ -7,7 +7,7 @@ mod tee;
 mod tests;
 
 pub use clock::{Clock, Stamp};
-pub use recorder::{Recorder, PROJECT_WAIT};
+pub use recorder::{ProjectSignal, Recorder};
 pub use stats::Stats;
 pub use tap::ExchangeTap;
 pub use tee::{Side, TeeBody};

@@ -224,7 +224,7 @@ async fn a_record_carries_the_ids_the_recorder_knows() {
     };
 
     let lines = run_recorded(closed_reply(), |recorder| {
-        let recorder = recorder.knowing(known).awaiting_project(Duration::from_secs(5));
+        let recorder = recorder.knowing(known).awaiting_project();
         recorder.project_looked_up(Some("host/owner/repo".into()));
         recorder
     })
@@ -523,7 +523,7 @@ async fn a_claude_and_a_codex_exchange_write_these_exact_records_and_edges() {
 async fn a_record_waits_for_a_lookup_that_finishes_after_the_reply() {
     // It carries the project found while the record was already due
     let lines = run_recorded(closed_reply(), |recorder| {
-        let recorder = recorder.awaiting_project(Duration::from_secs(5));
+        let recorder = recorder.awaiting_project();
         let lookup = recorder.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -538,10 +538,30 @@ async fn a_record_waits_for_a_lookup_that_finishes_after_the_reply() {
 }
 
 #[tokio::test]
-async fn a_record_stops_waiting_for_a_lookup_that_never_finishes() {
-    // It is written without a project once the bound passes
+async fn a_record_waits_for_as_long_as_its_lookup_takes() {
+    // It carries a project that was settled long after the reply, as the lookup's own wait is the only bound
     let lines = run_recorded(closed_reply(), |recorder| {
-        recorder.awaiting_project(Duration::from_millis(20))
+        let recorder = recorder.awaiting_project();
+        let signal = recorder.project_signal();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            signal.settle(Some("host/owner/repo".into()));
+        });
+        recorder
+    })
+    .await;
+
+    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+    assert_eq!(record["payload"]["project"], "host/owner/repo");
+}
+
+#[tokio::test]
+async fn a_record_is_written_without_a_project_when_its_signal_is_dropped_unanswered() {
+    // It does not wait for a lookup that can no longer answer
+    let lines = run_recorded(closed_reply(), |recorder| {
+        let recorder = recorder.awaiting_project();
+        drop(recorder.project_signal());
+        recorder
     })
     .await;
 
@@ -550,12 +570,26 @@ async fn a_record_stops_waiting_for_a_lookup_that_never_finishes() {
 }
 
 #[tokio::test]
+async fn dropping_a_settled_signal_keeps_the_project() {
+    // It leaves the answer alone once the lookup gave one
+    let lines = run_recorded(closed_reply(), |recorder| {
+        let recorder = recorder.awaiting_project();
+        recorder.project_signal().settle(Some("host/owner/repo".into()));
+        recorder
+    })
+    .await;
+
+    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+    assert_eq!(record["payload"]["project"], "host/owner/repo");
+}
+
+#[tokio::test]
 async fn a_lookup_that_finds_nothing_lets_the_record_go_without_waiting() {
     // It does not wait out the bound once the lookup has answered
     let started = Instant::now();
 
     let lines = run_recorded(closed_reply(), |recorder| {
-        let recorder = recorder.awaiting_project(Duration::from_secs(30));
+        let recorder = recorder.awaiting_project();
         recorder.project_looked_up(None);
         recorder
     })

@@ -4,11 +4,7 @@ use crate::sink::Sink;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
 use tokio::sync::watch;
-
-/// How long a record waits for the project lookup before it is written without one.
-pub const PROJECT_WAIT: Duration = Duration::from_millis(250);
 
 /// `None` while the lookup runs; then `Some` of what it found.
 type ProjectLookup = Option<Option<String>>;
@@ -21,7 +17,6 @@ pub struct Recorder {
     pub(super) refused: Arc<AtomicU64>,
     pub(super) identity: Identity,
     pub(super) project: Arc<watch::Sender<ProjectLookup>>,
-    pub(super) project_wait: Duration,
     threads: Option<Arc<Mutex<Threads>>>,
 }
 
@@ -34,7 +29,6 @@ impl Recorder {
             refused: Arc::default(),
             identity: Identity::default(),
             project: Arc::new(watch::channel(Some(None)).0),
-            project_wait: Duration::ZERO,
             threads: None,
         }
     }
@@ -51,22 +45,23 @@ impl Recorder {
         self
     }
 
-    /// Makes this recorder's records wait up to `up_to` for `project_looked_up`.
-    pub fn awaiting_project(mut self, up_to: Duration) -> Self {
+    /// Makes this recorder's records wait for the project signal, which ends when it is settled or dropped.
+    pub fn awaiting_project(self) -> Self {
         self.project.send_replace(None);
-        self.project_wait = up_to;
         self
     }
 
-    /// Ends the wait: later records carry the project when one was found.
-    pub fn project_looked_up(&self, project: Option<String>) {
+    pub fn project_signal(&self) -> ProjectSignal {
+        ProjectSignal(self.clone())
+    }
+
+    pub(super) fn project_looked_up(&self, project: Option<String>) {
         self.project.send_replace(Some(project));
     }
 
     pub(super) async fn settled_project(&self) -> Option<String> {
         let mut lookup = self.project.subscribe();
-        let settled = tokio::time::timeout(self.project_wait, lookup.wait_for(Option::is_some)).await;
-        let found = settled.ok()?.ok()?.clone();
+        let found = lookup.wait_for(Option::is_some).await.ok()?.clone();
         found.flatten()
     }
 
@@ -131,5 +126,27 @@ impl Recorder {
             return Vec::new();
         };
         threads.lock().unwrap_or_else(PoisonError::into_inner).edges(step)
+    }
+}
+
+/// Ends a recorder's wait for its project: later records carry the project when `settle` gave one.
+/// Dropped unanswered, it settles with no project, so a record never waits for a lookup that cannot come.
+pub struct ProjectSignal(Recorder);
+
+impl ProjectSignal {
+    pub fn settle(self, project: Option<String>) {
+        self.0.project_looked_up(project);
+    }
+}
+
+impl Drop for ProjectSignal {
+    fn drop(&mut self) {
+        self.0.project.send_if_modified(|lookup| {
+            let unanswered = lookup.is_none();
+            if unanswered {
+                *lookup = Some(None);
+            }
+            unanswered
+        });
     }
 }

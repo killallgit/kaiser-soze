@@ -1,6 +1,6 @@
 use crate::adapter::{claims_host, Adapter, RequestHead, ResponseHead, TapInput};
 use crate::ca::Ca;
-use crate::exchange::{Clock, ExchangeTap, Recorder, Side, TeeBody, PROJECT_WAIT};
+use crate::exchange::{Clock, ExchangeTap, ProjectSignal, Recorder, Side, TeeBody};
 use crate::graph::{self, Identity, Threads};
 use crate::label::{self, Label};
 use crate::live::Live;
@@ -277,12 +277,13 @@ impl Tunnel {
         let identity = self.adapter.identity(head);
         let recorder = Recorder::new(proxy.sink.clone(), exchange, self.adapter.name())
             .knowing(identity.clone())
-            .awaiting_project(PROJECT_WAIT)
+            .awaiting_project()
             .tracking(proxy.threads.clone());
         let parser: Box<dyn crate::adapter::ExchangeParser> = match &proxy.shapes {
             Some(log) => Box::new(ShapedParser::new(log.clone(), parser, exchange, head)),
             None => parser,
         };
+        let signal = recorder.project_signal();
         let tap = ExchangeTap::spawn(recorder, proxy.clock, parser);
         tap.note(
             "exchange_start",
@@ -298,12 +299,12 @@ impl Tunnel {
                 self.label.as_ref(),
             ),
         );
-        self.note_edges(&tap, exchange, identity);
+        self.note_edges(&tap, exchange, identity, signal);
         tap
     }
 
     /// Finds the project, then writes the edges; forwarding never waits for either.
-    fn note_edges(&self, tap: &ExchangeTap, exchange: u64, identity: Identity) {
+    fn note_edges(&self, tap: &ExchangeTap, exchange: u64, identity: Identity, signal: ProjectSignal) {
         let tap = tap.clone();
         let projects = self.proxy.projects.clone();
         let dir = self.label.as_ref().map(|label| PathBuf::from(&label.dir));
@@ -312,7 +313,7 @@ impl Tunnel {
                 Some(dir) => projects.find(dir).await,
                 None => None,
             };
-            tap.project_looked_up(project.as_ref().map(|project| project.id.clone()));
+            signal.settle(project.as_ref().map(|project| project.id.clone()));
             for edge in graph::edges(exchange, &identity, project.as_ref()) {
                 tap.note_reliable("edge", edge).await;
             }

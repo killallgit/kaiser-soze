@@ -38,10 +38,6 @@ impl ExchangeTap {
         }
     }
 
-    pub fn project_looked_up(&self, project: Option<String>) {
-        self.recorder.project_looked_up(project);
-    }
-
     pub fn note(&self, kind: &str, payload: Value) {
         self.recorder.write(self.clock.stamp(), kind, payload, (0, 0));
     }
