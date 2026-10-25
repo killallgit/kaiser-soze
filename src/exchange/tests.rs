@@ -883,3 +883,91 @@ async fn a_note_alone_takes_the_next_exchange_id_and_carries_the_label() {
     );
     assert_eq!(kinds_of(&lines, 3), ["exchange_start", "exchange_end"]);
 }
+
+type Heads = Vec<(u16, Vec<(String, String)>)>;
+
+struct ReadsResponseHeads(Arc<Mutex<Heads>>);
+
+impl ExchangeParser for ReadsResponseHeads {
+    fn feed(&mut self, input: TapInput) -> Vec<TapEvent> {
+        if let TapInput::ResponseHead(head) = input {
+            self.0.lock().unwrap().push((head.status, head.headers));
+        }
+        Vec::new()
+    }
+}
+
+struct NotedHead {
+    line: Value,
+    heard_by_parser: Heads,
+    head_marked_arrived: bool,
+}
+
+async fn note_response_head(response: hyper::Response<()>) -> NotedHead {
+    let dir = tempfile::tempdir().unwrap();
+    let tap_file = dir.path().join("tap.jsonl");
+    let recorder = Recorder::new(Sink::open(&tap_file).await.unwrap(), 1, "test");
+    let heard = Arc::default();
+    let tap = ExchangeTap::spawn(
+        recorder,
+        Clock::start(),
+        Box::new(ReadsResponseHeads(Arc::clone(&heard))),
+    );
+    let stats = tap.stats.clone();
+
+    tap.note_response_head(&response);
+    drop(tap);
+    wait_for_exchange_end(&tap_file).await;
+
+    let line = lines(&tap_file)
+        .into_iter()
+        .find(|line| line["event"] == "response_head")
+        .unwrap();
+    let heard_by_parser = heard.lock().unwrap().clone();
+    NotedHead {
+        line,
+        heard_by_parser,
+        head_marked_arrived: stats.head_us.load(Ordering::Relaxed) != stats::UNSET,
+    }
+}
+
+fn response(status: u16, headers: &[(&str, &str)]) -> hyper::Response<()> {
+    let mut builder = hyper::Response::builder().status(status);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    builder.body(()).unwrap()
+}
+
+#[tokio::test]
+async fn a_response_head_is_written_with_redacted_headers_and_handed_to_the_parser() {
+    // It writes the status, version, transport and headers, and the parser gets the same status and headers
+    let noted = note_response_head(response(
+        200,
+        &[("content-type", "text/event-stream"), ("set-cookie", "id=1")],
+    ))
+    .await;
+
+    let headers = json!([["content-type", "text/event-stream"], ["set-cookie", "[redacted]"]]);
+    assert_eq!(
+        noted.line["payload"],
+        json!({"status": 200, "http_version": "HTTP/1.1", "transport": "sse", "headers": headers})
+    );
+    let headers: Vec<(String, String)> = serde_json::from_value(headers).unwrap();
+    assert_eq!(noted.heard_by_parser, [(200, headers)]);
+    assert!(noted.head_marked_arrived);
+}
+
+#[tokio::test]
+async fn a_response_head_names_its_transport() {
+    // It says websocket for a switch of protocols, sse for an event stream and http otherwise
+    let websocket = note_response_head(response(101, &[])).await;
+    let stream = note_response_head(response(200, &[("content-type", "text/event-stream; charset=utf-8")])).await;
+    let plain = note_response_head(response(200, &[("content-type", "application/json")])).await;
+
+    let transport = |noted: &NotedHead| noted.line["payload"]["transport"].clone();
+    assert_eq!(
+        [transport(&websocket), transport(&stream), transport(&plain)],
+        [json!("websocket"), json!("sse"), json!("http")]
+    );
+}

@@ -1,4 +1,4 @@
-use crate::adapter::{claims_host, Adapter, RequestHead, ResponseHead, TapInput};
+use crate::adapter::{claims_host, Adapter, RequestHead};
 use crate::ca::Ca;
 use crate::exchange::{ExchangeTap, Exchanges, Opening, Side, TeeBody};
 use crate::label::{self, Label};
@@ -215,7 +215,7 @@ impl Tunnel {
             return Ok(empty_response(StatusCode::BAD_GATEWAY));
         };
         if let Some(tap) = &tap {
-            note_response_head(tap, &res);
+            tap.note_response_head(&res);
         }
         if res.status() == StatusCode::SWITCHING_PROTOCOLS {
             if let Some(client_upgrade) = client_upgrade {
@@ -252,36 +252,6 @@ fn request_head(host: &str, req: &Request<Incoming>) -> RequestHead {
         path: req.uri().path().to_string(),
         headers: redact_headers(req.headers()),
     }
-}
-
-fn note_response_head(tap: &ExchangeTap, res: &Response<Incoming>) {
-    let headers = redact_headers(res.headers());
-    let content_type = res
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let transport = if res.status() == StatusCode::SWITCHING_PROTOCOLS {
-        "websocket"
-    } else if content_type.contains("event-stream") {
-        "sse"
-    } else {
-        "http"
-    };
-    tap.stats.response_head_arrived();
-    tap.note(
-        "response_head",
-        json!({
-            "status": res.status().as_u16(),
-            "http_version": format!("{:?}", res.version()),
-            "transport": transport,
-            "headers": headers,
-        }),
-    );
-    tap.send(TapInput::ResponseHead(ResponseHead {
-        status: res.status().as_u16(),
-        headers,
-    }));
 }
 
 fn empty_response(status: StatusCode) -> Response<Out> {

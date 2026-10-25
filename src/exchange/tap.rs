@@ -1,10 +1,12 @@
 use super::clock::{Clock, Stamp};
 use super::recorder::Recorder;
 use super::stats::Stats;
-use crate::adapter::{ExchangeParser, TapEvent, TapInput};
+use crate::adapter::{ExchangeParser, ResponseHead, TapEvent, TapInput};
 use crate::assembler::Assembler;
+use crate::redact::redact_headers;
 use crate::ws::WsDecoder;
 use bytes::Bytes;
+use hyper::{Response, StatusCode};
 use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -38,8 +40,39 @@ impl ExchangeTap {
         }
     }
 
-    pub fn note(&self, kind: &str, payload: Value) {
+    pub(super) fn note(&self, kind: &str, payload: Value) {
         self.recorder.write(self.clock.stamp(), kind, payload, (0, 0));
+    }
+
+    /// Writes the `response_head` line and hands the head to the parser.
+    pub fn note_response_head<B>(&self, res: &Response<B>) {
+        let headers = redact_headers(res.headers());
+        let content_type = res
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let transport = if res.status() == StatusCode::SWITCHING_PROTOCOLS {
+            "websocket"
+        } else if content_type.contains("event-stream") {
+            "sse"
+        } else {
+            "http"
+        };
+        self.stats.response_head_arrived();
+        self.note(
+            "response_head",
+            json!({
+                "status": res.status().as_u16(),
+                "http_version": format!("{:?}", res.version()),
+                "transport": transport,
+                "headers": headers,
+            }),
+        );
+        self.send(TapInput::ResponseHead(ResponseHead {
+            status: res.status().as_u16(),
+            headers,
+        }));
     }
 
     pub fn send(&self, input: TapInput) {
