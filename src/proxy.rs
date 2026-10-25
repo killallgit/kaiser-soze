@@ -4,7 +4,7 @@ use crate::exchange::{Clock, ExchangeTap, Recorder, Side, TeeBody, PROJECT_WAIT}
 use crate::graph::{self, Identity, Threads};
 use crate::label::{self, Label};
 use crate::live::Live;
-use crate::project::ProjectCache;
+use crate::project::{ProjectCache, ProjectLookups};
 use crate::redact::redact_headers;
 use crate::shape::{ShapeLog, ShapedParser};
 use crate::sink::Sink;
@@ -30,10 +30,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Semaphore;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-const MAX_PROJECT_LOOKUPS: usize = 4;
 const ACCEPT_RETRY: Duration = Duration::from_millis(50);
 
 type Out = UnsyncBoxBody<Bytes, hyper::Error>;
@@ -61,8 +59,7 @@ pub struct Proxy {
     shapes: Option<Arc<ShapeLog>>,
     clock: Clock,
     next_exchange: AtomicU64,
-    projects: Arc<ProjectCache>,
-    lookups: Arc<Semaphore>,
+    projects: ProjectLookups,
     threads: Arc<Mutex<Threads>>,
 }
 
@@ -106,8 +103,7 @@ impl Proxy {
             shapes,
             clock: Clock::start(),
             next_exchange: AtomicU64::new(1),
-            projects: Arc::new(projects),
-            lookups: Arc::new(Semaphore::new(MAX_PROJECT_LOOKUPS)),
+            projects: ProjectLookups::new(projects),
             threads: Arc::default(),
         }))
     }
@@ -306,28 +302,14 @@ impl Tunnel {
         tap
     }
 
-    /// Finds the project on a blocking thread, then writes the edges; forwarding never waits for either.
-    /// A lookup that outlasts `PROJECT_WAIT` finds nothing and keeps running, holding no part of the exchange
-    /// but one of `MAX_PROJECT_LOOKUPS` permits, so a hung filesystem cannot fill the blocking pool.
+    /// Finds the project, then writes the edges; forwarding never waits for either.
     fn note_edges(&self, tap: &ExchangeTap, exchange: u64, identity: Identity) {
         let tap = tap.clone();
         let projects = self.proxy.projects.clone();
-        let lookups = self.proxy.lookups.clone();
         let dir = self.label.as_ref().map(|label| PathBuf::from(&label.dir));
         tokio::spawn(async move {
-            let lookup = dir.and_then(|dir| {
-                let permit = lookups.try_acquire_owned().ok()?;
-                Some(tokio::task::spawn_blocking(move || {
-                    let _permit = permit;
-                    projects.project_for(&dir)
-                }))
-            });
-            let project = match lookup {
-                Some(lookup) => tokio::time::timeout(PROJECT_WAIT, lookup)
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .flatten(),
+            let project = match dir {
+                Some(dir) => projects.find(dir).await,
                 None => None,
             };
             tap.project_looked_up(project.as_ref().map(|project| project.id.clone()));
