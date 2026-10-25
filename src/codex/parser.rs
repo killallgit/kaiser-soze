@@ -32,7 +32,10 @@ impl CodexParser {
                 self.steps += 1;
                 let mut event = self.history.join(&json);
                 event.payload["step"] = self.steps.into();
-                if let Some(turn) = json["client_metadata"]["turn_id"].as_str() {
+                if let Some(turn) = json["client_metadata"]["turn_id"]
+                    .as_str()
+                    .filter(|turn| !turn.is_empty())
+                {
                     event.payload["turn"] = turn.into();
                 }
                 event
