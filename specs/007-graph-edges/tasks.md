@@ -27,8 +27,8 @@ Order inside a task pair: the test task first, and it must fail before the code 
 
 ## Phase 4: Polish
 
-- [ ] T015 [P] Update `specs/002-agent-traffic-capture/contracts/records.md` (the `edge` event, the record ids), `docs/common-format.md` (status), and `README.md`.
-- [ ] T016 Run `task check`.
+- [x] T015 [P] Update `specs/002-agent-traffic-capture/contracts/records.md` (the `edge` event, the record ids), `docs/common-format.md` (status), and `README.md`.
+- [x] T016 Run `task check`.
 - [ ] T017 One run per lane through the wrappers with `task dev` running: report edge counts by kind, the number of distinct nodes per kind, and that no message text is in the edges. Include one nested-subagent run per lane.
 
 ## Dependencies

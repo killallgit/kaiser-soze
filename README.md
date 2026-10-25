@@ -71,6 +71,7 @@ Each line has `exchange`, `adapter`, `event`, `mono_us`, `wall_ms`, `start`, `en
 
 - **Live events** are written as each chunk arrives: `conversation`, `block_start`, `block_delta`, `block_stop`, `usage`, `reply_end`, `error`.
 - **`record`** is one line per reply, written when it ends, with the whole conversation and reply. `incomplete` and `dropped` are set when events were lost or the stream was cut off.
+- **`edge`** is one relation between nodes (`project`, `session`, `thread`, `exchange`, `step`, `turn`, `call`, `result`) taken from request headers and ids, never message text: `in_project`, `in_session`, `in_thread`, `spawned`, `turn`, `continues`, `calls`. See [the graph](docs/common-format.md#the-graph).
 - **Images** are a reference, content type and size, never the bytes.
 - **`unsupported`** marks a request on a claimed host that the adapter does not read (host and path only). **`unparsed`** marks a body that could not be read: still encoded, or over 32 MiB.
 
