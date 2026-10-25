@@ -1,4 +1,5 @@
 mod clock;
+mod exchanges;
 mod recorder;
 mod stats;
 mod tap;
@@ -7,6 +8,7 @@ mod tee;
 mod tests;
 
 pub use clock::{Clock, Stamp};
+pub use exchanges::{Exchanges, Opening};
 pub use recorder::{ProjectSignal, Recorder};
 pub use stats::Stats;
 pub use tap::ExchangeTap;

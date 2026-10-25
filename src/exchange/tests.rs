@@ -1,7 +1,9 @@
 use super::*;
-use crate::adapter::{ExchangeParser, TapEvent, TapInput};
+use crate::adapter::{Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
 use crate::graph::Identity;
 use crate::graph::Threads;
+use crate::label::Label;
+use crate::project::{ProjectCache, ProjectLookups};
 use crate::sink::Sink;
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -601,20 +603,17 @@ async fn a_lookup_that_finds_nothing_lets_the_record_go_without_waiting() {
 }
 
 #[tokio::test]
-async fn a_reliable_note_waits_for_room_in_a_full_queue() {
-    // It delivers the line once the queue drains, where a plain note would drop it
+async fn a_reliable_write_waits_for_room_in_a_full_queue() {
+    // It delivers the line once the queue drains, where a plain write would drop it
     let (sink, mut drained) = Sink::detached(1);
     let recorder = Recorder::new(sink, 1, "test");
-    let tap = ExchangeTap::spawn(
-        recorder.clone(),
-        Clock::start(),
-        Box::new(Emits {
-            events: Vec::new(),
-            release: None,
-        }),
-    );
     recorder.write(Clock::start().stamp(), "filler", json!({}), (0, 0));
-    let noted = tokio::spawn(async move { tap.note_reliable("edge", json!({"kind": "in_thread"})).await });
+    let writer = recorder.clone();
+    let written = tokio::spawn(async move {
+        writer
+            .write_reliable(Clock::start().stamp(), "edge", json!({"kind": "in_thread"}))
+            .await
+    });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
     let mut kinds = Vec::new();
@@ -625,7 +624,7 @@ async fn a_reliable_note_waits_for_room_in_a_full_queue() {
         }
     }
 
-    noted.await.unwrap();
+    written.await.unwrap();
     assert_eq!(kinds, ["filler", "edge"]);
 }
 
@@ -711,4 +710,176 @@ async fn a_stalled_parser_gives_an_incomplete_record_that_counts_the_dropped_inp
     let record = lines.iter().find(|line| line["event"] == "record").unwrap();
     assert!(record["payload"]["dropped"].as_u64().unwrap() > 0);
     assert_eq!(record["payload"]["incomplete"], true);
+}
+
+struct Identifying(Identity);
+
+impl Adapter for Identifying {
+    fn name(&self) -> &'static str {
+        "test"
+    }
+    fn hosts(&self) -> &[String] {
+        &[]
+    }
+    fn claim(&self, _head: &RequestHead) -> Option<Box<dyn ExchangeParser>> {
+        None
+    }
+    fn identity(&self, _head: &RequestHead) -> Identity {
+        self.0.clone()
+    }
+}
+
+fn in_session_and_thread() -> Identifying {
+    Identifying(Identity {
+        session: Some("s1".into()),
+        thread: Some("t1".into()),
+        ..Identity::default()
+    })
+}
+
+fn nobody() -> Identifying {
+    Identifying(Identity::default())
+}
+
+fn labelled(dir: &str) -> Label {
+    Label {
+        command: "claude".into(),
+        dir: dir.into(),
+    }
+}
+
+fn begin(exchanges: &Exchanges, adapter: &dyn Adapter, label: Option<&Label>) -> ExchangeTap {
+    let head = RequestHead {
+        method: "POST".into(),
+        host: "example.com".into(),
+        path: "/v1/messages".into(),
+        headers: Vec::new(),
+    };
+    exchanges.begin(Opening {
+        adapter,
+        head: &head,
+        parser: Box::new(Emits {
+            events: Vec::new(),
+            release: None,
+        }),
+        label,
+        http_version: hyper::Version::HTTP_11,
+        upgrade: false,
+    })
+}
+
+async fn exchanges_writing_to(dir: &tempfile::TempDir, projects: ProjectLookups) -> Exchanges {
+    let sink = Sink::open(&dir.path().join("tap.jsonl")).await.unwrap();
+    Exchanges::new(sink, None, projects)
+}
+
+async fn written_lines(dir: &tempfile::TempDir, count: usize) -> Vec<Value> {
+    let tap_file = dir.path().join("tap.jsonl");
+    for _ in 0..100 {
+        let text = std::fs::read_to_string(&tap_file).unwrap_or_default();
+        if text.matches('\n').count() >= count {
+            return lines(&tap_file);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the lines were never written");
+}
+
+fn kinds_of(lines: &[Value], exchange: u64) -> Vec<&str> {
+    lines
+        .iter()
+        .filter(|line| line["exchange"] == exchange)
+        .map(|line| line["event"].as_str().unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn exchanges_count_up_from_one_and_each_writes_its_start_then_its_edges_then_its_end() {
+    // It ends an exchange only after the edges its start asked for, even when the tap is dropped at once
+    let dir = tempfile::tempdir().unwrap();
+    let exchanges = exchanges_writing_to(&dir, ProjectLookups::new(ProjectCache::default())).await;
+    let who = in_session_and_thread();
+
+    drop(begin(&exchanges, &who, None));
+    drop(begin(&exchanges, &who, None));
+
+    let lines = written_lines(&dir, 8).await;
+    let expected = ["exchange_start", "edge", "edge", "exchange_end"];
+    assert_eq!(kinds_of(&lines, 1), expected);
+    assert_eq!(kinds_of(&lines, 2), expected);
+}
+
+#[tokio::test]
+async fn a_hung_project_lookup_still_ends_the_exchange_with_the_edges_that_need_no_project() {
+    // It writes in_session and in_thread, then exchange_end, once the lookup's wait passes
+    let dir = tempfile::tempdir().unwrap();
+    let (release, hung) = std::sync::mpsc::channel::<()>();
+    let hung = Mutex::new(hung);
+    let cache = ProjectCache::locating_with(move |_| {
+        let _ = hung.lock().unwrap().recv();
+        None
+    });
+    let lookups = ProjectLookups::new(cache).with_wait(Duration::from_millis(50));
+    let exchanges = exchanges_writing_to(&dir, lookups).await;
+
+    drop(begin(&exchanges, &in_session_and_thread(), Some(&labelled("/hangs"))));
+
+    let lines = written_lines(&dir, 4).await;
+    assert_eq!(kinds_of(&lines, 1), ["exchange_start", "edge", "edge", "exchange_end"]);
+    let edge_kinds: Vec<&str> = lines
+        .iter()
+        .filter(|line| line["event"] == "edge")
+        .map(|line| line["payload"]["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(edge_kinds, ["in_session", "in_thread"]);
+    drop(release);
+}
+
+#[tokio::test]
+async fn exchange_start_carries_the_request_and_the_label() {
+    // It pins every field of the exchange_start payload
+    let dir = tempfile::tempdir().unwrap();
+    let exchanges = exchanges_writing_to(&dir, ProjectLookups::new(ProjectCache::default())).await;
+
+    drop(begin(&exchanges, &nobody(), Some(&labelled("/work"))));
+
+    let lines = written_lines(&dir, 2).await;
+    assert_eq!(
+        lines[0]["payload"],
+        json!({
+            "method": "POST",
+            "host": "example.com",
+            "path": "/v1/messages",
+            "http_version": "HTTP/1.1",
+            "upgrade": false,
+            "headers": [],
+            "label": {"command": "claude", "dir": "/work"},
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_note_alone_takes_the_next_exchange_id_and_carries_the_label() {
+    // It shares the counter with exchanges and writes exactly one line
+    let dir = tempfile::tempdir().unwrap();
+    let exchanges = exchanges_writing_to(&dir, ProjectLookups::new(ProjectCache::default())).await;
+
+    drop(begin(&exchanges, &nobody(), None));
+    exchanges.note_alone(
+        "none",
+        "tunnel",
+        json!({"host": "h", "port": 443}),
+        Some(&labelled("/work")),
+    );
+    drop(begin(&exchanges, &nobody(), None));
+
+    let lines = written_lines(&dir, 5).await;
+    assert_eq!(kinds_of(&lines, 2), ["tunnel"]);
+    let tunnel = lines.iter().find(|line| line["event"] == "tunnel").unwrap();
+    assert_eq!(tunnel["adapter"], "none");
+    assert_eq!(
+        tunnel["payload"],
+        json!({"host": "h", "port": 443, "label": {"command": "claude", "dir": "/work"}})
+    );
+    assert_eq!(kinds_of(&lines, 3), ["exchange_start", "exchange_end"]);
 }

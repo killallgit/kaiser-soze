@@ -42,11 +42,6 @@ impl ExchangeTap {
         self.recorder.write(self.clock.stamp(), kind, payload, (0, 0));
     }
 
-    /// Like `note`, but waits for room in the output queue. Only a tap-side task calls this.
-    pub async fn note_reliable(&self, kind: &str, payload: Value) {
-        self.recorder.write_reliable(self.clock.stamp(), kind, payload).await;
-    }
-
     pub fn send(&self, input: TapInput) {
         self.offer(Msg::Input(input));
     }

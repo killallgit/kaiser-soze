@@ -1,12 +1,11 @@
 use crate::adapter::{claims_host, Adapter, RequestHead, ResponseHead, TapInput};
 use crate::ca::Ca;
-use crate::exchange::{Clock, ExchangeTap, ProjectSignal, Recorder, Side, TeeBody};
-use crate::graph::{self, Identity, Threads};
+use crate::exchange::{ExchangeTap, Exchanges, Opening, Side, TeeBody};
 use crate::label::{self, Label};
 use crate::live::Live;
 use crate::project::{ProjectCache, ProjectLookups};
 use crate::redact::redact_headers;
-use crate::shape::{ShapeLog, ShapedParser};
+use crate::shape::ShapeLog;
 use crate::sink::Sink;
 use crate::BoxError;
 use bytes::Bytes;
@@ -21,12 +20,11 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, RootCertStore};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -54,13 +52,8 @@ pub struct Proxy {
     ca: Ca,
     connector: TlsConnector,
     upstream_addr: Option<SocketAddr>,
-    sink: Sink,
     live: bool,
-    shapes: Option<Arc<ShapeLog>>,
-    clock: Clock,
-    next_exchange: AtomicU64,
-    projects: ProjectLookups,
-    threads: Arc<Mutex<Threads>>,
+    exchanges: Exchanges,
 }
 
 struct Tunnel {
@@ -99,12 +92,11 @@ impl Proxy {
             connector: TlsConnector::from(Arc::new(client)),
             upstream_addr: config.upstream_addr,
             live: config.live.is_some(),
-            sink: Sink::open_with(&config.tap_file, config.live).await?,
-            shapes,
-            clock: Clock::start(),
-            next_exchange: AtomicU64::new(1),
-            projects: ProjectLookups::new(projects),
-            threads: Arc::default(),
+            exchanges: Exchanges::new(
+                Sink::open_with(&config.tap_file, config.live).await?,
+                shapes,
+                ProjectLookups::new(projects),
+            ),
         }))
     }
 
@@ -160,7 +152,8 @@ impl Proxy {
             eprintln!("connect {host}:{port}");
         }
         let Some(adapter) = self.adapters.iter().find(|a| claims_host(a.as_ref(), &host)) else {
-            self.note_tunnel(&host, port, label.as_ref());
+            self.exchanges
+                .note_alone("none", "tunnel", json!({"host": host, "port": port}), label.as_ref());
             let upstream = self.dial(&host, port).await?;
             let upgrade = hyper::upgrade::on(req);
             tokio::spawn(async move {
@@ -196,23 +189,6 @@ impl Proxy {
     }
 }
 
-impl Proxy {
-    /// Records that a connection to a host nobody claims was tunnelled, unread.
-    fn note_tunnel(&self, host: &str, port: u16, label: Option<&Label>) {
-        let exchange = self.next_exchange.fetch_add(1, Ordering::Relaxed);
-        let recorder = Recorder::new(self.sink.clone(), exchange, "none");
-        let payload = with_label(json!({"host": host, "port": port}), label);
-        recorder.write(self.clock.stamp(), "tunnel", payload, (0, 0));
-    }
-}
-
-fn with_label(mut payload: Value, label: Option<&Label>) -> Value {
-    if let Some(label) = label {
-        payload["label"] = label.to_json();
-    }
-    payload
-}
-
 impl Tunnel {
     async fn send_upstream(&self, req: Request<TeeBody<Incoming>>) -> Result<Response<Incoming>, BoxError> {
         let mut upstream = self.upstream.lock().await;
@@ -224,13 +200,7 @@ impl Tunnel {
 
     async fn forward(self: Arc<Self>, mut req: Request<Incoming>) -> Result<Response<Out>, Infallible> {
         let head = request_head(&self.host, &req);
-        let tap = match self.adapter.claim(&head) {
-            Some(parser) => Some(self.begin_exchange(&head, &req, parser)),
-            None => {
-                self.note_unsupported(&head);
-                None
-            }
-        };
+        let tap = self.tap_for(&head, &req);
         let client_upgrade = req
             .headers()
             .contains_key(UPGRADE)
@@ -256,68 +226,22 @@ impl Tunnel {
         Ok(res.map(|body| TeeBody::new(body, tap, Side::Response).boxed_unsync()))
     }
 
-    fn note_unsupported(&self, head: &RequestHead) {
-        let path = head.path.split('?').next().unwrap_or_default();
-        let event = crate::common::unsupported(&head.host, path);
-        let proxy = &self.proxy;
-        let exchange = proxy.next_exchange.fetch_add(1, Ordering::Relaxed);
-        let recorder = Recorder::new(proxy.sink.clone(), exchange, self.adapter.name());
-        let payload = with_label(event.payload, self.label.as_ref());
-        recorder.write(proxy.clock.stamp(), &event.kind, payload, (0, 0));
-    }
-
-    fn begin_exchange(
-        &self,
-        head: &RequestHead,
-        req: &Request<Incoming>,
-        parser: Box<dyn crate::adapter::ExchangeParser>,
-    ) -> ExchangeTap {
-        let proxy = &self.proxy;
-        let exchange = proxy.next_exchange.fetch_add(1, Ordering::Relaxed);
-        let identity = self.adapter.identity(head);
-        let recorder = Recorder::new(proxy.sink.clone(), exchange, self.adapter.name())
-            .knowing(identity.clone())
-            .awaiting_project()
-            .tracking(proxy.threads.clone());
-        let parser: Box<dyn crate::adapter::ExchangeParser> = match &proxy.shapes {
-            Some(log) => Box::new(ShapedParser::new(log.clone(), parser, exchange, head)),
-            None => parser,
+    fn tap_for(&self, head: &RequestHead, req: &Request<Incoming>) -> Option<ExchangeTap> {
+        let exchanges = &self.proxy.exchanges;
+        let Some(parser) = self.adapter.claim(head) else {
+            let path = head.path.split('?').next().unwrap_or_default();
+            let event = crate::common::unsupported(&head.host, path);
+            exchanges.note_alone(self.adapter.name(), &event.kind, event.payload, self.label.as_ref());
+            return None;
         };
-        let signal = recorder.project_signal();
-        let tap = ExchangeTap::spawn(recorder, proxy.clock, parser);
-        tap.note(
-            "exchange_start",
-            with_label(
-                json!({
-                    "method": head.method,
-                    "host": head.host,
-                    "path": head.path,
-                    "http_version": format!("{:?}", req.version()),
-                    "upgrade": req.headers().contains_key(UPGRADE),
-                    "headers": head.headers,
-                }),
-                self.label.as_ref(),
-            ),
-        );
-        self.note_edges(&tap, exchange, identity, signal);
-        tap
-    }
-
-    /// Finds the project, then writes the edges; forwarding never waits for either.
-    fn note_edges(&self, tap: &ExchangeTap, exchange: u64, identity: Identity, signal: ProjectSignal) {
-        let tap = tap.clone();
-        let projects = self.proxy.projects.clone();
-        let dir = self.label.as_ref().map(|label| PathBuf::from(&label.dir));
-        tokio::spawn(async move {
-            let project = match dir {
-                Some(dir) => projects.find(dir).await,
-                None => None,
-            };
-            signal.settle(project.as_ref().map(|project| project.id.clone()));
-            for edge in graph::edges(exchange, &identity, project.as_ref()) {
-                tap.note_reliable("edge", edge).await;
-            }
-        });
+        Some(exchanges.begin(Opening {
+            adapter: self.adapter.as_ref(),
+            head,
+            parser,
+            label: self.label.as_ref(),
+            http_version: req.version(),
+            upgrade: req.headers().contains_key(UPGRADE),
+        }))
     }
 }
 
