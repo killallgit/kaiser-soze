@@ -404,6 +404,122 @@ async fn a_result_in_a_later_request_writes_one_calls_edge_for_its_call() {
 }
 
 #[tokio::test]
+async fn a_claude_and_a_codex_exchange_write_these_exact_records_and_edges() {
+    // It pins every field of the record and edge payloads a thread's two exchanges write
+    use crate::common::*;
+    let claude = vec![
+        conversation(json!("sys"), json!([]), vec![message("user", vec![text_block("hi")])]),
+        block_start(BlockStart {
+            index: 0,
+            kind: "tool_call",
+            id: json!("c1"),
+            name: json!("shell"),
+        }),
+        block_stop(0),
+        usage(Usage::default()),
+        reply_end_of_message(json!("tool_use"), json!("m1")),
+    ];
+    let mut codex = closed_reply();
+    codex[0] = conversation(
+        json!("sys"),
+        json!([]),
+        vec![message(
+            "user",
+            vec![tool_result_block(json!("c1"), json!("done"), false)],
+        )],
+    );
+    codex[0].payload["step"] = json!(2);
+    codex[0].payload["turn"] = json!("u2");
+    codex[0].payload["previous_message_id"] = json!("m1");
+    let threads = Arc::new(Mutex::new(Threads::default()));
+    let known = Identity {
+        session: Some("s1".into()),
+        thread: Some("t1".into()),
+        turn: Some("u1".into()),
+        ..Identity::default()
+    };
+    let run = |exchange: u64, events: Vec<TapEvent>| {
+        let (known, threads) = (known.clone(), threads.clone());
+        run_recorded(events, move |mut r| {
+            r.exchange = exchange;
+            r.knowing(known).tracking(threads)
+        })
+    };
+    let payloads = |lines: &[Value], event: &str| -> Vec<Value> {
+        lines
+            .iter()
+            .filter(|line| line["event"] == event)
+            .map(|line| line["payload"].clone())
+            .collect()
+    };
+    let no_usage = json!({"input": null, "output": null, "cache_read": null, "cache_write": null, "reasoning": null});
+
+    let first = run(1, claude).await;
+    let second = run(2, codex).await;
+
+    assert_eq!(
+        payloads(&first, "record"),
+        [json!({
+            "conversation": {"system": "sys", "tools": [], "messages": [
+                {"role": "user", "blocks": [{"kind": "text", "text": "hi"}]}
+            ]},
+            "reply": {
+                "message": {"role": "assistant", "blocks": [
+                    {"kind": "tool_call", "id": "c1", "name": "shell", "input": {}}
+                ]},
+                "usage": no_usage,
+                "stop_reason": "tool_use",
+                "message_id": "m1",
+            },
+            "incomplete": false,
+            "dropped": 0,
+            "step": 1,
+            "turn": "u1",
+            "session": "s1",
+            "thread": "t1",
+        })]
+    );
+    assert_eq!(
+        payloads(&first, "edge"),
+        [json!({"kind": "turn", "from": "step:1.1", "to": "turn:u1"})]
+    );
+    assert_eq!(
+        payloads(&second, "record"),
+        [json!({
+            "conversation": {
+                "system": "sys",
+                "tools": [],
+                "messages": [{"role": "user", "blocks": [
+                    {"kind": "tool_result", "call_id": "c1", "output": "done", "is_error": false}
+                ]}],
+                "step": 2,
+                "turn": "u2",
+                "previous_message_id": "m1",
+            },
+            "reply": {
+                "message": {"role": "assistant", "blocks": [{"kind": "text", "text": "ok"}]},
+                "usage": no_usage,
+                "stop_reason": "end_turn",
+            },
+            "incomplete": false,
+            "dropped": 0,
+            "step": 2,
+            "turn": "u2",
+            "session": "s1",
+            "thread": "t1",
+        })]
+    );
+    assert_eq!(
+        payloads(&second, "edge"),
+        [
+            json!({"kind": "turn", "from": "step:2.2", "to": "turn:u2"}),
+            json!({"kind": "continues", "from": "step:2.2", "to": "step:1.1"}),
+            json!({"kind": "calls", "from": "call:c1", "to": "result:c1"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn a_record_waits_for_a_lookup_that_finishes_after_the_reply() {
     // It carries the project found while the record was already due
     let lines = run_recorded(closed_reply(), |recorder| {

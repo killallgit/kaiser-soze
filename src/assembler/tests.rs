@@ -275,3 +275,48 @@ fn a_record_without_a_request_names_no_step() {
 
     assert!(records[0].get("step").is_none());
 }
+
+#[test]
+fn a_request_that_states_its_step_and_turn_gives_them_to_the_record() {
+    // It copies the step and turn of the conversation onto the record
+    let mut assembler = Assembler::default();
+    let mut request = conversation_event();
+    request.payload["step"] = json!(3);
+    request.payload["turn"] = json!("u2");
+
+    let records = feed(&mut assembler, vec![request, reply_end(json!("end_turn"))], 0);
+
+    assert_eq!(
+        (records[0]["step"].clone(), records[0]["turn"].clone()),
+        (json!(3), json!("u2"))
+    );
+}
+
+#[test]
+fn a_request_that_states_no_step_is_step_one_and_has_no_turn() {
+    // A Claude exchange is one request, so the record is step 1 with no turn of its own
+    let mut assembler = Assembler::default();
+
+    let records = feed(
+        &mut assembler,
+        vec![conversation_event(), reply_end(json!("end_turn"))],
+        0,
+    );
+
+    assert_eq!(records[0]["step"], 1);
+    assert!(records[0].get("turn").is_none());
+}
+
+#[test]
+fn a_record_without_a_request_names_no_turn() {
+    // An unparsed request states neither a step nor a turn
+    let mut assembler = Assembler::default();
+
+    let records = feed(
+        &mut assembler,
+        vec![unparsed(Side::Request), reply_end(json!("end_turn"))],
+        0,
+    );
+
+    assert!(records[0].get("turn").is_none());
+}

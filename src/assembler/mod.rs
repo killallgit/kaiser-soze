@@ -1,6 +1,7 @@
 use crate::adapter::TapEvent;
 use crate::body::MAX_REQUEST_BODY;
 use crate::common::{encrypted_reasoning_block, message, reasoning_block, text_block, tool_call_block};
+use crate::graph::{claimed, Claimed};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashSet};
 
@@ -172,8 +173,7 @@ impl Assembler {
                 )
             })
             .collect();
-        let step = (!conversation.is_null()).then(|| conversation["step"].as_u64().unwrap_or(1));
-        let turn = conversation["turn"].clone();
+        let claim = claimed(&conversation);
         let mut record = json!({
             "conversation": conversation,
             "reply": {
@@ -184,11 +184,11 @@ impl Assembler {
             "incomplete": incomplete,
             "dropped": dropped,
         });
-        if let Some(step) = step {
+        if let Some(Claimed { step, turn }) = claim {
             record["step"] = json!(step);
-        }
-        if !turn.is_null() {
-            record["turn"] = turn;
+            if let Some(turn) = turn {
+                record["turn"] = json!(turn);
+            }
         }
         if !reply.message_id.is_null() {
             record["reply"]["message_id"] = reply.message_id;

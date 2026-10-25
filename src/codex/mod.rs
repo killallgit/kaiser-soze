@@ -1,6 +1,6 @@
 use crate::adapter::{header, Adapter, ExchangeParser, RequestHead};
 use crate::body::is_encoded;
-use crate::graph::Identity;
+use crate::graph::{named_turn, Identity};
 use serde_json::Value;
 
 mod history;
@@ -51,9 +51,7 @@ impl Adapter for CodexAdapter {
             session: owned("session-id"),
             thread: owned("thread-id"),
             parent_thread: owned("x-codex-parent-thread-id"),
-            turn: turn_metadata
-                .and_then(|metadata| metadata["turn_id"].as_str().map(str::to_string))
-                .filter(|turn| !turn.is_empty()),
+            turn: named_turn(turn_metadata.as_ref().and_then(|metadata| metadata["turn_id"].as_str())),
         }
     }
 }
