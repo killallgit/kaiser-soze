@@ -40,13 +40,16 @@ impl Adapter for ClaudeAdapter {
     }
 
     /// The main agent has no agent id and is the session itself; a subagent's parent is the agent that
-    /// launched it, else the main agent.
+    /// launched it, else the main agent. A subagent request with no agent id has no parent, since its
+    /// thread would be the session itself.
     fn identity(&self, head: &RequestHead) -> Identity {
         let owned = |name| header(head, name).map(str::to_string);
         let session = owned("x-claude-code-session-id");
-        let thread = owned("x-claude-code-agent-id").or_else(|| session.clone());
+        let agent = owned("x-claude-code-agent-id");
+        let thread = agent.clone().or_else(|| session.clone());
         let subagent = header(head, "x-claude-code-request-class") == Some("subagent");
-        let parent_thread = owned("x-claude-code-parent-agent-id").or(session.clone().filter(|_| subagent));
+        let parent_thread =
+            owned("x-claude-code-parent-agent-id").or(session.clone().filter(|_| subagent && agent.is_some()));
         Identity {
             session,
             thread,
