@@ -58,6 +58,17 @@ fn a_subagent_is_its_own_thread_under_the_main_agent() {
 }
 
 #[test]
+fn a_subagent_request_without_an_agent_id_has_no_parent() {
+    // It would otherwise be a thread spawned by itself
+    let identity = identity_of(&[
+        ("x-claude-code-session-id", "s1"),
+        ("x-claude-code-request-class", "subagent"),
+    ]);
+
+    assert_eq!(identity, ids("s1", "s1", None));
+}
+
+#[test]
 fn a_nested_subagent_names_the_agent_that_launched_it() {
     // It takes the parent agent id over the main agent
     let identity = identity_of(&[
