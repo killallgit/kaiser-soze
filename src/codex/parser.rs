@@ -3,6 +3,7 @@ use super::stream::stream_event;
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
 use crate::body::{is_encoded, RequestBuffer};
 use crate::common::*;
+use crate::graph::named_turn;
 use crate::sse::{SseEvent, SseSplitter};
 use serde_json::Value;
 
@@ -32,10 +33,7 @@ impl CodexParser {
                 self.steps += 1;
                 let mut event = self.history.join(&json);
                 event.payload["step"] = self.steps.into();
-                if let Some(turn) = json["client_metadata"]["turn_id"]
-                    .as_str()
-                    .filter(|turn| !turn.is_empty())
-                {
+                if let Some(turn) = named_turn(json["client_metadata"]["turn_id"].as_str()) {
                     event.payload["turn"] = turn.into();
                 }
                 event

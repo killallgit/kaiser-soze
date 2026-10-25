@@ -38,6 +38,11 @@ impl Step {
     }
 }
 
+/// The turn a request names; an empty id, as a warm-up request sends, names none.
+pub fn named_turn(turn: Option<&str>) -> Option<String> {
+    turn.filter(|turn| !turn.is_empty()).map(String::from)
+}
+
 /// The `key` of each block of `kind` in a message or a list of messages.
 fn block_ids(messages: &Value, kind: &str, key: &str) -> Vec<String> {
     let messages = match messages {
@@ -64,6 +69,14 @@ mod tests {
             turn: turn.map(Into::into),
             ..Identity::default()
         }
+    }
+
+    #[test]
+    fn an_empty_turn_id_is_no_turn() {
+        // The prewarm request sends turn_id as an empty string
+        assert_eq!(named_turn(Some("")), None);
+        assert_eq!(named_turn(None), None);
+        assert_eq!(named_turn(Some("u1")).as_deref(), Some("u1"));
     }
 
     #[test]

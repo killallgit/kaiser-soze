@@ -6,7 +6,7 @@ use calls::Calls;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 
-pub use step::Step;
+pub use step::{named_turn, Step};
 
 /// Which session, thread and turn an exchange belongs to, as its request headers say.
 #[derive(Clone, Debug, Default, PartialEq)]
