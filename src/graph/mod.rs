@@ -1,9 +1,12 @@
 mod calls;
+mod step;
 
 use crate::project::Project;
 use calls::Calls;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
+
+pub use step::Step;
 
 /// Which session, thread and turn an exchange belongs to, as its request headers say.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -45,21 +48,6 @@ pub const THREAD_BOUND: usize = 1024;
 
 /// How many reply ids one thread remembers; past it the thread forgets them all but the newest.
 pub const REPLY_BOUND: usize = 1024;
-
-/// One request and its reply: the unit `turn` and `continues` link.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Step {
-    pub thread: Option<String>,
-    pub exchange: u64,
-    pub n: u64,
-    pub turn: Option<String>,
-    pub previous_message_id: Option<String>,
-    pub message_id: Option<String>,
-    /// Call ids of the `tool_result` blocks in the request.
-    pub results: Vec<String>,
-    /// Ids of the `tool_call` blocks in the reply.
-    pub calls: Vec<String>,
-}
 
 #[derive(Default)]
 struct Seen {

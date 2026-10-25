@@ -70,7 +70,7 @@ impl Recorder {
         found.flatten()
     }
 
-    pub(super) fn with_ids(&self, mut record: Value, project: Option<String>) -> Value {
+    pub(super) fn with_ids(&self, mut record: Value, project: Option<String>, step: Option<&Step>) -> Value {
         let ids = [
             ("project", project.as_ref()),
             ("session", self.identity.session.as_ref()),
@@ -81,9 +81,8 @@ impl Recorder {
                 record[key] = json!(id);
             }
         }
-        // The header turn is the first request's; a later step that names none may be a new turn.
-        if record.get("turn").is_none() && record["step"] == 1 {
-            if let Some(turn) = &self.identity.turn {
+        if record.get("turn").is_none() {
+            if let Some(turn) = step.and_then(|step| step.turn.as_ref()) {
                 record["turn"] = json!(turn);
             }
         }
@@ -120,47 +119,19 @@ impl Recorder {
 
     pub(super) async fn write_record(&self, stamp: Stamp, record: Value) {
         let project = self.settled_project().await;
-        let record = self.with_ids(record, project);
-        let edges = self.step_edges(&record);
+        let step = Step::of_record(&record, &self.identity, self.exchange);
+        let record = self.with_ids(record, project, step.as_ref());
+        let edges = self.step_edges(step.as_ref());
         self.write_reliable(stamp, "record", record).await;
         for edge in edges {
             self.write_reliable(stamp, "edge", edge).await;
         }
     }
 
-    fn step_edges(&self, record: &Value) -> Vec<Value> {
-        let Some(threads) = &self.threads else {
+    fn step_edges(&self, step: Option<&Step>) -> Vec<Value> {
+        let (Some(threads), Some(step)) = (&self.threads, step) else {
             return Vec::new();
         };
-        let text = |value: &Value| value.as_str().map(String::from);
-        let Some(n) = record["step"].as_u64() else {
-            return Vec::new();
-        };
-        let step = Step {
-            thread: self.identity.thread.clone(),
-            exchange: self.exchange,
-            n,
-            turn: text(&record["turn"]),
-            previous_message_id: text(&record["conversation"]["previous_message_id"]),
-            message_id: text(&record["reply"]["message_id"]),
-            results: block_ids(&record["conversation"]["messages"], "tool_result", "call_id"),
-            calls: block_ids(&record["reply"]["message"], "tool_call", "id"),
-        };
-        threads.lock().unwrap_or_else(PoisonError::into_inner).edges(&step)
+        threads.lock().unwrap_or_else(PoisonError::into_inner).edges(step)
     }
-}
-
-/// The `key` of each block of `kind` in a message or a list of messages.
-fn block_ids(messages: &Value, kind: &str, key: &str) -> Vec<String> {
-    let messages = match messages {
-        Value::Array(messages) => messages.as_slice(),
-        message => std::slice::from_ref(message),
-    };
-    messages
-        .iter()
-        .filter_map(|message| message["blocks"].as_array())
-        .flatten()
-        .filter(|block| block["kind"] == kind)
-        .filter_map(|block| block[key].as_str().map(String::from))
-        .collect()
 }
