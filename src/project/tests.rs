@@ -2,7 +2,10 @@ use super::cache::CACHE_CAPACITY;
 use super::id::project_id_of;
 use super::*;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 fn write(path: &Path, text: &str) {
@@ -292,4 +295,100 @@ fn the_cache_stays_within_its_capacity() {
     }
 
     assert!(cache.found.lock().unwrap().len() <= CACHE_CAPACITY);
+}
+
+struct HangingLookups {
+    lookups: ProjectLookups,
+    located: Arc<AtomicUsize>,
+    release: Sender<()>,
+}
+
+fn hanging_lookups(wait: Duration) -> HangingLookups {
+    let (release, hung) = std::sync::mpsc::channel::<()>();
+    let hung = Mutex::new(hung);
+    let located = Arc::new(AtomicUsize::new(0));
+    let cache = ProjectCache::locating_with({
+        let located = located.clone();
+        move |_| {
+            located.fetch_add(1, Ordering::SeqCst);
+            let _ = hung.lock().unwrap().recv();
+            None
+        }
+    });
+    HangingLookups {
+        lookups: ProjectLookups::new(cache).with_wait(wait),
+        located,
+        release,
+    }
+}
+
+async fn until(mut done: impl FnMut() -> bool) {
+    for _ in 0..200 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("never happened");
+}
+
+#[tokio::test]
+async fn a_lookup_finds_the_project_of_a_known_directory() {
+    // It gives the project the cache finds
+    let dir = tempfile::tempdir().unwrap();
+    on_main(dir.path(), Some("https://example.com/owner/repo.git"));
+    let lookups = ProjectLookups::new(ProjectCache::default());
+
+    let found = lookups.find(dir.path().to_path_buf()).await;
+
+    assert_eq!(found, project("example.com/owner/repo", Some("main")));
+}
+
+#[tokio::test]
+async fn a_lookup_that_hangs_finds_nothing_once_the_wait_passes() {
+    // It returns none instead of waiting for the locate that never ends
+    let hanging = hanging_lookups(Duration::from_millis(20));
+
+    let found = hanging.lookups.find(PathBuf::from("/hangs")).await;
+
+    assert_eq!(found, None);
+}
+
+#[tokio::test]
+async fn no_fifth_lookup_starts_while_four_hang() {
+    // It finds nothing at once at the cap and never reaches locate
+    let hanging = hanging_lookups(Duration::from_secs(30));
+    for n in 0..4 {
+        tokio::spawn({
+            let lookups = hanging.lookups.clone();
+            async move { lookups.find(PathBuf::from(format!("/hangs/{n}"))).await }
+        });
+    }
+    until(|| hanging.located.load(Ordering::SeqCst) == 4).await;
+
+    let fifth = tokio::time::timeout(Duration::from_secs(5), hanging.lookups.find(PathBuf::from("/hangs/4"))).await;
+
+    assert_eq!(fifth, Ok(None));
+    assert_eq!(hanging.located.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test]
+async fn lookups_start_again_once_the_hung_ones_end() {
+    // It gives the permits back when the hung locates return
+    let hanging = hanging_lookups(Duration::from_millis(20));
+    for n in 0..4 {
+        hanging.lookups.find(PathBuf::from(format!("/hangs/{n}"))).await;
+    }
+    until(|| hanging.located.load(Ordering::SeqCst) == 4).await;
+    drop(hanging.release);
+
+    for n in 4.. {
+        hanging.lookups.find(PathBuf::from(format!("/hangs/{n}"))).await;
+        if hanging.located.load(Ordering::SeqCst) > 4 || n > 300 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(hanging.located.load(Ordering::SeqCst) > 4);
 }

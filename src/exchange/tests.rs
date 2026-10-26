@@ -1,7 +1,9 @@
 use super::*;
-use crate::adapter::{ExchangeParser, TapEvent, TapInput};
+use crate::adapter::{Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
 use crate::graph::Identity;
 use crate::graph::Threads;
+use crate::label::Label;
+use crate::project::{ProjectCache, ProjectLookups};
 use crate::sink::Sink;
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -224,7 +226,7 @@ async fn a_record_carries_the_ids_the_recorder_knows() {
     };
 
     let lines = run_recorded(closed_reply(), |recorder| {
-        let recorder = recorder.knowing(known).awaiting_project(Duration::from_secs(5));
+        let recorder = recorder.knowing(known).awaiting_project();
         recorder.project_looked_up(Some("host/owner/repo".into()));
         recorder
     })
@@ -523,7 +525,7 @@ async fn a_claude_and_a_codex_exchange_write_these_exact_records_and_edges() {
 async fn a_record_waits_for_a_lookup_that_finishes_after_the_reply() {
     // It carries the project found while the record was already due
     let lines = run_recorded(closed_reply(), |recorder| {
-        let recorder = recorder.awaiting_project(Duration::from_secs(5));
+        let recorder = recorder.awaiting_project();
         let lookup = recorder.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -538,10 +540,30 @@ async fn a_record_waits_for_a_lookup_that_finishes_after_the_reply() {
 }
 
 #[tokio::test]
-async fn a_record_stops_waiting_for_a_lookup_that_never_finishes() {
-    // It is written without a project once the bound passes
+async fn a_record_waits_for_as_long_as_its_lookup_takes() {
+    // It carries a project that was settled long after the reply, as the lookup's own wait is the only bound
     let lines = run_recorded(closed_reply(), |recorder| {
-        recorder.awaiting_project(Duration::from_millis(20))
+        let recorder = recorder.awaiting_project();
+        let signal = recorder.project_signal();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            signal.settle(Some("host/owner/repo".into()));
+        });
+        recorder
+    })
+    .await;
+
+    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+    assert_eq!(record["payload"]["project"], "host/owner/repo");
+}
+
+#[tokio::test]
+async fn a_record_is_written_without_a_project_when_its_signal_is_dropped_unanswered() {
+    // It does not wait for a lookup that can no longer answer
+    let lines = run_recorded(closed_reply(), |recorder| {
+        let recorder = recorder.awaiting_project();
+        drop(recorder.project_signal());
+        recorder
     })
     .await;
 
@@ -550,12 +572,26 @@ async fn a_record_stops_waiting_for_a_lookup_that_never_finishes() {
 }
 
 #[tokio::test]
+async fn dropping_a_settled_signal_keeps_the_project() {
+    // It leaves the answer alone once the lookup gave one
+    let lines = run_recorded(closed_reply(), |recorder| {
+        let recorder = recorder.awaiting_project();
+        recorder.project_signal().settle(Some("host/owner/repo".into()));
+        recorder
+    })
+    .await;
+
+    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+    assert_eq!(record["payload"]["project"], "host/owner/repo");
+}
+
+#[tokio::test]
 async fn a_lookup_that_finds_nothing_lets_the_record_go_without_waiting() {
     // It does not wait out the bound once the lookup has answered
     let started = Instant::now();
 
     let lines = run_recorded(closed_reply(), |recorder| {
-        let recorder = recorder.awaiting_project(Duration::from_secs(30));
+        let recorder = recorder.awaiting_project();
         recorder.project_looked_up(None);
         recorder
     })
@@ -567,20 +603,17 @@ async fn a_lookup_that_finds_nothing_lets_the_record_go_without_waiting() {
 }
 
 #[tokio::test]
-async fn a_reliable_note_waits_for_room_in_a_full_queue() {
-    // It delivers the line once the queue drains, where a plain note would drop it
+async fn a_reliable_write_waits_for_room_in_a_full_queue() {
+    // It delivers the line once the queue drains, where a plain write would drop it
     let (sink, mut drained) = Sink::detached(1);
     let recorder = Recorder::new(sink, 1, "test");
-    let tap = ExchangeTap::spawn(
-        recorder.clone(),
-        Clock::start(),
-        Box::new(Emits {
-            events: Vec::new(),
-            release: None,
-        }),
-    );
     recorder.write(Clock::start().stamp(), "filler", json!({}), (0, 0));
-    let noted = tokio::spawn(async move { tap.note_reliable("edge", json!({"kind": "in_thread"})).await });
+    let writer = recorder.clone();
+    let written = tokio::spawn(async move {
+        writer
+            .write_reliable(Clock::start().stamp(), "edge", json!({"kind": "in_thread"}))
+            .await
+    });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
     let mut kinds = Vec::new();
@@ -591,7 +624,7 @@ async fn a_reliable_note_waits_for_room_in_a_full_queue() {
         }
     }
 
-    noted.await.unwrap();
+    written.await.unwrap();
     assert_eq!(kinds, ["filler", "edge"]);
 }
 
@@ -677,4 +710,264 @@ async fn a_stalled_parser_gives_an_incomplete_record_that_counts_the_dropped_inp
     let record = lines.iter().find(|line| line["event"] == "record").unwrap();
     assert!(record["payload"]["dropped"].as_u64().unwrap() > 0);
     assert_eq!(record["payload"]["incomplete"], true);
+}
+
+struct Identifying(Identity);
+
+impl Adapter for Identifying {
+    fn name(&self) -> &'static str {
+        "test"
+    }
+    fn hosts(&self) -> &[String] {
+        &[]
+    }
+    fn claim(&self, _head: &RequestHead) -> Option<Box<dyn ExchangeParser>> {
+        None
+    }
+    fn identity(&self, _head: &RequestHead) -> Identity {
+        self.0.clone()
+    }
+}
+
+fn in_session_and_thread() -> Identifying {
+    Identifying(Identity {
+        session: Some("s1".into()),
+        thread: Some("t1".into()),
+        ..Identity::default()
+    })
+}
+
+fn nobody() -> Identifying {
+    Identifying(Identity::default())
+}
+
+fn labelled(dir: &str) -> Label {
+    Label {
+        command: "claude".into(),
+        dir: dir.into(),
+    }
+}
+
+fn begin(exchanges: &Exchanges, adapter: &dyn Adapter, label: Option<&Label>) -> ExchangeTap {
+    let head = RequestHead {
+        method: "POST".into(),
+        host: "example.com".into(),
+        path: "/v1/messages".into(),
+        headers: Vec::new(),
+    };
+    exchanges.begin(Opening {
+        adapter,
+        head: &head,
+        parser: Box::new(Emits {
+            events: Vec::new(),
+            release: None,
+        }),
+        label,
+        http_version: hyper::Version::HTTP_11,
+        upgrade: false,
+    })
+}
+
+async fn exchanges_writing_to(dir: &tempfile::TempDir, projects: ProjectLookups) -> Exchanges {
+    let sink = Sink::open(&dir.path().join("tap.jsonl")).await.unwrap();
+    Exchanges::new(sink, None, projects)
+}
+
+async fn written_lines(dir: &tempfile::TempDir, count: usize) -> Vec<Value> {
+    let tap_file = dir.path().join("tap.jsonl");
+    for _ in 0..100 {
+        let text = std::fs::read_to_string(&tap_file).unwrap_or_default();
+        if text.matches('\n').count() >= count {
+            return lines(&tap_file);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the lines were never written");
+}
+
+fn kinds_of(lines: &[Value], exchange: u64) -> Vec<&str> {
+    lines
+        .iter()
+        .filter(|line| line["exchange"] == exchange)
+        .map(|line| line["event"].as_str().unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn exchanges_count_up_from_one_and_each_writes_its_start_then_its_edges_then_its_end() {
+    // It ends an exchange only after the edges its start asked for, even when the tap is dropped at once
+    let dir = tempfile::tempdir().unwrap();
+    let exchanges = exchanges_writing_to(&dir, ProjectLookups::new(ProjectCache::default())).await;
+    let who = in_session_and_thread();
+
+    drop(begin(&exchanges, &who, None));
+    drop(begin(&exchanges, &who, None));
+
+    let lines = written_lines(&dir, 8).await;
+    let expected = ["exchange_start", "edge", "edge", "exchange_end"];
+    assert_eq!(kinds_of(&lines, 1), expected);
+    assert_eq!(kinds_of(&lines, 2), expected);
+}
+
+#[tokio::test]
+async fn a_hung_project_lookup_still_ends_the_exchange_with_the_edges_that_need_no_project() {
+    // It writes in_session and in_thread, then exchange_end, once the lookup's wait passes
+    let dir = tempfile::tempdir().unwrap();
+    let (release, hung) = std::sync::mpsc::channel::<()>();
+    let hung = Mutex::new(hung);
+    let cache = ProjectCache::locating_with(move |_| {
+        let _ = hung.lock().unwrap().recv();
+        None
+    });
+    let lookups = ProjectLookups::new(cache).with_wait(Duration::from_millis(50));
+    let exchanges = exchanges_writing_to(&dir, lookups).await;
+
+    drop(begin(&exchanges, &in_session_and_thread(), Some(&labelled("/hangs"))));
+
+    let lines = written_lines(&dir, 4).await;
+    assert_eq!(kinds_of(&lines, 1), ["exchange_start", "edge", "edge", "exchange_end"]);
+    let edge_kinds: Vec<&str> = lines
+        .iter()
+        .filter(|line| line["event"] == "edge")
+        .map(|line| line["payload"]["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(edge_kinds, ["in_session", "in_thread"]);
+    drop(release);
+}
+
+#[tokio::test]
+async fn exchange_start_carries_the_request_and_the_label() {
+    // It pins every field of the exchange_start payload
+    let dir = tempfile::tempdir().unwrap();
+    let exchanges = exchanges_writing_to(&dir, ProjectLookups::new(ProjectCache::default())).await;
+
+    drop(begin(&exchanges, &nobody(), Some(&labelled("/work"))));
+
+    let lines = written_lines(&dir, 2).await;
+    assert_eq!(
+        lines[0]["payload"],
+        json!({
+            "method": "POST",
+            "host": "example.com",
+            "path": "/v1/messages",
+            "http_version": "HTTP/1.1",
+            "upgrade": false,
+            "headers": [],
+            "label": {"command": "claude", "dir": "/work"},
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_note_alone_takes_the_next_exchange_id_and_carries_the_label() {
+    // It shares the counter with exchanges and writes exactly one line
+    let dir = tempfile::tempdir().unwrap();
+    let exchanges = exchanges_writing_to(&dir, ProjectLookups::new(ProjectCache::default())).await;
+
+    drop(begin(&exchanges, &nobody(), None));
+    exchanges.note_alone(
+        "none",
+        "tunnel",
+        json!({"host": "h", "port": 443}),
+        Some(&labelled("/work")),
+    );
+    drop(begin(&exchanges, &nobody(), None));
+
+    let lines = written_lines(&dir, 5).await;
+    assert_eq!(kinds_of(&lines, 2), ["tunnel"]);
+    let tunnel = lines.iter().find(|line| line["event"] == "tunnel").unwrap();
+    assert_eq!(tunnel["adapter"], "none");
+    assert_eq!(
+        tunnel["payload"],
+        json!({"host": "h", "port": 443, "label": {"command": "claude", "dir": "/work"}})
+    );
+    assert_eq!(kinds_of(&lines, 3), ["exchange_start", "exchange_end"]);
+}
+
+type Heads = Vec<(u16, Vec<(String, String)>)>;
+
+struct ReadsResponseHeads(Arc<Mutex<Heads>>);
+
+impl ExchangeParser for ReadsResponseHeads {
+    fn feed(&mut self, input: TapInput) -> Vec<TapEvent> {
+        if let TapInput::ResponseHead(head) = input {
+            self.0.lock().unwrap().push((head.status, head.headers));
+        }
+        Vec::new()
+    }
+}
+
+struct NotedHead {
+    line: Value,
+    heard_by_parser: Heads,
+    head_marked_arrived: bool,
+}
+
+async fn note_response_head(response: hyper::Response<()>) -> NotedHead {
+    let dir = tempfile::tempdir().unwrap();
+    let tap_file = dir.path().join("tap.jsonl");
+    let recorder = Recorder::new(Sink::open(&tap_file).await.unwrap(), 1, "test");
+    let heard = Arc::default();
+    let tap = ExchangeTap::spawn(
+        recorder,
+        Clock::start(),
+        Box::new(ReadsResponseHeads(Arc::clone(&heard))),
+    );
+    let stats = tap.stats.clone();
+
+    tap.note_response_head(&response);
+    drop(tap);
+    wait_for_exchange_end(&tap_file).await;
+
+    let line = lines(&tap_file)
+        .into_iter()
+        .find(|line| line["event"] == "response_head")
+        .unwrap();
+    let heard_by_parser = heard.lock().unwrap().clone();
+    NotedHead {
+        line,
+        heard_by_parser,
+        head_marked_arrived: stats.head_us.load(Ordering::Relaxed) != stats::UNSET,
+    }
+}
+
+fn response(status: u16, headers: &[(&str, &str)]) -> hyper::Response<()> {
+    let mut builder = hyper::Response::builder().status(status);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    builder.body(()).unwrap()
+}
+
+#[tokio::test]
+async fn a_response_head_is_written_with_redacted_headers_and_handed_to_the_parser() {
+    // It writes the status, version, transport and headers, and the parser gets the same status and headers
+    let noted = note_response_head(response(
+        200,
+        &[("content-type", "text/event-stream"), ("set-cookie", "id=1")],
+    ))
+    .await;
+
+    let headers = json!([["content-type", "text/event-stream"], ["set-cookie", "[redacted]"]]);
+    assert_eq!(
+        noted.line["payload"],
+        json!({"status": 200, "http_version": "HTTP/1.1", "transport": "sse", "headers": headers})
+    );
+    let headers: Vec<(String, String)> = serde_json::from_value(headers).unwrap();
+    assert_eq!(noted.heard_by_parser, [(200, headers)]);
+    assert!(noted.head_marked_arrived);
+}
+
+#[tokio::test]
+async fn a_response_head_names_its_transport() {
+    // It says websocket for a switch of protocols, sse for an event stream and http otherwise
+    let websocket = note_response_head(response(101, &[])).await;
+    let stream = note_response_head(response(200, &[("content-type", "text/event-stream; charset=utf-8")])).await;
+    let plain = note_response_head(response(200, &[("content-type", "application/json")])).await;
+
+    let transport = |noted: &NotedHead| noted.line["payload"]["transport"].clone();
+    assert_eq!(
+        [transport(&websocket), transport(&stream), transport(&plain)],
+        [json!("websocket"), json!("sse"), json!("http")]
+    );
 }
