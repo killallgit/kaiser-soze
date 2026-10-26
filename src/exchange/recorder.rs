@@ -1,5 +1,5 @@
 use super::clock::Stamp;
-use crate::graph::{Edge, Identity, Step, Threads};
+use crate::graph::{Edge, Identity, Place, Step, Threads};
 use crate::line::{Entry, Line};
 use crate::record::Record;
 use crate::sink::Sink;
@@ -19,6 +19,7 @@ pub struct Recorder {
     pub(super) identity: Identity,
     project: Arc<watch::Sender<ProjectLookup>>,
     threads: Option<Arc<Mutex<Threads>>>,
+    place: Option<Arc<Place>>,
 }
 
 impl Recorder {
@@ -31,6 +32,7 @@ impl Recorder {
             identity: Identity::default(),
             project: Arc::new(watch::channel(Some(None)).0),
             threads: None,
+            place: None,
         }
     }
 
@@ -40,8 +42,16 @@ impl Recorder {
         self
     }
 
-    /// Makes this recorder's records add their `turn` and `continues` edges to `threads`.
+    /// Makes this recorder's records add their `turn` and `continues` edges to `threads`, after the records
+    /// of the earlier exchanges of its thread. Call it after `knowing`, as the thread is read here.
     pub fn tracking(mut self, threads: Arc<Mutex<Threads>>) -> Self {
+        if let Some(thread) = &self.identity.thread {
+            let joined = threads
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .join(thread, self.exchange);
+            self.place = Some(Arc::new(joined));
+        }
         self.threads = Some(threads);
         self
     }
@@ -112,12 +122,18 @@ impl Recorder {
 
     pub(super) async fn write_record(&self, stamp: Stamp, record: Record) {
         let project = self.settled_project().await;
+        if let Some(place) = &self.place {
+            place.wait_for_turn().await;
+        }
         let step = Step::of_record(&record, &self.identity, self.exchange);
         let record = self.with_ids(record, project, step.as_ref());
         let edges = self.step_edges(step.as_ref());
         self.write_reliable(stamp, Entry::Record(Box::new(record))).await;
         for edge in edges {
             self.write_edge(stamp, edge).await;
+        }
+        if let Some(place) = &self.place {
+            place.leave();
         }
     }
 
