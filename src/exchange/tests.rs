@@ -657,9 +657,11 @@ async fn codex_exchanges_of_one_thread_form_one_chain_in_the_order_their_exchang
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_exchange_that_ends_without_a_record_does_not_hold_back_its_threads_later_exchanges() {
     // It lets the later exchange write its record, which continues nothing as no step came before it
+    let started = std::time::Instant::now();
     let edges = race_one_thread(vec![Vec::new(), closed_reply()], None).await;
 
     assert!(edges.is_empty());
+    assert!(started.elapsed() < Duration::from_millis(1500));
 }
 
 #[tokio::test]

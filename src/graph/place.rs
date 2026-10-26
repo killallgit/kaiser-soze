@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -20,6 +21,7 @@ impl Queue {
             queue: self.clone(),
             thread: thread.to_owned(),
             exchange,
+            left: AtomicBool::new(false),
         }
     }
 
@@ -49,12 +51,17 @@ pub struct Place {
     queue: Arc<Queue>,
     thread: String,
     exchange: u64,
+    left: AtomicBool,
 }
 
 impl Place {
     /// Waits until every earlier exchange of the thread has written its first record or ended, or `limit`
     /// has passed, so an exchange that never finishes cannot hold the thread's records back for good.
+    /// Once the exchange has left, its later records do not wait again.
     pub async fn wait_for_turn(&self, limit: Duration) {
+        if self.left.load(Ordering::Acquire) {
+            return;
+        }
         let _ = timeout(limit, self.until_clear()).await;
     }
 
@@ -73,6 +80,7 @@ impl Place {
 
     /// Lets later exchanges of the thread go ahead. Ending the exchange does the same.
     pub fn leave(&self) {
+        self.left.store(true, Ordering::Release);
         self.queue.leave(&self.thread, self.exchange);
     }
 }
@@ -147,6 +155,17 @@ mod tests {
         first.leave();
 
         assert!(timeout(LONG, waiting).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_exchange_that_has_left_does_not_wait_again() {
+        // It lets the later records of an exchange through while an earlier exchange is still in line
+        let queue = Arc::<Queue>::default();
+        let _first = queue.join("t1", 1);
+        let second = queue.join("t1", 2);
+        second.leave();
+
+        assert!(took_less_than(SHORT, second.wait_for_turn(LONG)).await);
     }
 
     #[tokio::test]
