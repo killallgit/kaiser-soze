@@ -1,9 +1,10 @@
 use super::history::append;
-use crate::common::*;
+use crate::common::base64_size;
+use crate::message::{Block, Message, Output};
 use serde_json::{json, Value};
 
-pub(super) fn read_request(json: &Value) -> (Value, Value, Vec<Value>) {
-    let mut messages: Vec<Value> = Vec::new();
+pub(super) fn read_request(json: &Value) -> (Value, Value, Vec<Message>) {
+    let mut messages: Vec<Message> = Vec::new();
     let mut system = Vec::new();
     let mut tools = Value::Null;
     for (index, item) in json["input"].as_array().into_iter().flatten().enumerate() {
@@ -11,8 +12,8 @@ pub(super) fn read_request(json: &Value) -> (Value, Value, Vec<Value>) {
             ("additional_tools", _) => tools = item["tools"].clone(),
             ("message", Some("developer" | "system")) => system.extend(system_entries(&item["content"])),
             _ => {
-                if let Some((role, blocks)) = input_item(index, item) {
-                    append(&mut messages, vec![message(&role, blocks)]);
+                if let Some(message) = input_item(index, item) {
+                    append(&mut messages, vec![message]);
                 }
             }
         }
@@ -41,44 +42,47 @@ pub(super) fn system_entries(content: &Value) -> Vec<Value> {
         .collect()
 }
 
-pub(super) fn input_item(index: usize, item: &Value) -> Option<(String, Vec<Value>)> {
+pub(super) fn input_item(index: usize, item: &Value) -> Option<Message> {
     let location = index.to_string();
     match item["type"].as_str().unwrap_or("message") {
         "message" => {
-            let role = if item["role"].as_str()? == "assistant" {
-                "assistant"
+            let assistant = item["role"].as_str()? == "assistant";
+            let blocks = content_parts(&location, &item["content"]);
+            Some(if assistant {
+                Message::assistant(blocks)
             } else {
-                "user"
-            };
-            Some((role.to_string(), content_parts(&location, &item["content"])))
+                Message::user(blocks)
+            })
         }
-        "reasoning" => Some(("assistant".into(), vec![reasoning_of(item)])),
+        "reasoning" => Some(Message::assistant(vec![reasoning_of(item)])),
         kind @ ("function_call" | "custom_tool_call") => {
             let input = if kind == "function_call" {
                 item["arguments"].as_str().map_or(Value::Null, parse_arguments)
             } else {
                 item["input"].clone()
             };
-            Some((
-                "assistant".into(),
-                vec![tool_call_block(item["call_id"].clone(), item["name"].clone(), input)],
-            ))
+            Some(Message::assistant(vec![Block::ToolCall {
+                id: item["call_id"].clone(),
+                input,
+                name: item["name"].clone(),
+            }]))
         }
         "function_call_output" | "custom_tool_call_output" => {
             let output = match &item["output"] {
-                Value::Array(_) => Value::Array(content_parts(&location, &item["output"])),
-                other => other.clone(),
+                Value::Array(_) => Output::Blocks(content_parts(&location, &item["output"])),
+                other => Output::Raw(other.clone()),
             };
-            Some((
-                "user".into(),
-                vec![tool_result_block(item["call_id"].clone(), output, false)],
-            ))
+            Some(Message::user(vec![Block::ToolResult {
+                call_id: item["call_id"].clone(),
+                is_error: false,
+                output,
+            }]))
         }
         _ => None,
     }
 }
 
-pub(super) fn reasoning_of(item: &Value) -> Value {
+pub(super) fn reasoning_of(item: &Value) -> Block {
     let summary: String = item["summary"]
         .as_array()
         .into_iter()
@@ -86,8 +90,10 @@ pub(super) fn reasoning_of(item: &Value) -> Value {
         .filter_map(|part| part["text"].as_str())
         .collect();
     match item["encrypted_content"].as_str() {
-        Some(encrypted) if summary.is_empty() => encrypted_reasoning_block(json!(encrypted)),
-        _ => reasoning_block(json!(summary), Value::Null),
+        Some(encrypted) if summary.is_empty() => Block::EncryptedReasoning {
+            encrypted: json!(encrypted),
+        },
+        _ => Block::reasoning(json!(summary), Value::Null),
     }
 }
 
@@ -95,14 +101,14 @@ pub(super) fn parse_arguments(arguments: &str) -> Value {
     serde_json::from_str(arguments).unwrap_or_else(|_| json!(arguments))
 }
 
-pub(super) fn content_parts(location: &str, content: &Value) -> Vec<Value> {
+pub(super) fn content_parts(location: &str, content: &Value) -> Vec<Block> {
     match content {
-        Value::String(text) => vec![text_block(text)],
+        Value::String(text) => vec![Block::text(text)],
         Value::Array(parts) => parts
             .iter()
             .enumerate()
             .filter_map(|(index, part)| match part["type"].as_str()? {
-                "input_text" | "output_text" | "text" => Some(text_block(part["text"].as_str()?)),
+                "input_text" | "output_text" | "text" => Some(Block::text(part["text"].as_str()?)),
                 "input_image" => Some(image_of(
                     &format!("{location}:{index}"),
                     part["image_url"].as_str().unwrap_or_default(),
@@ -114,11 +120,15 @@ pub(super) fn content_parts(location: &str, content: &Value) -> Vec<Value> {
     }
 }
 
-pub(super) fn image_of(location: &str, url: &str) -> Value {
+pub(super) fn image_of(location: &str, url: &str) -> Block {
     let (content_type, size) = url
         .strip_prefix("data:")
         .and_then(|rest| rest.split_once(','))
         .map(|(meta, data)| (meta.split(';').next().unwrap_or_default(), base64_size(data)))
         .unwrap_or_default();
-    image_block(location, content_type, size)
+    Block::Image {
+        content_type: content_type.to_string(),
+        reference: location.to_string(),
+        size,
+    }
 }

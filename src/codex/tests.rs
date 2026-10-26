@@ -1,8 +1,8 @@
 use super::*;
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
 use crate::body::MAX_REQUEST_BODY;
-use crate::common::*;
 use crate::graph::Identity;
+use crate::message::{Block, Message, Output};
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -125,21 +125,27 @@ fn maps_an_http_request_split_across_chunks_to_a_conversation() {
     assert_eq!(
         events[0].payload["messages"],
         json!([
-            message("user", vec![text_block("hi")]),
-            message(
-                "assistant",
-                vec![
-                    reasoning_block(json!("think"), Value::Null),
-                    tool_call_block(json!("c1"), json!("shell"), json!({"cmd": "ls"})),
-                ]
-            ),
-            message(
-                "user",
-                vec![
-                    tool_result_block(json!("c1"), json!("out"), false),
-                    image_block("4:0", "image/png", 3)
-                ]
-            ),
+            Message::user(vec![Block::text("hi")]),
+            Message::assistant(vec![
+                Block::reasoning(json!("think"), Value::Null),
+                Block::ToolCall {
+                    id: json!("c1"),
+                    input: json!({"cmd": "ls"}),
+                    name: json!("shell")
+                },
+            ]),
+            Message::user(vec![
+                Block::ToolResult {
+                    call_id: json!("c1"),
+                    is_error: false,
+                    output: Output::Raw(json!("out"))
+                },
+                Block::Image {
+                    content_type: "image/png".into(),
+                    reference: "4:0".into(),
+                    size: 3
+                }
+            ]),
         ])
     );
 }
@@ -155,7 +161,7 @@ fn maps_roles_other_than_assistant_and_system_ones_to_user() {
 
     assert_eq!(
         events[0].payload["messages"],
-        json!([message("user", vec![text_block("d"), text_block("u")])])
+        json!([Message::user(vec![Block::text("d"), Block::text("u")])])
     );
 }
 
@@ -186,7 +192,7 @@ fn maps_a_websocket_request_message_like_an_http_body() {
     assert_eq!((events[0].start, events[0].end), (3, 9));
     assert_eq!(
         events[0].payload["messages"],
-        json!([message("user", vec![text_block("hi")])])
+        json!([Message::user(vec![Block::text("hi")])])
     );
 }
 
@@ -255,7 +261,7 @@ fn moves_developer_and_system_items_to_system_and_leaves_messages() {
     );
     assert_eq!(
         events[0].payload["messages"],
-        json!([message("user", vec![text_block("hi")])])
+        json!([Message::user(vec![Block::text("hi")])])
     );
 }
 
@@ -317,18 +323,16 @@ fn maps_custom_tool_calls_and_their_output_in_a_request() {
     assert_eq!(
         events[0].payload["messages"],
         json!([
-            message(
-                "assistant",
-                vec![tool_call_block(
-                    json!("c1"),
-                    json!("apply_patch"),
-                    json!("*** Begin Patch")
-                )]
-            ),
-            message(
-                "user",
-                vec![tool_result_block(json!("c1"), json!([text_block("done")]), false)]
-            ),
+            Message::assistant(vec![Block::ToolCall {
+                id: json!("c1"),
+                input: json!("*** Begin Patch"),
+                name: json!("apply_patch")
+            }]),
+            Message::user(vec![Block::ToolResult {
+                call_id: json!("c1"),
+                is_error: false,
+                output: Output::Blocks(vec![Block::text("done")])
+            }]),
         ])
     );
 }
@@ -535,9 +539,9 @@ fn a_continuing_request_is_emitted_as_stored_history_reply_and_new_items() {
     assert_eq!(
         event.payload["messages"],
         json!([
-            message("user", vec![text_block("one")]),
-            message("assistant", vec![text_block("answer")]),
-            message("user", vec![text_block("two")]),
+            Message::user(vec![Block::text("one")]),
+            Message::assistant(vec![Block::text("answer")]),
+            Message::user(vec![Block::text("two")]),
         ])
     );
     assert_eq!(event.payload["system"], json!([{"type": "text", "text": "sys"}]));
@@ -560,7 +564,7 @@ fn a_request_without_a_previous_id_starts_a_new_history() {
 
     assert_eq!(
         event.payload["messages"],
-        json!([message("user", vec![text_block("fresh")])])
+        json!([Message::user(vec![Block::text("fresh")])])
     );
     assert!(event.payload["system"].is_null());
     assert!(event.payload["tools"].is_null());
@@ -594,7 +598,7 @@ fn an_unknown_previous_id_is_partial_and_stays_partial() {
     assert_eq!(event.payload["partial"], json!(true));
     assert_eq!(
         event.payload["messages"],
-        json!([message("user", vec![text_block("two")])])
+        json!([Message::user(vec![Block::text("two")])])
     );
 
     server(&mut parser, &reply_frames("r2", "answer"));
@@ -733,6 +737,16 @@ fn a_generate_false_request_is_marked_warmup_and_the_chain_runs_through_it() {
     assert!(next.payload["partial"].is_null());
     assert_eq!(
         next.payload["messages"],
-        json!([message("user", vec![text_block("one"), text_block("two")])])
+        json!([Message::user(vec![Block::text("one"), Block::text("two")])])
     );
+}
+
+#[test]
+fn a_message_is_sized_as_the_bytes_it_writes() {
+    // The size bound counts the written bytes, as it did when messages were plain JSON
+    let message = Message::user(vec![Block::text("é\n"), Block::reasoning(Value::Null, json!("s"))]);
+
+    let size = super::history::size_of(std::slice::from_ref(&message));
+
+    assert_eq!(size, serde_json::to_value(&message).unwrap().to_string().len());
 }

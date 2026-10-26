@@ -157,8 +157,9 @@ impl ExchangeParser for Emits {
 
 fn open_reply() -> Vec<TapEvent> {
     use crate::common::*;
+    use crate::message::{Block, Message};
     vec![
-        conversation(json!("sys"), json!([]), vec![message("user", vec![text_block("hi")])]),
+        conversation(json!("sys"), json!([]), vec![Message::user(vec![Block::text("hi")])]),
         block_start(BlockStart {
             index: 0,
             kind: "text",
@@ -357,8 +358,9 @@ async fn a_later_step_that_names_no_turn_does_not_take_the_header_turn() {
 async fn a_result_in_a_later_request_writes_one_calls_edge_for_its_call() {
     // The first reply calls c1; the next request carries the result and the one after resends it
     use crate::common::*;
+    use crate::message::{Block, Message, Output};
     let calling = vec![
-        conversation(json!("sys"), json!([]), vec![message("user", vec![text_block("hi")])]),
+        conversation(json!("sys"), json!([]), vec![Message::user(vec![Block::text("hi")])]),
         block_start(BlockStart {
             index: 0,
             kind: "tool_call",
@@ -369,12 +371,16 @@ async fn a_result_in_a_later_request_writes_one_calls_edge_for_its_call() {
         reply_end(json!("tool_use")),
     ];
     let answering = |extra: &str| {
-        let result = message("user", vec![tool_result_block(json!("c1"), json!("done"), false)]);
+        let result = Message::user(vec![Block::ToolResult {
+            call_id: json!("c1"),
+            is_error: false,
+            output: Output::Raw(json!("done")),
+        }]);
         let mut events = closed_reply();
         events[0] = conversation(
             json!("sys"),
             json!([]),
-            vec![result, message("user", vec![text_block(extra)])],
+            vec![result, Message::user(vec![Block::text(extra)])],
         );
         events
     };
@@ -414,8 +420,9 @@ async fn a_result_in_a_later_request_writes_one_calls_edge_for_its_call() {
 async fn a_claude_and_a_codex_exchange_write_these_exact_records_and_edges() {
     // It pins every field of the record and edge payloads a thread's two exchanges write
     use crate::common::*;
+    use crate::message::{Block, Message, Output};
     let claude = vec![
-        conversation(json!("sys"), json!([]), vec![message("user", vec![text_block("hi")])]),
+        conversation(json!("sys"), json!([]), vec![Message::user(vec![Block::text("hi")])]),
         block_start(BlockStart {
             index: 0,
             kind: "tool_call",
@@ -430,10 +437,11 @@ async fn a_claude_and_a_codex_exchange_write_these_exact_records_and_edges() {
     codex[0] = conversation(
         json!("sys"),
         json!([]),
-        vec![message(
-            "user",
-            vec![tool_result_block(json!("c1"), json!("done"), false)],
-        )],
+        vec![Message::user(vec![Block::ToolResult {
+            call_id: json!("c1"),
+            is_error: false,
+            output: Output::Raw(json!("done")),
+        }])],
     );
     codex[0].payload["step"] = json!(2);
     codex[0].payload["turn"] = json!("u2");
@@ -587,9 +595,10 @@ async fn two_claude_exchanges_of_one_thread_continue_by_message_id_whichever_rec
     // The step naming m1 continues the reply with m1 and pairs c1 when that reply came first; when it came
     // second, nothing is known of m1, and the reply without a previous id continues the last step
     use crate::common::*;
+    use crate::message::{Block, Message, Output};
     let calling = || {
         vec![
-            conversation(json!("sys"), json!([]), vec![message("user", vec![text_block("hi")])]),
+            conversation(json!("sys"), json!([]), vec![Message::user(vec![Block::text("hi")])]),
             block_start(BlockStart {
                 index: 0,
                 kind: "tool_call",
@@ -601,7 +610,11 @@ async fn two_claude_exchanges_of_one_thread_continue_by_message_id_whichever_rec
         ]
     };
     let answering = || {
-        let result = message("user", vec![tool_result_block(json!("c1"), json!("done"), false)]);
+        let result = Message::user(vec![Block::ToolResult {
+            call_id: json!("c1"),
+            is_error: false,
+            output: Output::Raw(json!("done")),
+        }]);
         let mut events = closed_reply();
         events[0] = conversation(json!("sys"), json!([]), vec![result]);
         events[0].payload["previous_message_id"] = json!("m1");

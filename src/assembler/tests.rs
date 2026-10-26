@@ -1,9 +1,10 @@
 use super::*;
 use crate::common::*;
+use crate::message::{Block, Message};
 use serde_json::json;
 
 fn conversation_event() -> TapEvent {
-    conversation(json!("sys"), json!([]), vec![message("user", vec![text_block("hi")])])
+    conversation(json!("sys"), json!([]), vec![Message::user(vec![Block::text("hi")])])
 }
 
 fn text_reply(text: &str) -> Vec<TapEvent> {
@@ -43,7 +44,10 @@ fn a_complete_exchange_yields_one_complete_record() {
     assert_eq!(record["incomplete"], false);
     assert_eq!(record["dropped"], 0);
     assert_eq!(record["conversation"]["system"], "sys");
-    assert_eq!(record["reply"]["message"], message("assistant", vec![text_block("ok")]));
+    assert_eq!(
+        record["reply"]["message"],
+        json!(Message::assistant(vec![Block::text("ok")]))
+    );
     assert_eq!(record["reply"]["usage"]["input"], 3);
     assert_eq!(record["reply"]["usage"]["output"], 1);
     assert_eq!(record["reply"]["stop_reason"], "end_turn");
@@ -73,7 +77,10 @@ fn finishing_with_an_open_reply_writes_one_incomplete_record() {
     let record = assembler.finish(0).unwrap();
 
     assert_eq!(record["incomplete"], true);
-    assert_eq!(record["reply"]["message"], message("assistant", vec![text_block("ok")]));
+    assert_eq!(
+        record["reply"]["message"],
+        json!(Message::assistant(vec![Block::text("ok")]))
+    );
     assert!(assembler.finish(0).is_none());
 }
 
@@ -132,7 +139,7 @@ fn an_item_outside_the_format_is_skipped_and_later_blocks_keep_their_order() {
 
     let records = feed(&mut assembler, events, 0);
 
-    assert_eq!(records[0]["reply"]["message"]["blocks"], json!([text_block("kept")]));
+    assert_eq!(records[0]["reply"]["message"]["blocks"], json!([Block::text("kept")]));
     assert_eq!(records[0]["incomplete"], false);
 }
 
@@ -157,7 +164,11 @@ fn a_tool_call_joins_its_json_fragments_into_the_input() {
 
     assert_eq!(
         records[0]["reply"]["message"]["blocks"],
-        json!([tool_call_block(json!("c1"), json!("shell"), json!({"a": 1}))])
+        json!([Block::ToolCall {
+            id: json!("c1"),
+            input: json!({"a": 1}),
+            name: json!("shell")
+        }])
     );
 }
 
@@ -180,7 +191,7 @@ fn a_reply_past_the_bound_stops_assembling_and_is_incomplete() {
 
     let records = feed(&mut assembler, events, 0);
 
-    assert_eq!(records[0]["reply"]["message"]["blocks"], json!([text_block("abc")]));
+    assert_eq!(records[0]["reply"]["message"]["blocks"], json!([Block::text("abc")]));
     assert_eq!(records[0]["incomplete"], true);
 }
 
@@ -220,7 +231,9 @@ fn encrypted_reasoning_without_text_becomes_an_encrypted_block() {
 
     assert_eq!(
         records[0]["reply"]["message"]["blocks"],
-        json!([encrypted_reasoning_block(json!("enc"))])
+        json!([Block::EncryptedReasoning {
+            encrypted: json!("enc")
+        }])
     );
 }
 

@@ -1,7 +1,8 @@
 use super::request::{input_item, read_request};
 use crate::adapter::TapEvent;
 use crate::body::MAX_REQUEST_BODY;
-use crate::common::*;
+use crate::common::conversation;
+use crate::message::Message;
 use serde_json::{json, Value};
 
 /// The running conversation of one socket. Codex sends only the new items with
@@ -13,11 +14,11 @@ pub(super) struct History {
     last_reply: Option<String>,
     system: Value,
     tools: Value,
-    messages: Vec<Value>,
+    messages: Vec<Message>,
     bytes: usize,
     broken: bool,
     reply_id: Option<String>,
-    reply_items: Vec<(String, Vec<Value>)>,
+    reply_items: Vec<Message>,
 }
 
 impl History {
@@ -81,9 +82,8 @@ impl History {
             self.broken = true;
             return;
         }
-        let reply: Vec<Value> = items.into_iter().map(|(role, blocks)| message(&role, blocks)).collect();
-        self.bytes += size_of(&reply);
-        append(&mut self.messages, reply);
+        self.bytes += size_of(&items);
+        append(&mut self.messages, items);
         self.last_reply = id;
         self.bound();
     }
@@ -98,20 +98,19 @@ impl History {
     }
 }
 
-pub(super) fn size_of(messages: &[Value]) -> usize {
-    messages.iter().map(|m| m.to_string().len()).sum()
+/// The bytes the messages write; one that cannot be written counts as the most, so the bound trips.
+pub(super) fn size_of(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .map(|message| serde_json::to_string(message).map_or(usize::MAX, |written| written.len()))
+        .fold(0, usize::saturating_add)
 }
 
 /// Adds messages, joining one to the last when they share a role.
-pub(super) fn append(into: &mut Vec<Value>, more: Vec<Value>) {
+pub(super) fn append(into: &mut Vec<Message>, more: Vec<Message>) {
     for next in more {
         match into.last_mut() {
-            Some(last) if last["role"] == next["role"] => {
-                let blocks = next["blocks"].as_array().cloned().unwrap_or_default();
-                if let Some(joined) = last["blocks"].as_array_mut() {
-                    joined.extend(blocks);
-                }
-            }
+            Some(last) if last.role == next.role => last.blocks.extend(next.blocks),
             _ => into.push(next),
         }
     }
