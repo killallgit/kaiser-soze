@@ -1,4 +1,5 @@
 use crate::adapter::TapEvent;
+use crate::message::Message;
 use serde_json::{json, Value};
 
 pub struct BlockStart {
@@ -46,7 +47,7 @@ fn live(kind: &str, payload: Value) -> TapEvent {
     }
 }
 
-pub fn conversation(system: Value, tools: Value, messages: Vec<Value>) -> TapEvent {
+pub fn conversation(system: Value, tools: Value, messages: Vec<Message>) -> TapEvent {
     live(
         "conversation",
         json!({"system": system, "tools": tools, "messages": messages}),
@@ -160,6 +161,7 @@ pub fn base64_size(data: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::Block;
     use serde_json::json;
 
     #[test]
@@ -168,7 +170,7 @@ mod tests {
         let conversation = conversation(
             json!("sys"),
             json!([{"name": "shell"}]),
-            vec![message("user", vec![text_block("hi")])],
+            vec![Message::user(vec![Block::text("hi")])],
         );
         let start = block_start(BlockStart {
             index: 1,

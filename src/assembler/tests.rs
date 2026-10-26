@@ -1,9 +1,10 @@
 use super::*;
 use crate::common::*;
+use crate::message::{Block, Message};
 use serde_json::json;
 
 fn conversation_event() -> TapEvent {
-    conversation(json!("sys"), json!([]), vec![message("user", vec![text_block("hi")])])
+    conversation(json!("sys"), json!([]), vec![Message::user(vec![Block::text("hi")])])
 }
 
 fn text_reply(text: &str) -> Vec<TapEvent> {

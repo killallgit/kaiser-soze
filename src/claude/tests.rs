@@ -1,7 +1,7 @@
 use super::*;
 use crate::adapter::ResponseHead;
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
-use crate::common::*;
+use crate::message::{Block, Message, Output};
 use bytes::Bytes;
 use serde_json::json;
 
@@ -169,22 +169,28 @@ fn maps_a_messages_request_split_across_chunks_to_a_conversation() {
     assert_eq!(
         payload["messages"],
         json!([
-            message("user", vec![text_block("hi")]),
-            message(
-                "assistant",
-                vec![
-                    reasoning_block(json!("hmm"), json!("sig")),
-                    text_block("ok"),
-                    tool_call_block(json!("t1"), json!("Bash"), json!({"command": "ls"})),
-                ]
-            ),
-            message(
-                "user",
-                vec![
-                    tool_result_block(json!("t1"), json!("out"), true),
-                    image_block("2:1", "image/png", 3)
-                ]
-            ),
+            Message::user(vec![Block::text("hi")]),
+            Message::assistant(vec![
+                Block::reasoning(json!("hmm"), json!("sig")),
+                Block::text("ok"),
+                Block::ToolCall {
+                    id: json!("t1"),
+                    input: json!({"command": "ls"}),
+                    name: json!("Bash")
+                },
+            ]),
+            Message::user(vec![
+                Block::ToolResult {
+                    call_id: json!("t1"),
+                    is_error: true,
+                    output: Output::Raw(json!("out"))
+                },
+                Block::Image {
+                    content_type: "image/png".into(),
+                    reference: "2:1".into(),
+                    size: 3
+                }
+            ]),
         ])
     );
 }
@@ -212,7 +218,14 @@ fn an_image_inside_a_tool_result_becomes_a_reference() {
     let output = &events[0].payload["messages"][0]["blocks"][0]["output"];
     assert_eq!(
         *output,
-        json!([text_block("see"), image_block("0:0:1", "image/jpeg", 7)])
+        json!([
+            Block::text("see"),
+            Block::Image {
+                content_type: "image/jpeg".into(),
+                reference: "0:0:1".into(),
+                size: 7
+            }
+        ])
     );
     assert!(!events[0].payload.to_string().contains("QUJDREVGRw"));
 }

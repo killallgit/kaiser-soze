@@ -5,7 +5,8 @@ use hyper::Request;
 use kaiser_soze::adapter::{Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
 use kaiser_soze::claude::ClaudeAdapter;
 use kaiser_soze::common::*;
-use serde_json::Value;
+use kaiser_soze::message::{Block, Message};
+use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -199,7 +200,7 @@ impl ExchangeParser for EchoParser {
             return Vec::new();
         }
         vec![
-            conversation(Value::Null, Value::Null, vec![message("user", vec![text_block("hi")])]),
+            conversation(Value::Null, Value::Null, vec![Message::user(vec![Block::text("hi")])]),
             block_start(BlockStart {
                 index: 0,
                 kind: "text",
@@ -252,6 +253,10 @@ async fn credentials_and_image_bytes_never_reach_the_tap_file() {
     let conversation = lines.iter().find(|line| line["event"] == "conversation").unwrap();
     assert_eq!(
         conversation["payload"]["messages"][0]["blocks"][0],
-        image_block("0:0", "image/png", 14)
+        json!(Block::Image {
+            content_type: "image/png".into(),
+            reference: "0:0".into(),
+            size: 14
+        })
     );
 }

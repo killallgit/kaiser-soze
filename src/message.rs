@@ -30,6 +30,22 @@ pub struct Message {
     pub role: Role,
 }
 
+impl Message {
+    pub fn user(blocks: Vec<Block>) -> Self {
+        Self {
+            blocks,
+            role: Role::user(),
+        }
+    }
+
+    pub fn assistant(blocks: Vec<Block>) -> Self {
+        Self {
+            blocks,
+            role: Role::assistant(),
+        }
+    }
+}
+
 /// The output of a tool result: the blocks it holds, or the upstream value as sent.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
