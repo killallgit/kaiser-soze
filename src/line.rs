@@ -118,4 +118,12 @@ mod tests {
             r#"{"adapter":"claude","end":9,"event":"record","exchange":7,"mono_us":1500,"payload":{"conversation":null,"dropped":0,"incomplete":false,"reply":{"message":{"blocks":[],"role":"assistant"},"stop_reason":null,"usage":{"cache_read":null,"cache_write":null,"input":null,"output":null,"reasoning":null}}},"start":4,"wall_ms":1700000000000}"#
         );
     }
+
+    #[test]
+    fn a_value_writes_its_keys_sorted() {
+        // The tap's key order for Value payloads rests on serde_json keeping its map sorted, so preserve_order must stay off
+        let value = json!({"b": 1, "a": {"d": 2, "c": 3}});
+
+        assert_eq!(value.to_string(), r#"{"a":{"c":3,"d":2},"b":1}"#);
+    }
 }
