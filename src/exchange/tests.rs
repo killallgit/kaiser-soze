@@ -617,7 +617,7 @@ async fn two_claude_exchanges_of_one_thread_continue_by_message_id_whichever_rec
 
         assert!(
             edges == calling_first || edges == answering_first,
-            "run {run} wrote neither order's edges"
+            "run {run} wrote neither order's edges: {edges:?}"
         );
     }
 }
@@ -631,19 +631,19 @@ async fn codex_exchanges_of_one_thread_form_one_chain_in_the_order_their_records
 
         let continues: Vec<&Edge> = edges.iter().filter(|(kind, ..)| kind == "continues").collect();
         let distinct = |ends: Vec<&String>| ends.iter().collect::<std::collections::HashSet<_>>().len();
-        assert_eq!(continues.len(), 2, "run {run}");
-        assert!(continues.iter().all(|(_, from, to)| from != to), "run {run}");
+        assert_eq!(continues.len(), 2, "run {run}: {edges:?}");
+        assert!(continues.iter().all(|(_, from, to)| from != to), "run {run}: {edges:?}");
         assert_eq!(
             distinct(continues.iter().map(|(_, from, _)| from).collect()),
             2,
-            "run {run}"
+            "run {run}: {edges:?}"
         );
         assert_eq!(
             distinct(continues.iter().map(|(_, _, to)| to).collect()),
             2,
-            "run {run}"
+            "run {run}: {edges:?}"
         );
-        assert_eq!(edges.len(), 2, "run {run}");
+        assert_eq!(edges.len(), 2, "run {run}: {edges:?}");
     }
 }
 
