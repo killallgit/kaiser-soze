@@ -29,8 +29,9 @@ impl LiveState {
     }
 
     pub fn line(&mut self, tap: &Line) -> Option<String> {
-        let Entry::Untyped { kind, payload } = &tap.payload else {
-            return None;
+        let (kind, payload) = match &tap.entry {
+            Entry::Untyped { kind, payload } => (kind, payload),
+            Entry::Edge(_) => return None,
         };
         let (exchange, wall) = (tap.exchange, tap.wall_ms);
         let (body, command, dir) = match kind.as_str() {

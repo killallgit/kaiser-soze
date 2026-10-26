@@ -16,7 +16,7 @@ fn tap(exchange: u64, adapter: &'static str, event: &str, wall_ms: u64, payload:
         wall_ms,
         start: 0,
         end: 0,
-        payload: Entry::untyped(event, payload),
+        entry: Entry::untyped(event, payload),
     }
 }
 
@@ -24,7 +24,7 @@ fn tap(exchange: u64, adapter: &'static str, event: &str, wall_ms: u64, payload:
 fn an_edge_gives_no_live_line() {
     // It shows requests, replies and notes only, never the graph
     let edge = Line {
-        payload: Entry::Edge(Edge::new(EdgeKind::InThread, "exchange:3", "thread:t1")),
+        entry: Entry::Edge(Edge::new(EdgeKind::InThread, "exchange:3", "thread:t1")),
         ..tap(3, "codex", "edge", T0, Value::Null)
     };
 

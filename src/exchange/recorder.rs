@@ -97,7 +97,7 @@ impl Recorder {
             wall_ms: stamp.wall_ms,
             start: offsets.0,
             end: offsets.1,
-            payload: entry,
+            entry,
         }
     }
 

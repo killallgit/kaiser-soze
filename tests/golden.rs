@@ -323,20 +323,24 @@ fn claude_subagent_reply() -> Vec<u8> {
     ])
 }
 
-async fn run_claude_exchange(
-    recording: &Recording,
-    headers: &[(&str, &str)],
-    label: Option<&Label>,
+struct ClaudeExchange<'a> {
+    headers: &'a [(&'a str, &'a str)],
+    label: Option<&'a Label>,
     start_edges: usize,
-    (request, reply): (&Value, &[u8]),
-) {
+    request: &'a Value,
+    reply: &'a [u8],
+}
+
+async fn run_claude_exchange(recording: &Recording, exchange: ClaudeExchange<'_>) {
     let adapter = ClaudeAdapter::default();
-    let head = head("api.anthropic.com", "/v1/messages", headers);
-    let tap = recording.begin(&adapter, &head, label, start_edges).await;
-    send_request(&tap, request);
+    let head = head("api.anthropic.com", "/v1/messages", exchange.headers);
+    let tap = recording
+        .begin(&adapter, &head, exchange.label, exchange.start_edges)
+        .await;
+    send_request(&tap, exchange.request);
     recording.wait_for_conversation().await;
     tap.note_response_head(&response(200, "text/event-stream"));
-    send_reply(&tap, reply);
+    send_reply(&tap, exchange.reply);
     recording.end(tap).await;
 }
 
@@ -347,30 +351,30 @@ async fn claude_exchanges_write_these_exact_bytes() {
     let label = recording.label();
     let subagent_request = json!({"model": "synthetic-model", "messages": [{"role": "user", "content": "Go."}]});
 
-    run_claude_exchange(
-        &recording,
-        &claude_headers("prompt-syn-1", None),
-        Some(&label),
-        3,
-        (&claude_first_request(), &claude_first_reply()),
-    )
-    .await;
-    run_claude_exchange(
-        &recording,
-        &claude_headers("prompt-syn-2", None),
-        Some(&label),
-        3,
-        (&claude_second_request(), &claude_failed_reply()),
-    )
-    .await;
-    run_claude_exchange(
-        &recording,
-        &claude_headers("prompt-syn-3", Some("agent-syn")),
-        None,
-        3,
-        (&subagent_request, &claude_subagent_reply()),
-    )
-    .await;
+    let (first_request, first_reply) = (claude_first_request(), claude_first_reply());
+    let (second_request, failed_reply) = (claude_second_request(), claude_failed_reply());
+    let subagent_reply = claude_subagent_reply();
+    let (first, second, subagent) = (
+        claude_headers("prompt-syn-1", None),
+        claude_headers("prompt-syn-2", None),
+        claude_headers("prompt-syn-3", Some("agent-syn")),
+    );
+
+    let exchanges = [
+        (&first, Some(&label), &first_request, &first_reply),
+        (&second, Some(&label), &second_request, &failed_reply),
+        (&subagent, None, &subagent_request, &subagent_reply),
+    ];
+    for (headers, label, request, reply) in exchanges {
+        let exchange = ClaudeExchange {
+            headers,
+            label,
+            start_edges: 3,
+            request,
+            reply,
+        };
+        run_claude_exchange(&recording, exchange).await;
+    }
 
     assert_golden("claude", &recording.normalised());
 }
@@ -545,6 +549,7 @@ fn assert_golden(name: &str, written: &str) {
     let path = golden_dir().join(format!("{name}.jsonl"));
     if std::env::var_os("SOZE_BLESS_GOLDEN").is_some() {
         std::fs::write(&path, written).unwrap();
+        panic!("{name}.jsonl was rewritten; run again without SOZE_BLESS_GOLDEN");
     }
     let expected = std::fs::read_to_string(&path).unwrap();
     let (got, want): (Vec<&str>, Vec<&str>) = (written.lines().collect(), expected.lines().collect());
@@ -552,6 +557,7 @@ fn assert_golden(name: &str, written: &str) {
     for (got, want) in got.iter().zip(&want) {
         assert_eq!(got, want);
     }
+    assert_eq!(written, expected);
 }
 
 #[test]

@@ -26,7 +26,7 @@ impl Entry {
     }
 }
 
-/// Serialises as the line's payload alone; the event name is the line's own key.
+/// Serialises as the line's payload alone, without its event name: that is the line's own key, so serialise a `Line`, not a bare `Entry`.
 impl Serialize for Entry {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
@@ -45,7 +45,7 @@ pub struct Line {
     pub wall_ms: u64,
     pub start: u64,
     pub end: u64,
-    pub payload: Entry,
+    pub entry: Entry,
 }
 
 /// The tap file has its keys sorted, so the fields are written in key order.
@@ -54,10 +54,10 @@ impl Serialize for Line {
         let mut line = serializer.serialize_struct("Line", 8)?;
         line.serialize_field("adapter", self.adapter)?;
         line.serialize_field("end", &self.end)?;
-        line.serialize_field("event", self.payload.event())?;
+        line.serialize_field("event", self.entry.event())?;
         line.serialize_field("exchange", &self.exchange)?;
         line.serialize_field("mono_us", &self.mono_us)?;
-        line.serialize_field("payload", &self.payload)?;
+        line.serialize_field("payload", &self.entry)?;
         line.serialize_field("start", &self.start)?;
         line.serialize_field("wall_ms", &self.wall_ms)?;
         line.end()
@@ -70,7 +70,7 @@ mod tests {
     use crate::graph::EdgeKind;
     use serde_json::json;
 
-    fn line(payload: Entry) -> Line {
+    fn line(entry: Entry) -> Line {
         Line {
             exchange: 7,
             adapter: "claude",
@@ -78,22 +78,8 @@ mod tests {
             wall_ms: 1_700_000_000_000,
             start: 4,
             end: 9,
-            payload,
+            entry,
         }
-    }
-
-    fn written_before_typing(line: &Line) -> String {
-        json!({
-            "exchange": line.exchange,
-            "adapter": line.adapter,
-            "event": line.payload.event(),
-            "mono_us": line.mono_us,
-            "wall_ms": line.wall_ms,
-            "start": line.start,
-            "end": line.end,
-            "payload": serde_json::to_value(&line.payload).unwrap(),
-        })
-        .to_string()
     }
 
     #[test]
@@ -116,22 +102,5 @@ mod tests {
             serde_json::to_string(&line).unwrap(),
             r#"{"adapter":"claude","end":9,"event":"edge","exchange":7,"mono_us":1500,"payload":{"from":"step:7.1","kind":"turn","to":"turn:u1"},"start":4,"wall_ms":1700000000000}"#
         );
-    }
-
-    #[test]
-    fn a_line_serialises_to_the_bytes_the_untyped_json_line_had() {
-        // It matches the object the recorder used to build, for an untyped entry and an edge
-        let untyped = line(Entry::untyped(
-            "record",
-            json!({"b": [1, "é"], "a": {"d": true, "c": null}}),
-        ));
-        let edge = line(Entry::Edge(Edge {
-            branch: Some("main".into()),
-            ..Edge::new(EdgeKind::InProject, "session:s1", "project:p")
-        }));
-
-        for line in [untyped, edge] {
-            assert_eq!(serde_json::to_string(&line).unwrap(), written_before_typing(&line));
-        }
     }
 }
