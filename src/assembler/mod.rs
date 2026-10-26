@@ -92,7 +92,7 @@ impl Assembler {
             Event::Usage(usage) => self.reply.usage.merge(usage.clone()),
             Event::ReplyEnd(end) => {
                 self.reply.stop_reason = end.stop_reason.clone();
-                self.reply.message_id = end.message_id.clone();
+                self.reply.message_id = end.message_id.clone().filter(|id| !id.is_null());
                 return vec![self.take_record(dropped, false)];
             }
             Event::Unparsed(_) => self.reply.unparsed = true,

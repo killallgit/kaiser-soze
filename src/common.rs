@@ -148,7 +148,13 @@ mod tests {
                 stop_reason: json!("end_turn")
             })
         );
-        assert_eq!(unnamed.event, reply_end(json!("end_turn")).event);
+        assert_eq!(
+            unnamed.event,
+            Event::ReplyEnd(ReplyEnd {
+                message_id: None,
+                stop_reason: json!("end_turn")
+            })
+        );
     }
 
     #[test]

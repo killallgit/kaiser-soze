@@ -266,6 +266,24 @@ fn the_reply_message_id_reaches_the_record_when_the_end_names_one() {
 }
 
 #[test]
+fn a_reply_end_that_carries_a_null_message_id_names_no_message() {
+    // A null id is no id, however the event was built
+    let mut assembler = Assembler::default();
+    let end = TapEvent {
+        event: crate::event::Event::ReplyEnd(crate::event::ReplyEnd {
+            message_id: Some(Value::Null),
+            stop_reason: json!("end_turn"),
+        }),
+        start: 0,
+        end: 0,
+    };
+
+    let records = feed(&mut assembler, vec![conversation_event(), end], 0);
+
+    assert!(records[0]["reply"].get("message_id").is_none());
+}
+
+#[test]
 fn a_record_without_a_request_names_no_step() {
     // An unparsed request leaves no step, so it cannot collide with the real first one
     let mut assembler = Assembler::default();

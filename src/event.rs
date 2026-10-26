@@ -4,7 +4,8 @@ use serde_json::Value;
 
 /// What an adapter says about one exchange. The payload structs declare their fields in the key
 /// order the tap file writes, and an event serialises as its payload alone: the event name is the
-/// tap line's own key.
+/// tap line's own key. `BlockDelta` flattens its delta, so it is sorted only through a `Value`,
+/// which is how the recorder writes every event.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Event {

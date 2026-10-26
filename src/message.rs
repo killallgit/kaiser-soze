@@ -102,7 +102,7 @@ impl Block {
 
 /// Writes the keys in sorted order with `kind` among them, which an internally tagged derive cannot.
 /// The conversation payload is sorted by its `Value` map anyway; this keeps a block serialised directly,
-/// as the typed record will, in the same order.
+/// as a record that serialises blocks directly would, in the same order.
 impl Serialize for Block {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
