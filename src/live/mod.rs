@@ -6,7 +6,7 @@ mod tests;
 pub use printer::Printer;
 pub use state::LiveState;
 
-use serde_json::Value;
+use crate::line::Line;
 use tokio::io::AsyncWrite;
 
 /// What the sink needs to show lines: the formatter and the printer.
@@ -23,7 +23,7 @@ impl Live {
         }
     }
 
-    pub fn show(&mut self, tap: &Value) {
+    pub fn show(&mut self, tap: &Line) {
         if let Some(line) = self.state.line(tap) {
             self.printer.offer(line);
         }

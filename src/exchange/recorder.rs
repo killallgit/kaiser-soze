@@ -1,5 +1,6 @@
 use super::clock::Stamp;
 use crate::graph::{Edge, Identity, Step, Threads};
+use crate::line::{Entry, Line};
 use crate::sink::Sink;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,7 +12,7 @@ type ProjectLookup = Option<Option<String>>;
 
 #[derive(Clone)]
 pub struct Recorder {
-    pub sink: Sink,
+    pub sink: Sink<Line>,
     pub exchange: u64,
     pub adapter: &'static str,
     pub(super) refused: Arc<AtomicU64>,
@@ -21,7 +22,7 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    pub fn new(sink: Sink, exchange: u64, adapter: &'static str) -> Self {
+    pub fn new(sink: Sink<Line>, exchange: u64, adapter: &'static str) -> Self {
         Self {
             sink,
             exchange,
@@ -88,27 +89,35 @@ impl Recorder {
         self.refused.load(Ordering::Relaxed)
     }
 
-    pub(super) fn line(&self, stamp: Stamp, kind: &str, payload: Value, offsets: (u64, u64)) -> Value {
-        json!({
-            "exchange": self.exchange,
-            "adapter": self.adapter,
-            "event": kind,
-            "mono_us": stamp.mono_us,
-            "wall_ms": stamp.wall_ms,
-            "start": offsets.0,
-            "end": offsets.1,
-            "payload": payload,
-        })
+    fn line(&self, stamp: Stamp, entry: Entry, offsets: (u64, u64)) -> Line {
+        Line {
+            exchange: self.exchange,
+            adapter: self.adapter,
+            mono_us: stamp.mono_us,
+            wall_ms: stamp.wall_ms,
+            start: offsets.0,
+            end: offsets.1,
+            payload: entry,
+        }
     }
 
     pub fn write(&self, stamp: Stamp, kind: &str, payload: Value, offsets: (u64, u64)) {
-        if !self.sink.write(self.line(stamp, kind, payload, offsets)) {
+        let line = self.line(stamp, Entry::untyped(kind, payload), offsets);
+        if !self.sink.write(line) {
             self.refused.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     pub async fn write_reliable(&self, stamp: Stamp, kind: &str, payload: Value) {
-        self.sink.write_reliable(self.line(stamp, kind, payload, (0, 0))).await;
+        self.write_entry_reliable(stamp, Entry::untyped(kind, payload)).await;
+    }
+
+    pub(super) async fn write_edge(&self, stamp: Stamp, edge: Edge) {
+        self.write_entry_reliable(stamp, Entry::Edge(edge)).await;
+    }
+
+    async fn write_entry_reliable(&self, stamp: Stamp, entry: Entry) {
+        self.sink.write_reliable(self.line(stamp, entry, (0, 0))).await;
     }
 
     pub(super) async fn write_record(&self, stamp: Stamp, record: Value) {
@@ -118,13 +127,7 @@ impl Recorder {
         let edges = self.step_edges(step.as_ref());
         self.write_reliable(stamp, "record", record).await;
         for edge in edges {
-            self.write_edge(stamp, &edge).await;
-        }
-    }
-
-    pub(super) async fn write_edge(&self, stamp: Stamp, edge: &Edge) {
-        if let Ok(payload) = serde_json::to_value(edge) {
-            self.write_reliable(stamp, "edge", payload).await;
+            self.write_edge(stamp, edge).await;
         }
     }
 

@@ -3,6 +3,7 @@ use super::{Clock, ExchangeTap, Recorder};
 use crate::adapter::{Adapter, ExchangeParser, RequestHead};
 use crate::graph::{self, Identity, Threads};
 use crate::label::Label;
+use crate::line::Line;
 use crate::project::ProjectLookups;
 use crate::shape::{ShapeLog, ShapedParser};
 use crate::sink::Sink;
@@ -25,14 +26,14 @@ pub struct Opening<'a> {
 pub struct Exchanges {
     next_exchange: AtomicU64,
     clock: Clock,
-    sink: Sink,
+    sink: Sink<Line>,
     shapes: Option<Arc<ShapeLog>>,
     threads: Arc<Mutex<Threads>>,
     projects: ProjectLookups,
 }
 
 impl Exchanges {
-    pub fn new(sink: Sink, shapes: Option<Arc<ShapeLog>>, projects: ProjectLookups) -> Self {
+    pub fn new(sink: Sink<Line>, shapes: Option<Arc<ShapeLog>>, projects: ProjectLookups) -> Self {
         Self {
             next_exchange: AtomicU64::new(1),
             clock: Clock::start(),
@@ -123,7 +124,7 @@ impl StartEdges {
         };
         self.signal.settle(project.as_ref().map(|project| project.id.clone()));
         for edge in graph::edges(self.recorder.exchange, &self.identity, project.as_ref()) {
-            self.recorder.write_edge(self.clock.stamp(), &edge).await;
+            self.recorder.write_edge(self.clock.stamp(), edge).await;
         }
     }
 }

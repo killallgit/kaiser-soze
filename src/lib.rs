@@ -10,6 +10,7 @@ pub mod common;
 pub mod exchange;
 pub mod graph;
 pub mod label;
+pub mod line;
 pub mod live;
 pub mod project;
 pub mod proxy;

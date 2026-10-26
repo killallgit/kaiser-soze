@@ -1,3 +1,4 @@
+use crate::line::{Entry, Line};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -27,11 +28,12 @@ impl LiveState {
         }
     }
 
-    pub fn line(&mut self, tap: &Value) -> Option<String> {
-        let exchange = tap["exchange"].as_u64()?;
-        let wall = tap["wall_ms"].as_u64().unwrap_or_default();
-        let payload = &tap["payload"];
-        let (body, command, dir) = match tap["event"].as_str()? {
+    pub fn line(&mut self, tap: &Line) -> Option<String> {
+        let Entry::Untyped { kind, payload } = &tap.payload else {
+            return None;
+        };
+        let (exchange, wall) = (tap.exchange, tap.wall_ms);
+        let (body, command, dir) = match kind.as_str() {
             "exchange_start" => {
                 let note = self.exchanges.entry(exchange).or_default();
                 (note.command, note.dir) = label_of(payload);
@@ -96,11 +98,7 @@ impl LiveState {
             }
             _ => return None,
         };
-        let head = format!(
-            "{}  #{exchange} {}  {body}",
-            self.clock(wall),
-            tap["adapter"].as_str().unwrap_or("-")
-        );
+        let head = format!("{}  #{exchange} {}  {body}", self.clock(wall), tap.adapter);
         Some(self.fit(head, command, dir))
     }
 
