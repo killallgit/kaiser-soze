@@ -12,6 +12,7 @@ pub mod graph;
 pub mod label;
 pub mod line;
 pub mod live;
+pub mod message;
 pub mod project;
 pub mod proxy;
 pub mod redact;
