@@ -69,7 +69,7 @@ impl Recorder {
         found.flatten()
     }
 
-    pub(super) fn with_ids(&self, mut record: Record, project: Option<String>, step: Option<&Step>) -> Record {
+    fn with_ids(&self, mut record: Record, project: Option<String>, step: Option<&Step>) -> Record {
         record.project = project;
         record.session = self.identity.session.clone();
         record.thread = self.identity.thread.clone();
