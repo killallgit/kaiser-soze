@@ -9,7 +9,7 @@ mod tests;
 
 pub use clock::{Clock, Stamp};
 pub use exchanges::{Exchanges, Opening};
-pub use recorder::{ProjectSignal, Recorder};
+pub use recorder::Recorder;
 pub use stats::Stats;
 pub use tap::ExchangeTap;
 pub use tee::{Side, TeeBody};

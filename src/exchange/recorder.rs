@@ -16,7 +16,7 @@ pub struct Recorder {
     pub adapter: &'static str,
     pub(super) refused: Arc<AtomicU64>,
     pub(super) identity: Identity,
-    pub(super) project: Arc<watch::Sender<ProjectLookup>>,
+    project: Arc<watch::Sender<ProjectLookup>>,
     threads: Option<Arc<Mutex<Threads>>>,
 }
 
@@ -46,6 +46,7 @@ impl Recorder {
     }
 
     /// Makes this recorder's records wait for the project signal, which ends when it is settled or dropped.
+    /// Take `project_signal` too: a waiting recorder whose signal is never taken writes no record.
     pub fn awaiting_project(self) -> Self {
         self.project.send_replace(None);
         self

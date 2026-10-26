@@ -26,7 +26,8 @@ impl ProjectLookups {
         }
     }
 
-    pub fn with_wait(mut self, wait: Duration) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_wait(mut self, wait: Duration) -> Self {
         self.wait = wait;
         self
     }

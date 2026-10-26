@@ -1,4 +1,5 @@
-use super::{Clock, ExchangeTap, ProjectSignal, Recorder};
+use super::recorder::ProjectSignal;
+use super::{Clock, ExchangeTap, Recorder};
 use crate::adapter::{Adapter, ExchangeParser, RequestHead};
 use crate::graph::{self, Identity, Threads};
 use crate::label::Label;
