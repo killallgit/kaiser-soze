@@ -1,13 +1,13 @@
 use crate::adapter::TapEvent;
 use crate::body::MAX_REQUEST_BODY;
-use crate::common::{encrypted_reasoning_block, message, reasoning_block, text_block, tool_call_block};
 use crate::graph::{claimed, Claimed};
+use crate::message::{Block, Message};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashSet};
 
 const USAGE_FIELDS: [&str; 5] = ["input", "output", "cache_read", "cache_write", "reasoning"];
 
-struct Block {
+struct OpenBlock {
     kind: String,
     id: Value,
     name: Value,
@@ -17,15 +17,21 @@ struct Block {
     input_json: String,
 }
 
-impl Block {
-    fn into_value(self) -> Value {
+impl OpenBlock {
+    fn into_block(self) -> Block {
         match self.kind.as_str() {
             "reasoning" => match self.encrypted {
-                Some(encrypted) if self.text.is_empty() => encrypted_reasoning_block(json!(encrypted)),
-                _ => reasoning_block(json!(self.text), self.signature),
+                Some(encrypted) if self.text.is_empty() => Block::EncryptedReasoning {
+                    encrypted: json!(encrypted),
+                },
+                _ => Block::reasoning(json!(self.text), self.signature),
             },
-            "tool_call" => tool_call_block(self.id, self.name, parse_input(&self.input_json)),
-            _ => text_block(&self.text),
+            "tool_call" => Block::ToolCall {
+                id: self.id,
+                input: parse_input(&self.input_json),
+                name: self.name,
+            },
+            _ => Block::text(self.text),
         }
     }
 }
@@ -39,7 +45,7 @@ fn parse_input(joined: &str) -> Value {
 
 #[derive(Default)]
 struct Reply {
-    blocks: BTreeMap<u64, Block>,
+    blocks: BTreeMap<u64, OpenBlock>,
     skipped: HashSet<u64>,
     usage: Map<String, Value>,
     stop_reason: Value,
@@ -115,7 +121,7 @@ impl Assembler {
         }
         self.reply.blocks.insert(
             index,
-            Block {
+            OpenBlock {
                 kind: kind.to_string(),
                 id: payload["id"].clone(),
                 name: payload["name"].clone(),
@@ -163,7 +169,7 @@ impl Assembler {
         let conversation = std::mem::take(&mut self.conversation);
         self.seen = false;
         let incomplete = cut || dropped > 0 || reply.unparsed || reply.truncated;
-        let blocks = reply.blocks.into_values().map(Block::into_value).collect();
+        let blocks = reply.blocks.into_values().map(OpenBlock::into_block).collect();
         let usage: Map<String, Value> = USAGE_FIELDS
             .iter()
             .map(|field| {
@@ -177,7 +183,7 @@ impl Assembler {
         let mut record = json!({
             "conversation": conversation,
             "reply": {
-                "message": message("assistant", blocks),
+                "message": Message::assistant(blocks),
                 "usage": usage,
                 "stop_reason": reply.stop_reason,
             },
