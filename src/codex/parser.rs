@@ -8,7 +8,7 @@ use crate::sse::{SseEvent, SseSplitter};
 use serde_json::Value;
 
 pub struct CodexParser {
-    pub(super) history: History,
+    history: History,
     request: RequestBuffer,
     response_encoded: bool,
     steps: u64,

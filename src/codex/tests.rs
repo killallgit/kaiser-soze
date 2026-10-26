@@ -1,4 +1,3 @@
-use super::history::History;
 use super::*;
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
 use crate::body::MAX_REQUEST_BODY;
@@ -651,60 +650,41 @@ fn history_past_the_bound_makes_later_records_partial() {
     assert_eq!(event.payload["partial"], json!(true));
 }
 
-fn continuing(previous: &str) -> Value {
-    json!({"previous_response_id": previous, "input": [user_item("next")]})
-}
-
-fn history_after_one_reply(request_text: &str, reply_text: &str) -> History {
-    let mut history = History::default();
-    history.join(&json!({"input": [user_item(request_text)]}));
-    for frame in reply_frames("r1", reply_text) {
-        history.watch(&frame.to_string());
-    }
-    history
-}
-
 #[test]
-fn a_continuing_request_after_an_unreadable_one_is_partial() {
-    let mut history = history_after_one_reply("one", "answer");
-    history.request_unreadable();
+fn a_request_body_that_cannot_be_read_makes_the_next_request_partial() {
+    let mut parser = parser();
+    first_request(&mut parser);
+    server(&mut parser, &reply_frames("r1", "answer"));
+    parser.feed(TapInput::RequestBody(Bytes::from(vec![b' '; MAX_REQUEST_BODY])));
+    parser.feed(TapInput::RequestBody(Bytes::from_static(b"{}")));
+    parser.feed(TapInput::RequestEnd);
 
-    let event = history.join(&continuing("r1"));
+    let event = client(
+        &mut parser,
+        json!({"type": "response.create", "previous_response_id": "r1", "input": [user_item("two")]}),
+    )
+    .remove(0);
 
     assert_eq!(event.payload["partial"], json!(true));
 }
 
 #[test]
-fn a_continuing_request_chains_when_nothing_went_wrong() {
-    let mut history = history_after_one_reply("one", "answer");
+fn a_request_message_that_is_not_json_makes_the_next_request_partial() {
+    let mut parser = parser();
+    first_request(&mut parser);
+    server(&mut parser, &reply_frames("r1", "answer"));
+    parser.feed(TapInput::WsMessage {
+        from_client: true,
+        text: "not json".into(),
+        start: 0,
+        end: 8,
+    });
 
-    let event = history.join(&continuing("r1"));
-
-    assert!(event.payload["partial"].is_null());
-}
-
-#[test]
-fn a_chain_of_requests_and_replies_past_the_bound_makes_the_next_request_partial() {
-    let half = "a".repeat(MAX_REQUEST_BODY / 2);
-    let mut history = history_after_one_reply(&half, &half);
-
-    let event = history.join(&continuing("r1"));
-
-    assert_eq!(event.payload["partial"], json!(true));
-}
-
-#[test]
-fn a_reply_that_lists_more_output_than_it_streamed_makes_the_next_request_partial() {
-    let mut history = History::default();
-    history.join(&json!({"input": [user_item("one")]}));
-    for frame in [
-        json!({"type": "response.created", "response": {"id": "r1"}}),
-        json!({"type": "response.completed", "response": {"id": "r1", "output": [{"type": "message"}]}}),
-    ] {
-        history.watch(&frame.to_string());
-    }
-
-    let event = history.join(&continuing("r1"));
+    let event = client(
+        &mut parser,
+        json!({"type": "response.create", "previous_response_id": "r1", "input": [user_item("two")]}),
+    )
+    .remove(0);
 
     assert_eq!(event.payload["partial"], json!(true));
 }
