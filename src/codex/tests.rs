@@ -740,3 +740,13 @@ fn a_generate_false_request_is_marked_warmup_and_the_chain_runs_through_it() {
         json!([Message::user(vec![Block::text("one"), Block::text("two")])])
     );
 }
+
+#[test]
+fn a_message_is_sized_as_the_bytes_it_writes() {
+    // The size bound counts the written bytes, as it did when messages were plain JSON
+    let message = Message::user(vec![Block::text("é\n"), Block::reasoning(Value::Null, json!("s"))]);
+
+    let size = super::history::size_of(std::slice::from_ref(&message));
+
+    assert_eq!(size, serde_json::to_value(&message).unwrap().to_string().len());
+}

@@ -98,11 +98,12 @@ impl History {
     }
 }
 
+/// The bytes the messages write; one that cannot be written counts as the most, so the bound trips.
 pub(super) fn size_of(messages: &[Message]) -> usize {
     messages
         .iter()
-        .map(|message| serde_json::to_string(message).map_or(0, |written| written.len()))
-        .sum()
+        .map(|message| serde_json::to_string(message).map_or(usize::MAX, |written| written.len()))
+        .fold(0, usize::saturating_add)
 }
 
 /// Adds messages, joining one to the last when they share a role.

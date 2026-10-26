@@ -8,11 +8,11 @@ use serde_json::Value;
 pub struct Role(String);
 
 impl Role {
-    pub fn user() -> Self {
+    fn user() -> Self {
         Self::from("user")
     }
 
-    pub fn assistant() -> Self {
+    fn assistant() -> Self {
         Self::from("assistant")
     }
 }
@@ -100,6 +100,8 @@ impl Block {
 }
 
 /// Writes the keys in sorted order with `kind` among them, which an internally tagged derive cannot.
+/// The conversation payload is sorted by its `Value` map anyway; this keeps a block serialised directly,
+/// as the typed record will, in the same order.
 impl Serialize for Block {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {

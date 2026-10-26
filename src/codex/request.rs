@@ -46,8 +46,9 @@ pub(super) fn input_item(index: usize, item: &Value) -> Option<Message> {
     let location = index.to_string();
     match item["type"].as_str().unwrap_or("message") {
         "message" => {
+            let assistant = item["role"].as_str()? == "assistant";
             let blocks = content_parts(&location, &item["content"]);
-            Some(if item["role"].as_str()? == "assistant" {
+            Some(if assistant {
                 Message::assistant(blocks)
             } else {
                 Message::user(blocks)
