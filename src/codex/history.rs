@@ -14,8 +14,8 @@ pub(super) struct History {
     system: Value,
     tools: Value,
     messages: Vec<Value>,
-    pub(super) bytes: usize,
-    pub(super) broken: bool,
+    bytes: usize,
+    broken: bool,
     reply_id: Option<String>,
     reply_items: Vec<(String, Vec<Value>)>,
 }

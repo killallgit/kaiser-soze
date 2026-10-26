@@ -39,7 +39,7 @@ impl CodexParser {
                 event
             }
             Err(_) => {
-                self.history.broken = true;
+                self.history.request_unreadable();
                 unparsed(Side::Request)
             }
         };
@@ -65,7 +65,7 @@ impl ExchangeParser for CodexParser {
                 Vec::new()
             }
             TapInput::RequestEnd if self.request.unreadable() => {
-                self.history.broken = true;
+                self.history.request_unreadable();
                 vec![unparsed(Side::Request)]
             }
             TapInput::RequestEnd if self.request.bytes().is_empty() => Vec::new(),
