@@ -50,6 +50,10 @@ impl History {
         event
     }
 
+    pub(super) fn request_unreadable(&mut self) {
+        self.broken = true;
+    }
+
     pub(super) fn watch(&mut self, data: &str) {
         let Ok(json) = serde_json::from_str::<Value>(data) else {
             return;
