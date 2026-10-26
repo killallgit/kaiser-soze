@@ -5,7 +5,11 @@ use crate::record::Record;
 use crate::sink::Sink;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 use tokio::sync::watch;
+
+/// How long a record waits for the earlier exchanges of its thread before it goes ahead regardless.
+const TURN_WAIT: Duration = Duration::from_secs(2);
 
 /// `None` while the lookup runs; then `Some` of what it found.
 type ProjectLookup = Option<Option<String>>;
@@ -123,7 +127,7 @@ impl Recorder {
     pub(super) async fn write_record(&self, stamp: Stamp, record: Record) {
         let project = self.settled_project().await;
         if let Some(place) = &self.place {
-            place.wait_for_turn().await;
+            place.wait_for_turn(TURN_WAIT).await;
         }
         let step = Step::of_record(&record, &self.identity, self.exchange);
         let record = self.with_ids(record, project, step.as_ref());

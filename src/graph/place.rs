@@ -1,6 +1,8 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 use tokio::sync::Notify;
+use tokio::time::timeout;
 
 /// The exchanges of each thread that have not yet written their first record, so records can be
 /// written in the order their exchanges began.
@@ -50,11 +52,17 @@ pub struct Place {
 }
 
 impl Place {
-    /// Waits until every earlier exchange of the thread has written its first record or ended.
-    pub async fn wait_for_turn(&self) {
+    /// Waits until every earlier exchange of the thread has written its first record or ended, or `limit`
+    /// has passed, so an exchange that never finishes cannot hold the thread's records back for good.
+    pub async fn wait_for_turn(&self, limit: Duration) {
+        let _ = timeout(limit, self.until_clear()).await;
+    }
+
+    async fn until_clear(&self) {
         loop {
             let changed = self.queue.changed.notified();
             tokio::pin!(changed);
+            // Listening before the check means a `leave` between the check and the await is not missed
             changed.as_mut().enable();
             if self.queue.is_clear_before(&self.thread, self.exchange) {
                 return;
@@ -78,10 +86,9 @@ impl Drop for Place {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
-    use tokio::time::timeout;
 
     const SHORT: Duration = Duration::from_millis(50);
+    const LONG: Duration = Duration::from_secs(5);
 
     #[tokio::test]
     async fn the_first_exchange_of_a_thread_does_not_wait() {
@@ -90,7 +97,7 @@ mod tests {
         let first = queue.join("t1", 1);
         let _second = queue.join("t1", 2);
 
-        assert!(timeout(SHORT, first.wait_for_turn()).await.is_ok());
+        assert!(took_less_than(SHORT, first.wait_for_turn(LONG)).await);
     }
 
     #[tokio::test]
@@ -100,10 +107,10 @@ mod tests {
         let first = queue.join("t1", 1);
         let second = queue.join("t1", 2);
 
-        assert!(timeout(SHORT, second.wait_for_turn()).await.is_err());
+        assert!(!took_less_than(SHORT, second.wait_for_turn(LONG)).await);
         first.leave();
 
-        assert!(timeout(SHORT, second.wait_for_turn()).await.is_ok());
+        assert!(took_less_than(SHORT, second.wait_for_turn(LONG)).await);
     }
 
     #[tokio::test]
@@ -115,7 +122,7 @@ mod tests {
 
         drop(first);
 
-        assert!(timeout(SHORT, second.wait_for_turn()).await.is_ok());
+        assert!(took_less_than(SHORT, second.wait_for_turn(LONG)).await);
     }
 
     #[tokio::test]
@@ -125,7 +132,7 @@ mod tests {
         let _other = queue.join("t1", 1);
         let mine = queue.join("t2", 2);
 
-        assert!(timeout(SHORT, mine.wait_for_turn()).await.is_ok());
+        assert!(took_less_than(SHORT, mine.wait_for_turn(LONG)).await);
     }
 
     #[tokio::test]
@@ -134,11 +141,25 @@ mod tests {
         let queue = Arc::<Queue>::default();
         let first = queue.join("t1", 1);
         let second = queue.join("t1", 2);
-        let waiting = tokio::spawn(async move { second.wait_for_turn().await });
+        let waiting = tokio::spawn(async move { second.wait_for_turn(LONG).await });
 
-        tokio::time::sleep(SHORT).await;
+        tokio::task::yield_now().await;
         first.leave();
 
-        assert!(timeout(Duration::from_secs(5), waiting).await.is_ok());
+        assert!(timeout(LONG, waiting).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_exchange_goes_ahead_after_the_limit_when_the_earlier_one_never_leaves() {
+        // It stops waiting for an exchange that stays in line
+        let queue = Arc::<Queue>::default();
+        let _first = queue.join("t1", 1);
+        let second = queue.join("t1", 2);
+
+        assert!(took_less_than(LONG, second.wait_for_turn(SHORT)).await);
+    }
+
+    async fn took_less_than(bound: Duration, wait: impl std::future::Future<Output = ()>) -> bool {
+        timeout(bound, wait).await.is_ok()
     }
 }
