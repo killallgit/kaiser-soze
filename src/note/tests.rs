@@ -49,6 +49,7 @@ fn an_exchange_start_without_a_label_leaves_the_key_out() {
 
 #[test]
 fn a_response_head_names_each_transport_in_lower_case() {
+    // It writes http, sse and websocket in lower case
     let head = |transport| {
         Note::ResponseHead(ResponseHead {
             headers: pairs(&[("content-type", "text/plain")]),
@@ -70,6 +71,7 @@ fn a_response_head_names_each_transport_in_lower_case() {
 
 #[test]
 fn an_exchange_end_writes_all_eight_stats_and_a_moment_that_never_came_is_null() {
+    // It writes every stat, with null for a moment that never came
     let end = Note::ExchangeEnd(ExchangeEnd {
         bytes: 5,
         chunks: 2,
@@ -89,6 +91,7 @@ fn an_exchange_end_writes_all_eight_stats_and_a_moment_that_never_came_is_null()
 
 #[test]
 fn a_tunnel_writes_its_label_between_the_host_and_the_port_when_it_has_one() {
+    // It sorts the label between the host and the port, and leaves it out when there is none
     let tunnel = |label| {
         Note::Tunnel(Tunnel {
             host: "t.test".into(),
@@ -106,6 +109,7 @@ fn a_tunnel_writes_its_label_between_the_host_and_the_port_when_it_has_one() {
 
 #[test]
 fn an_unsupported_writes_its_label_between_the_host_and_the_path_when_it_has_one() {
+    // It sorts the label between the host and the path, and leaves it out when there is none
     let unsupported = |label| {
         Note::Unsupported(Unsupported {
             host: "u.test".into(),
@@ -123,6 +127,7 @@ fn an_unsupported_writes_its_label_between_the_host_and_the_path_when_it_has_one
 
 #[test]
 fn each_note_names_its_event() {
+    // It names the event each note is written under
     let notes = [
         start(None),
         Note::ResponseHead(ResponseHead {

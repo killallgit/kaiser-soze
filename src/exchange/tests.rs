@@ -1,8 +1,6 @@
 use super::*;
 use crate::adapter::{Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
-use crate::graph::EdgeKind;
-use crate::graph::Threads;
-use crate::graph::{self, Identity};
+use crate::graph::{self, EdgeKind, Identity, Threads};
 use crate::label::Label;
 use crate::line::Entry;
 use crate::note::{self, Note};
