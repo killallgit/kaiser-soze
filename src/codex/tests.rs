@@ -639,8 +639,46 @@ fn a_reply_with_fewer_items_than_its_output_breaks_the_chain() {
 fn history_past_the_bound_makes_later_records_partial() {
     let mut parser = parser();
     first_request(&mut parser);
-    parser.history.bytes = MAX_REQUEST_BODY;
+    server(&mut parser, &reply_frames("r1", &"a".repeat(MAX_REQUEST_BODY)));
+
+    let event = client(
+        &mut parser,
+        json!({"type": "response.create", "previous_response_id": "r1", "input": [user_item("two")]}),
+    )
+    .remove(0);
+
+    assert_eq!(event.payload["partial"], json!(true));
+}
+
+#[test]
+fn a_request_body_that_cannot_be_read_makes_the_next_request_partial() {
+    let mut parser = parser();
+    first_request(&mut parser);
     server(&mut parser, &reply_frames("r1", "answer"));
+    parser.feed(TapInput::RequestBody(Bytes::from(vec![b' '; MAX_REQUEST_BODY])));
+    parser.feed(TapInput::RequestBody(Bytes::from_static(b"{}")));
+    parser.feed(TapInput::RequestEnd);
+
+    let event = client(
+        &mut parser,
+        json!({"type": "response.create", "previous_response_id": "r1", "input": [user_item("two")]}),
+    )
+    .remove(0);
+
+    assert_eq!(event.payload["partial"], json!(true));
+}
+
+#[test]
+fn a_request_message_that_is_not_json_makes_the_next_request_partial() {
+    let mut parser = parser();
+    first_request(&mut parser);
+    server(&mut parser, &reply_frames("r1", "answer"));
+    parser.feed(TapInput::WsMessage {
+        from_client: true,
+        text: "not json".into(),
+        start: 0,
+        end: 8,
+    });
 
     let event = client(
         &mut parser,

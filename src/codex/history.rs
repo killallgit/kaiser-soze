@@ -14,8 +14,8 @@ pub(super) struct History {
     system: Value,
     tools: Value,
     messages: Vec<Value>,
-    pub(super) bytes: usize,
-    pub(super) broken: bool,
+    bytes: usize,
+    broken: bool,
     reply_id: Option<String>,
     reply_items: Vec<(String, Vec<Value>)>,
 }
@@ -48,6 +48,10 @@ impl History {
             event.payload["warmup"] = json!(true);
         }
         event
+    }
+
+    pub(super) fn request_unreadable(&mut self) {
+        self.broken = true;
     }
 
     pub(super) fn watch(&mut self, data: &str) {
