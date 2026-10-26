@@ -1,11 +1,12 @@
 mod calls;
+mod edge;
 mod step;
 
 use crate::project::Project;
 use calls::Calls;
-use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 
+pub use edge::{Edge, EdgeKind};
 pub use step::{claimed, named_turn, Claimed, Step};
 
 /// Which session, thread and turn an exchange belongs to, as its request headers say.
@@ -18,27 +19,26 @@ pub struct Identity {
 }
 
 /// The edges one exchange adds to the graph. An edge whose far end is unknown is left out.
-pub fn edges(exchange: u64, identity: &Identity, project: Option<&Project>) -> Vec<Value> {
+pub fn edges(exchange: u64, identity: &Identity, project: Option<&Project>) -> Vec<Edge> {
     let node = |kind: &str, id: &Option<String>| id.as_ref().map(|id| format!("{kind}:{id}"));
     let session = node("session", &identity.session);
     let thread = node("thread", &identity.thread);
     let parent = node("thread", &identity.parent_thread);
     let mut edges = Vec::new();
     if let (Some(session), Some(project)) = (&session, project) {
-        let mut edge = edge("in_project", session, &format!("project:{}", project.id));
-        if let Some(branch) = &project.branch {
-            edge["branch"] = json!(branch);
-        }
-        edges.push(edge);
+        edges.push(Edge {
+            branch: project.branch.clone(),
+            ..Edge::new(EdgeKind::InProject, session, format!("project:{}", project.id))
+        });
     }
     if let (Some(thread), Some(session)) = (&thread, &session) {
-        edges.push(edge("in_session", thread, session));
+        edges.push(Edge::new(EdgeKind::InSession, thread, session));
     }
     if let Some(thread) = &thread {
-        edges.push(edge("in_thread", &format!("exchange:{exchange}"), thread));
+        edges.push(Edge::new(EdgeKind::InThread, format!("exchange:{exchange}"), thread));
     }
     if let (Some(thread), Some(parent)) = (&thread, &parent) {
-        edges.push(edge("spawned", thread, parent));
+        edges.push(Edge::new(EdgeKind::Spawned, thread, parent));
     }
     edges
 }
@@ -68,11 +68,11 @@ impl Threads {
     /// The `turn`, `continues` and `calls` edges one finished step adds, then remembers the step.
     /// A previous message id continues the step that replied with it, or nothing when that
     /// reply is unknown; without one the step continues the thread's last step.
-    pub fn edges(&mut self, step: &Step) -> Vec<Value> {
+    pub fn edges(&mut self, step: &Step) -> Vec<Edge> {
         let node = format!("step:{}.{}", step.exchange, step.n);
         let mut edges = Vec::new();
         if let Some(turn) = &step.turn {
-            edges.push(edge("turn", &node, &format!("turn:{turn}")));
+            edges.push(Edge::new(EdgeKind::Turn, &node, format!("turn:{turn}")));
         }
         let Some(thread) = &step.thread else {
             return edges;
@@ -91,7 +91,7 @@ impl Threads {
             None => seen.last.as_ref(),
         };
         if let Some(before) = before {
-            edges.push(edge("continues", &node, before));
+            edges.push(Edge::new(EdgeKind::Continues, &node, before));
         }
         seen.last = Some(node.clone());
         if let Some(id) = &step.message_id {
@@ -103,10 +103,6 @@ impl Threads {
         edges.extend(self.calls.edges(thread, &step.results, &step.calls));
         edges
     }
-}
-
-fn edge(kind: &str, from: &str, to: &str) -> Value {
-    json!({"kind": kind, "from": from, "to": to})
 }
 
 #[cfg(test)]
@@ -129,17 +125,8 @@ mod tests {
         }
     }
 
-    fn relations(edges: &[Value]) -> Vec<(&str, &str, &str)> {
-        edges
-            .iter()
-            .map(|e| {
-                (
-                    e["kind"].as_str().unwrap(),
-                    e["from"].as_str().unwrap(),
-                    e["to"].as_str().unwrap(),
-                )
-            })
-            .collect()
+    fn relations(edges: &[Edge]) -> Vec<(EdgeKind, &str, &str)> {
+        edges.iter().map(|e| (e.kind, e.from.as_str(), e.to.as_str())).collect()
     }
 
     #[test]
@@ -150,8 +137,8 @@ mod tests {
         assert_eq!(
             relations(&edges),
             [
-                ("in_session", "thread:t1", "session:s1"),
-                ("in_thread", "exchange:7", "thread:t1")
+                (EdgeKind::InSession, "thread:t1", "session:s1"),
+                (EdgeKind::InThread, "exchange:7", "thread:t1")
             ]
         );
     }
@@ -161,7 +148,7 @@ mod tests {
         // It links the child thread to the parent that launched it
         let edges = edges(7, &identity("s1", "t2", Some("t1")), None);
 
-        assert!(relations(&edges).contains(&("spawned", "thread:t2", "thread:t1")));
+        assert!(relations(&edges).contains(&(EdgeKind::Spawned, "thread:t2", "thread:t1")));
     }
 
     #[test]
@@ -169,10 +156,10 @@ mod tests {
         // It links the session to the project and keeps the branch as metadata
         let edges = edges(7, &identity("s1", "t1", None), Some(&project()));
 
-        let edge = edges.iter().find(|e| e["kind"] == "in_project").unwrap();
-        assert_eq!(edge["from"], "session:s1");
-        assert_eq!(edge["to"], "project:host/owner/repo");
-        assert_eq!(edge["branch"], "main");
+        let edge = edges.iter().find(|e| e.kind == EdgeKind::InProject).unwrap();
+        assert_eq!(edge.from, "session:s1");
+        assert_eq!(edge.to, "project:host/owner/repo");
+        assert_eq!(edge.branch.as_deref(), Some("main"));
     }
 
     #[test]
@@ -185,8 +172,8 @@ mod tests {
 
         let edges = edges(7, &identity("s1", "t1", None), Some(&detached));
 
-        let edge = edges.iter().find(|e| e["kind"] == "in_project").unwrap();
-        assert!(edge.get("branch").is_none());
+        let edge = edges.iter().find(|e| e.kind == EdgeKind::InProject).unwrap();
+        assert!(edge.branch.is_none());
     }
 
     #[test]
@@ -205,7 +192,7 @@ mod tests {
 
         assert_eq!(
             relations(&edges(7, &identity, None)),
-            [("in_thread", "exchange:7", "thread:t1")]
+            [(EdgeKind::InThread, "exchange:7", "thread:t1")]
         );
     }
 
@@ -231,7 +218,10 @@ mod tests {
             ..step("t1", 7, 2)
         };
 
-        assert_eq!(relations(&threads.edges(&step)), [("turn", "step:7.2", "turn:u1")]);
+        assert_eq!(
+            relations(&threads.edges(&step)),
+            [(EdgeKind::Turn, "step:7.2", "turn:u1")]
+        );
     }
 
     #[test]
@@ -245,8 +235,8 @@ mod tests {
         let other = threads.edges(&step("t2", 9, 1));
 
         assert!(first.is_empty() && other.is_empty());
-        assert_eq!(relations(&second), [("continues", "step:7.2", "step:7.1")]);
-        assert_eq!(relations(&third), [("continues", "step:8.1", "step:7.2")]);
+        assert_eq!(relations(&second), [(EdgeKind::Continues, "step:7.2", "step:7.1")]);
+        assert_eq!(relations(&third), [(EdgeKind::Continues, "step:8.1", "step:7.2")]);
     }
 
     #[test]
@@ -271,7 +261,7 @@ mod tests {
 
         assert_eq!(
             relations(&threads.edges(&follows_first)),
-            [("continues", "step:3.1", "step:1.1")]
+            [(EdgeKind::Continues, "step:3.1", "step:1.1")]
         );
         assert!(threads.edges(&follows_unknown).is_empty());
     }
@@ -341,6 +331,6 @@ mod tests {
 
         threads.edges(&calling);
 
-        assert!(threads.edges(&answering).iter().all(|e| e["kind"] != "calls"));
+        assert!(threads.edges(&answering).iter().all(|e| e.kind != EdgeKind::Calls));
     }
 }

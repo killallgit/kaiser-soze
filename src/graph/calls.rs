@@ -1,5 +1,4 @@
-use super::edge;
-use serde_json::Value;
+use super::{Edge, EdgeKind};
 use std::collections::{HashMap, VecDeque};
 
 /// How many calls are remembered as open before the oldest is forgotten.
@@ -17,11 +16,11 @@ impl Calls {
     /// The `calls` edges one step adds: one for each result in its request that answers an open
     /// call of the thread, which then closes, so a result resent in a later request adds nothing.
     /// The step's own calls are remembered after its results, as the request comes first.
-    pub fn edges(&mut self, thread: &str, results: &[String], calls: &[String]) -> Vec<Value> {
+    pub fn edges(&mut self, thread: &str, results: &[String], calls: &[String]) -> Vec<Edge> {
         let mut edges = Vec::new();
         for id in results.iter().filter(|id| !id.is_empty()) {
             if self.open.remove(&(thread.to_string(), id.clone())).is_some() {
-                edges.push(edge("calls", &format!("call:{id}"), &format!("result:{id}")));
+                edges.push(Edge::new(EdgeKind::Calls, format!("call:{id}"), format!("result:{id}")));
             }
         }
         for id in calls.iter().filter(|id| !id.is_empty()) {
@@ -57,11 +56,8 @@ mod tests {
         ids.iter().map(|id| id.to_string()).collect()
     }
 
-    fn pairs(edges: &[Value]) -> Vec<(&str, &str)> {
-        edges
-            .iter()
-            .map(|e| (e["from"].as_str().unwrap(), e["to"].as_str().unwrap()))
-            .collect()
+    fn pairs(edges: &[Edge]) -> Vec<(&str, &str)> {
+        edges.iter().map(|e| (e.from.as_str(), e.to.as_str())).collect()
     }
 
     #[test]
@@ -74,7 +70,7 @@ mod tests {
 
         assert!(reply.is_empty());
         assert_eq!(pairs(&next), [("call:c1", "result:c1")]);
-        assert_eq!(next[0]["kind"], "calls");
+        assert_eq!(next[0].kind, EdgeKind::Calls);
     }
 
     #[test]

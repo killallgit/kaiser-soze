@@ -123,7 +123,7 @@ impl StartEdges {
         };
         self.signal.settle(project.as_ref().map(|project| project.id.clone()));
         for edge in graph::edges(self.recorder.exchange, &self.identity, project.as_ref()) {
-            self.recorder.write_reliable(self.clock.stamp(), "edge", edge).await;
+            self.recorder.write_edge(self.clock.stamp(), &edge).await;
         }
     }
 }

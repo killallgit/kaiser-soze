@@ -1,5 +1,5 @@
 use super::clock::Stamp;
-use crate::graph::{Identity, Step, Threads};
+use crate::graph::{Edge, Identity, Step, Threads};
 use crate::sink::Sink;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -118,11 +118,17 @@ impl Recorder {
         let edges = self.step_edges(step.as_ref());
         self.write_reliable(stamp, "record", record).await;
         for edge in edges {
-            self.write_reliable(stamp, "edge", edge).await;
+            self.write_edge(stamp, &edge).await;
         }
     }
 
-    fn step_edges(&self, step: Option<&Step>) -> Vec<Value> {
+    pub(super) async fn write_edge(&self, stamp: Stamp, edge: &Edge) {
+        if let Ok(payload) = serde_json::to_value(edge) {
+            self.write_reliable(stamp, "edge", payload).await;
+        }
+    }
+
+    fn step_edges(&self, step: Option<&Step>) -> Vec<Edge> {
         let (Some(threads), Some(step)) = (&self.threads, step) else {
             return Vec::new();
         };
