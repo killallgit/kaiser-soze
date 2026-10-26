@@ -41,12 +41,12 @@ pub(super) fn stream_event(data: &str, start: u64, end: u64) -> Vec<TapEvent> {
 
 pub(super) fn block_start_of(index: u64, item: &Value) -> BlockStart {
     let (kind, id, name) = match item["type"].as_str().unwrap_or_default() {
-        "message" => ("text", Value::Null, Value::Null),
-        "reasoning" => ("reasoning", Value::Null, Value::Null),
-        "function_call" | "custom_tool_call" => ("tool_call", item["call_id"].clone(), item["name"].clone()),
-        _ => ("other", Value::Null, Value::Null),
+        "message" => (BlockKind::Text, Value::Null, Value::Null),
+        "reasoning" => (BlockKind::Reasoning, Value::Null, Value::Null),
+        "function_call" | "custom_tool_call" => (BlockKind::ToolCall, item["call_id"].clone(), item["name"].clone()),
+        _ => (BlockKind::Other, Value::Null, Value::Null),
     };
-    BlockStart { index, kind, id, name }
+    BlockStart { id, index, kind, name }
 }
 
 pub(super) fn usage_event(usage_json: &Value) -> TapEvent {

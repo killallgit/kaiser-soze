@@ -1,9 +1,10 @@
 use super::*;
 use crate::adapter::ResponseHead;
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
+use crate::common::*;
 use crate::message::{Block, Message, Output};
 use bytes::Bytes;
-use serde_json::json;
+use serde_json::{json, Value};
 
 fn head(path: &str) -> RequestHead {
     RequestHead {
@@ -136,8 +137,17 @@ fn request(body: &[u8], chunk: usize) -> Vec<TapEvent> {
     parser.feed(TapInput::RequestEnd)
 }
 
-fn kinds(events: &[TapEvent]) -> Vec<&str> {
-    events.iter().map(|e| e.kind.as_str()).collect()
+fn text_block(index: u64, kind: BlockKind) -> BlockStart {
+    BlockStart {
+        id: Value::Null,
+        index,
+        kind,
+        name: Value::Null,
+    }
+}
+
+fn kinds(events: &[TapEvent]) -> Vec<&'static str> {
+    events.iter().map(|e| e.event.kind()).collect()
 }
 
 #[test]
@@ -162,13 +172,12 @@ fn maps_a_messages_request_split_across_chunks_to_a_conversation() {
     let events = request(body, 37);
 
     assert_eq!(kinds(&events), ["conversation"]);
-    let payload = &events[0].payload;
-    assert_eq!(payload["system"], "sys");
-    assert_eq!(payload["tools"], json!([{"name": "Bash"}]));
-    assert_eq!(payload.get("model"), None);
+    let conversation = events[0].event.conversation();
+    assert_eq!(conversation.system, "sys");
+    assert_eq!(conversation.tools, json!([{"name": "Bash"}]));
     assert_eq!(
-        payload["messages"],
-        json!([
+        conversation.messages,
+        vec![
             Message::user(vec![Block::text("hi")]),
             Message::assistant(vec![
                 Block::reasoning(json!("hmm"), json!("sig")),
@@ -191,7 +200,7 @@ fn maps_a_messages_request_split_across_chunks_to_a_conversation() {
                     size: 3
                 }
             ]),
-        ])
+        ]
     );
 }
 
@@ -204,8 +213,11 @@ fn the_previous_message_id_in_the_request_diagnostics_rides_on_the_conversation(
     let linked = request(with_id, 64);
     let unlinked = request(without_id, 64);
 
-    assert_eq!(linked[0].payload["previous_message_id"], "msg_0");
-    assert!(unlinked[0].payload.get("previous_message_id").is_none());
+    assert_eq!(
+        linked[0].event.conversation().previous_message_id.as_deref(),
+        Some("msg_0")
+    );
+    assert_eq!(unlinked[0].event.conversation().previous_message_id, None);
 }
 
 #[test]
@@ -215,19 +227,23 @@ fn an_image_inside_a_tool_result_becomes_a_reference() {
 
     let events = request(body, 64);
 
-    let output = &events[0].payload["messages"][0]["blocks"][0]["output"];
+    let block = &events[0].event.conversation().messages[0].blocks[0];
     assert_eq!(
-        *output,
-        json!([
-            Block::text("see"),
-            Block::Image {
-                content_type: "image/jpeg".into(),
-                reference: "0:0:1".into(),
-                size: 7
-            }
-        ])
+        *block,
+        Block::ToolResult {
+            call_id: json!("t1"),
+            is_error: false,
+            output: Output::Blocks(vec![
+                Block::text("see"),
+                Block::Image {
+                    content_type: "image/jpeg".into(),
+                    reference: "0:0:1".into(),
+                    size: 7
+                }
+            ])
+        }
     );
-    assert!(!events[0].payload.to_string().contains("QUJDREVGRw"));
+    assert!(!serde_json::to_string(&events[0].event).unwrap().contains("QUJDREVGRw"));
 }
 
 #[test]
@@ -243,7 +259,7 @@ fn an_encoded_or_oversized_request_is_reported_as_unparsed() {
     let events = parser.feed(TapInput::RequestEnd);
 
     assert_eq!(kinds(&events), ["unparsed"]);
-    assert_eq!(events[0].payload, json!({"side": "request"}));
+    assert_eq!(events[0].event, unparsed(Side::Request).event);
 }
 
 #[test]
@@ -284,15 +300,30 @@ fn maps_a_text_stream_split_mid_line_and_mid_json() {
             "reply_end"
         ]
     );
-    assert_eq!(events[0].payload["input"], 9);
-    assert_eq!(events[0].payload["cache_read"], 5);
-    assert_eq!(events[0].payload["cache_write"], 2);
-    assert_eq!(events[1].payload, json!({"index": 0, "kind": "text"}));
-    assert_eq!(events[2].payload, json!({"index": 0, "text": "ok"}));
-    assert_eq!(events[4].payload["output"], 4);
     assert_eq!(
-        events[5].payload,
-        json!({"stop_reason": "end_turn", "message_id": "msg_1"})
+        events[0].event,
+        usage(Usage {
+            input: Some(9),
+            output: Some(1),
+            cache_read: Some(5),
+            cache_write: Some(2),
+            reasoning: None
+        })
+        .event
+    );
+    assert_eq!(events[1].event, block_start(text_block(0, BlockKind::Text)).event);
+    assert_eq!(events[2].event, block_delta(0, Delta::Text("ok".into())).event);
+    assert_eq!(
+        events[4].event,
+        usage(Usage {
+            output: Some(4),
+            ..Usage::default()
+        })
+        .event
+    );
+    assert_eq!(
+        events[5].event,
+        reply_end_of_message(json!("end_turn"), json!("msg_1")).event
     );
 }
 
@@ -309,7 +340,7 @@ fn a_reply_without_a_message_start_ends_with_no_message_id() {
 
     let events = stream(&wire, 64);
 
-    assert_eq!(events[1].payload, json!({"stop_reason": "end_turn"}));
+    assert_eq!(events[1].event, reply_end(json!("end_turn")).event);
 }
 
 #[test]
@@ -333,14 +364,22 @@ fn keeps_tool_use_name_id_and_json_fragments() {
     let events = stream(&wire, 5);
 
     assert_eq!(
-        events[0].payload,
-        json!({"index": 1, "kind": "tool_call", "id": "toolu_1", "name": "Bash"})
+        events[0].event,
+        block_start(BlockStart {
+            id: json!("toolu_1"),
+            index: 1,
+            kind: BlockKind::ToolCall,
+            name: json!("Bash")
+        })
+        .event
     );
-    let fragments: String = events[1..]
-        .iter()
-        .map(|e| e.payload["input_json"].as_str().unwrap())
-        .collect();
-    assert_eq!(fragments, r#"{"command":"ls"}"#);
+    assert_eq!(
+        events[1..].iter().map(|e| e.event.clone()).collect::<Vec<_>>(),
+        [
+            block_delta(1, Delta::InputJson(r#"{"co"#.into())).event,
+            block_delta(1, Delta::InputJson(r#"mmand":"ls"}"#.into())).event,
+        ]
+    );
 }
 
 #[test]
@@ -367,10 +406,10 @@ fn maps_thinking_to_reasoning_with_its_signature() {
 
     let events = stream(&wire, 9);
 
-    assert_eq!(events[0].payload, json!({"index": 0, "kind": "reasoning"}));
-    assert_eq!(events[1].payload, json!({"index": 0, "text": "hmm"}));
-    assert_eq!(events[2].payload, json!({"index": 0, "signature": "sig=="}));
-    assert_eq!(events[3].payload, json!({"index": 1, "kind": "reasoning"}));
+    assert_eq!(events[0].event, block_start(text_block(0, BlockKind::Reasoning)).event);
+    assert_eq!(events[1].event, block_delta(0, Delta::Text("hmm".into())).event);
+    assert_eq!(events[2].event, block_delta(0, Delta::Signature("sig==".into())).event);
+    assert_eq!(events[3].event, block_start(text_block(1, BlockKind::Reasoning)).event);
 }
 
 #[test]
@@ -383,7 +422,7 @@ fn a_block_outside_the_format_keeps_its_index_under_the_other_kind() {
 
     let events = stream(&wire, 64);
 
-    assert_eq!(events[0].payload, json!({"index": 2, "kind": "other"}));
+    assert_eq!(events[0].event, block_start(text_block(2, BlockKind::Other)).event);
 }
 
 #[test]
@@ -397,7 +436,7 @@ fn reports_a_stream_error_by_type_only() {
     let events = stream(&wire, 64);
 
     assert_eq!(kinds(&events), ["error"]);
-    assert_eq!(events[0].payload, json!({"error_type": "overloaded_error"}));
+    assert_eq!(events[0].event, error(json!("overloaded_error")).event);
 }
 
 #[test]
@@ -413,5 +452,5 @@ fn a_reply_that_is_encoded_or_not_a_stream_is_reported_as_unparsed() {
     let events = parser.feed(TapInput::ResponseEnd);
 
     assert_eq!(kinds(&events), ["unparsed"]);
-    assert_eq!(events[0].payload, json!({"side": "reply"}));
+    assert_eq!(events[0].event, unparsed(Side::Reply).event);
 }

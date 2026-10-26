@@ -169,3 +169,59 @@ fn text_is_escaped_as_serde_json_escapes_it_and_a_large_size_is_written_whole() 
     assert_eq!(written(&Block::text("é\n\"")), r#"{"kind":"text","text":"é\n\""}"#);
     assert!(written(&image).ends_with(r#""size":5000000000}"#));
 }
+
+#[test]
+fn every_block_reads_back_as_it_was_written() {
+    // A tap line can be replayed into the blocks it was written from
+    let blocks = [
+        Block::text("hi"),
+        Block::reasoning(Value::Null, Value::Null),
+        Block::reasoning(json!("t"), json!("s")),
+        Block::EncryptedReasoning { encrypted: Value::Null },
+        Block::EncryptedReasoning { encrypted: json!("x") },
+        Block::ToolCall {
+            id: json!("c1"),
+            input: json!({"a": 1}),
+            name: Value::Null,
+        },
+        Block::ToolResult {
+            call_id: json!("c1"),
+            is_error: true,
+            output: Output::Raw(Value::Null),
+        },
+        Block::ToolResult {
+            call_id: json!("c1"),
+            is_error: false,
+            output: Output::Blocks(vec![Block::text("a")]),
+        },
+        Block::Image {
+            content_type: "image/png".into(),
+            reference: "0:2".into(),
+            size: 5_000_000_000,
+        },
+    ];
+
+    for block in blocks {
+        let read: Block = serde_json::from_str(&written(&block)).unwrap();
+
+        assert_eq!(read, block);
+    }
+}
+
+#[test]
+fn a_block_of_an_unknown_kind_is_not_read() {
+    assert!(serde_json::from_str::<Block>(r#"{"kind":"video"}"#).is_err());
+    assert!(serde_json::from_str::<Block>(r#"{"text":"hi"}"#).is_err());
+}
+
+#[test]
+fn a_message_reads_back_with_its_role() {
+    let message = Message {
+        blocks: vec![Block::text("hi")],
+        role: Role::from("tool"),
+    };
+
+    let read: Message = serde_json::from_str(&written(&message)).unwrap();
+
+    assert_eq!(read, message);
+}

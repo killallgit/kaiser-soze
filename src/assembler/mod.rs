@@ -1,14 +1,12 @@
-use crate::adapter::TapEvent;
 use crate::body::MAX_REQUEST_BODY;
+use crate::event::{BlockDelta, BlockKind, BlockStart, Conversation, Delta, Event, Usage};
 use crate::graph::{claimed, Claimed};
 use crate::message::{Block, Message};
-use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, HashSet};
-
-const USAGE_FIELDS: [&str; 5] = ["input", "output", "cache_read", "cache_write", "reasoning"];
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 struct OpenBlock {
-    kind: String,
+    kind: BlockKind,
     id: Value,
     name: Value,
     text: String,
@@ -19,14 +17,14 @@ struct OpenBlock {
 
 impl OpenBlock {
     fn into_block(self) -> Block {
-        match self.kind.as_str() {
-            "reasoning" => match self.encrypted {
+        match self.kind {
+            BlockKind::Reasoning => match self.encrypted {
                 Some(encrypted) if self.text.is_empty() => Block::EncryptedReasoning {
                     encrypted: json!(encrypted),
                 },
                 _ => Block::reasoning(json!(self.text), self.signature),
             },
-            "tool_call" => Block::ToolCall {
+            BlockKind::ToolCall => Block::ToolCall {
                 id: self.id,
                 input: parse_input(&self.input_json),
                 name: self.name,
@@ -46,10 +44,9 @@ fn parse_input(joined: &str) -> Value {
 #[derive(Default)]
 struct Reply {
     blocks: BTreeMap<u64, OpenBlock>,
-    skipped: HashSet<u64>,
-    usage: Map<String, Value>,
+    usage: Usage,
     stop_reason: Value,
-    message_id: Value,
+    message_id: Option<Value>,
     bytes: usize,
     truncated: bool,
     unparsed: bool,
@@ -58,7 +55,7 @@ struct Reply {
 /// Folds one exchange's common-format live events into finished records.
 pub struct Assembler {
     bound: usize,
-    conversation: Value,
+    conversation: Option<Conversation>,
     reply: Reply,
     seen: bool,
 }
@@ -73,7 +70,7 @@ impl Assembler {
     pub fn with_bound(bound: usize) -> Self {
         Self {
             bound,
-            conversation: Value::Null,
+            conversation: None,
             reply: Reply::default(),
             seen: false,
         }
@@ -81,27 +78,25 @@ impl Assembler {
 
     /// Returns the records this event completes: one on a reply end, and one more when a new
     /// conversation arrives while a reply is still open.
-    pub fn push(&mut self, event: &TapEvent, dropped: u64) -> Vec<Value> {
-        let payload = &event.payload;
+    pub fn push(&mut self, event: &Event, dropped: u64) -> Vec<Value> {
         let mut records = Vec::new();
-        match event.kind.as_str() {
-            "conversation" => {
+        match event {
+            Event::Conversation(conversation) => {
                 if self.seen {
                     records.push(self.take_record(dropped, true));
                 }
-                self.conversation = payload.clone();
+                self.conversation = Some(conversation.clone());
             }
-            "block_start" => self.start_block(payload),
-            "block_delta" => self.add_delta(payload),
-            "usage" => self.merge_usage(payload),
-            "reply_end" => {
-                self.reply.stop_reason = payload["stop_reason"].clone();
-                self.reply.message_id = payload["message_id"].clone();
+            Event::BlockStart(start) => self.start_block(start),
+            Event::BlockDelta(delta) => self.add_delta(delta),
+            Event::Usage(usage) => self.reply.usage.merge(usage.clone()),
+            Event::ReplyEnd(end) => {
+                self.reply.stop_reason = end.stop_reason.clone();
+                self.reply.message_id = end.message_id.clone().filter(|id| !id.is_null());
                 return vec![self.take_record(dropped, false)];
             }
-            "unparsed" => self.reply.unparsed = true,
-            "block_stop" | "error" => {}
-            _ => return records,
+            Event::Unparsed(_) => self.reply.unparsed = true,
+            Event::BlockStop(_) | Event::Error(_) => {}
         }
         self.seen = true;
         records
@@ -112,19 +107,16 @@ impl Assembler {
         self.seen.then(|| self.take_record(dropped, true))
     }
 
-    fn start_block(&mut self, payload: &Value) {
-        let index = payload["index"].as_u64().unwrap_or_default();
-        let kind = payload["kind"].as_str().unwrap_or_default();
-        if !["text", "reasoning", "tool_call"].contains(&kind) {
-            self.reply.skipped.insert(index);
+    fn start_block(&mut self, start: &BlockStart) {
+        if start.kind == BlockKind::Other {
             return;
         }
         self.reply.blocks.insert(
-            index,
+            start.index,
             OpenBlock {
-                kind: kind.to_string(),
-                id: payload["id"].clone(),
-                name: payload["name"].clone(),
+                kind: start.kind,
+                id: start.id.clone(),
+                name: start.name.clone(),
                 text: String::new(),
                 signature: Value::Null,
                 encrypted: None,
@@ -133,58 +125,36 @@ impl Assembler {
         );
     }
 
-    fn add_delta(&mut self, payload: &Value) {
-        let index = payload["index"].as_u64().unwrap_or_default();
-        let Some(block) = self.reply.blocks.get_mut(&index) else {
+    fn add_delta(&mut self, delta: &BlockDelta) {
+        let Some(block) = self.reply.blocks.get_mut(&delta.index) else {
             return;
         };
-        for field in ["text", "input_json", "signature", "encrypted"] {
-            let Some(piece) = payload[field].as_str() else {
-                continue;
-            };
-            if self.reply.truncated || self.reply.bytes + piece.len() > self.bound {
-                self.reply.truncated = true;
-                return;
-            }
-            self.reply.bytes += piece.len();
-            match field {
-                "text" => block.text.push_str(piece),
-                "input_json" => block.input_json.push_str(piece),
-                "encrypted" => block.encrypted = Some(piece.to_string()),
-                _ => block.signature = json!(piece),
-            }
+        let piece = delta.delta.piece();
+        if self.reply.truncated || self.reply.bytes + piece.len() > self.bound {
+            self.reply.truncated = true;
+            return;
         }
-    }
-
-    fn merge_usage(&mut self, payload: &Value) {
-        for field in USAGE_FIELDS {
-            if !payload[field].is_null() {
-                self.reply.usage.insert(field.to_string(), payload[field].clone());
-            }
+        self.reply.bytes += piece.len();
+        match &delta.delta {
+            Delta::Text(text) => block.text.push_str(text),
+            Delta::InputJson(json) => block.input_json.push_str(json),
+            Delta::Encrypted(encrypted) => block.encrypted = Some(encrypted.clone()),
+            Delta::Signature(signature) => block.signature = json!(signature),
         }
     }
 
     fn take_record(&mut self, dropped: u64, cut: bool) -> Value {
         let reply = std::mem::take(&mut self.reply);
-        let conversation = std::mem::take(&mut self.conversation);
+        let conversation = self.conversation.take();
         self.seen = false;
         let incomplete = cut || dropped > 0 || reply.unparsed || reply.truncated;
         let blocks = reply.blocks.into_values().map(OpenBlock::into_block).collect();
-        let usage: Map<String, Value> = USAGE_FIELDS
-            .iter()
-            .map(|field| {
-                (
-                    field.to_string(),
-                    reply.usage.get(*field).cloned().unwrap_or(Value::Null),
-                )
-            })
-            .collect();
-        let claim = claimed(&conversation);
+        let claim = conversation.as_ref().map(claimed);
         let mut record = json!({
             "conversation": conversation,
             "reply": {
                 "message": Message::assistant(blocks),
-                "usage": usage,
+                "usage": reply.usage,
                 "stop_reason": reply.stop_reason,
             },
             "incomplete": incomplete,
@@ -196,8 +166,8 @@ impl Assembler {
                 record["turn"] = json!(turn);
             }
         }
-        if !reply.message_id.is_null() {
-            record["reply"]["message_id"] = reply.message_id;
+        if let Some(message_id) = reply.message_id {
+            record["reply"]["message_id"] = message_id;
         }
         record
     }

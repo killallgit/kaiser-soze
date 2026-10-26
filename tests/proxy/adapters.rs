@@ -203,7 +203,7 @@ impl ExchangeParser for EchoParser {
             conversation(Value::Null, Value::Null, vec![Message::user(vec![Block::text("hi")])]),
             block_start(BlockStart {
                 index: 0,
-                kind: "text",
+                kind: BlockKind::Text,
                 id: Value::Null,
                 name: Value::Null,
             }),

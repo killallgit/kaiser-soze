@@ -15,12 +15,12 @@ pub(super) fn usage_event(usage_json: &Value) -> TapEvent {
 
 pub(super) fn block_start_of(index: u64, block: &Value) -> BlockStart {
     let (kind, id, name) = match block["type"].as_str().unwrap_or_default() {
-        "text" => ("text", Value::Null, Value::Null),
-        "thinking" | "redacted_thinking" => ("reasoning", Value::Null, Value::Null),
-        "tool_use" => ("tool_call", block["id"].clone(), block["name"].clone()),
-        _ => ("other", Value::Null, Value::Null),
+        "text" => (BlockKind::Text, Value::Null, Value::Null),
+        "thinking" | "redacted_thinking" => (BlockKind::Reasoning, Value::Null, Value::Null),
+        "tool_use" => (BlockKind::ToolCall, block["id"].clone(), block["name"].clone()),
+        _ => (BlockKind::Other, Value::Null, Value::Null),
     };
-    BlockStart { index, kind, id, name }
+    BlockStart { id, index, kind, name }
 }
 
 pub(super) fn block_delta_of(index: u64, delta: &Value) -> Option<TapEvent> {
