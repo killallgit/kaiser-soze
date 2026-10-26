@@ -1,7 +1,6 @@
 use super::request::{input_item, read_request};
-use crate::adapter::TapEvent;
 use crate::body::MAX_REQUEST_BODY;
-use crate::common::conversation;
+use crate::event::Conversation;
 use crate::message::Message;
 use serde_json::{json, Value};
 
@@ -22,13 +21,13 @@ pub(super) struct History {
 }
 
 impl History {
-    pub(super) fn join(&mut self, json: &Value) -> TapEvent {
+    pub(super) fn join(&mut self, json: &Value) -> Conversation {
         let (system, tools, messages) = read_request(json);
         let previous = json["previous_response_id"].as_str();
         let partial = previous.is_some() && (self.broken || previous != self.last_reply.as_deref());
-        let mut event = if partial {
+        let conversation = if partial {
             self.broken = true;
-            conversation(system, tools, messages)
+            Conversation::new(system, tools, messages)
         } else {
             if previous.is_none() {
                 *self = History::default();
@@ -38,17 +37,15 @@ impl History {
             self.bytes += size_of(&messages);
             append(&mut self.messages, messages);
             (self.system, self.tools) = (system.clone(), tools.clone());
-            let event = conversation(system, tools, self.messages.clone());
+            let conversation = Conversation::new(system, tools, self.messages.clone());
             self.bound();
-            event
+            conversation
         };
-        if partial {
-            event.payload["partial"] = json!(true);
+        Conversation {
+            partial,
+            warmup: json["generate"] == json!(false),
+            ..conversation
         }
-        if json["generate"] == json!(false) {
-            event.payload["warmup"] = json!(true);
-        }
-        event
     }
 
     pub(super) fn request_unreadable(&mut self) {

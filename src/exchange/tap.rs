@@ -1,7 +1,7 @@
 use super::clock::{Clock, Stamp};
 use super::recorder::Recorder;
 use super::stats::Stats;
-use crate::adapter::{ExchangeParser, ResponseHead, TapEvent, TapInput};
+use crate::adapter::{ExchangeParser, ResponseHead, TapInput};
 use crate::assembler::Assembler;
 use crate::redact::redact_headers;
 use crate::ws::WsDecoder;
@@ -124,14 +124,8 @@ async fn run_parser(
             }
         };
         for event in inputs.into_iter().flat_map(|input| parser.feed(input)) {
-            let records = assembler.push(&event, dropped());
-            let TapEvent {
-                kind,
-                payload,
-                start,
-                end,
-            } = event;
-            recorder.write(stamp, &kind, payload, (start, end));
+            let records = assembler.push(&event.event, dropped());
+            recorder.write_event(stamp, &event.event, (event.start, event.end));
             for record in records {
                 recorder.write_record(stamp, record).await;
             }

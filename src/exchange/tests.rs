@@ -162,7 +162,7 @@ fn open_reply() -> Vec<TapEvent> {
         conversation(json!("sys"), json!([]), vec![Message::user(vec![Block::text("hi")])]),
         block_start(BlockStart {
             index: 0,
-            kind: "text",
+            kind: BlockKind::Text,
             id: Value::Null,
             name: Value::Null,
         }),
@@ -278,8 +278,8 @@ async fn a_record_takes_its_step_and_turn_from_its_own_request() {
         ..Identity::default()
     };
     let mut later = closed_reply();
-    later[0].payload["step"] = json!(2);
-    later[0].payload["turn"] = json!("u2");
+    later[0].event.conversation_mut().step = Some(2);
+    later[0].event.conversation_mut().turn = Some("u2".into());
 
     let stepped = run_recorded(later, |recorder| recorder.knowing(known.clone())).await;
     let plain = run_recorded(closed_reply(), |recorder| recorder.knowing(known)).await;
@@ -340,7 +340,7 @@ async fn a_later_step_that_names_no_turn_does_not_take_the_header_turn() {
         ..Identity::default()
     };
     let mut later = closed_reply();
-    later[0].payload["step"] = json!(2);
+    later[0].event.conversation_mut().step = Some(2);
 
     let lines = run_recorded(later, |recorder| {
         recorder
@@ -363,7 +363,7 @@ async fn a_result_in_a_later_request_writes_one_calls_edge_for_its_call() {
         conversation(json!("sys"), json!([]), vec![Message::user(vec![Block::text("hi")])]),
         block_start(BlockStart {
             index: 0,
-            kind: "tool_call",
+            kind: BlockKind::ToolCall,
             id: json!("c1"),
             name: json!("shell"),
         }),
@@ -425,7 +425,7 @@ async fn a_claude_and_a_codex_exchange_write_these_exact_records_and_edges() {
         conversation(json!("sys"), json!([]), vec![Message::user(vec![Block::text("hi")])]),
         block_start(BlockStart {
             index: 0,
-            kind: "tool_call",
+            kind: BlockKind::ToolCall,
             id: json!("c1"),
             name: json!("shell"),
         }),
@@ -443,9 +443,9 @@ async fn a_claude_and_a_codex_exchange_write_these_exact_records_and_edges() {
             output: Output::Raw(json!("done")),
         }])],
     );
-    codex[0].payload["step"] = json!(2);
-    codex[0].payload["turn"] = json!("u2");
-    codex[0].payload["previous_message_id"] = json!("m1");
+    codex[0].event.conversation_mut().step = Some(2);
+    codex[0].event.conversation_mut().turn = Some("u2".into());
+    codex[0].event.conversation_mut().previous_message_id = Some("m1".into());
     let threads = Arc::new(Mutex::new(Threads::default()));
     let known = Identity {
         session: Some("s1".into()),
@@ -601,7 +601,7 @@ async fn two_claude_exchanges_of_one_thread_continue_by_message_id_whichever_rec
             conversation(json!("sys"), json!([]), vec![Message::user(vec![Block::text("hi")])]),
             block_start(BlockStart {
                 index: 0,
-                kind: "tool_call",
+                kind: BlockKind::ToolCall,
                 id: json!("c1"),
                 name: json!("shell"),
             }),
@@ -617,7 +617,7 @@ async fn two_claude_exchanges_of_one_thread_continue_by_message_id_whichever_rec
         }]);
         let mut events = closed_reply();
         events[0] = conversation(json!("sys"), json!([]), vec![result]);
-        events[0].payload["previous_message_id"] = json!("m1");
+        events[0].event.conversation_mut().previous_message_id = Some("m1".into());
         events
     };
     let calling_first = vec![

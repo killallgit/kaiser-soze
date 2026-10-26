@@ -1,4 +1,5 @@
 use super::*;
+use crate::adapter::TapEvent;
 use crate::common::*;
 use crate::message::{Block, Message};
 use serde_json::json;
@@ -11,7 +12,7 @@ fn text_reply(text: &str) -> Vec<TapEvent> {
     vec![
         block_start(BlockStart {
             index: 0,
-            kind: "text",
+            kind: BlockKind::Text,
             id: Value::Null,
             name: Value::Null,
         }),
@@ -27,7 +28,10 @@ fn text_reply(text: &str) -> Vec<TapEvent> {
 }
 
 fn feed(assembler: &mut Assembler, events: Vec<TapEvent>, dropped: u64) -> Vec<Value> {
-    events.iter().flat_map(|event| assembler.push(event, dropped)).collect()
+    events
+        .iter()
+        .flat_map(|event| assembler.push(&event.event, dropped))
+        .collect()
 }
 
 #[test]
@@ -122,14 +126,14 @@ fn an_item_outside_the_format_is_skipped_and_later_blocks_keep_their_order() {
         conversation_event(),
         block_start(BlockStart {
             index: 0,
-            kind: "web_search",
+            kind: BlockKind::Other,
             id: Value::Null,
             name: Value::Null,
         }),
         block_delta(0, Delta::Text("skipped".into())),
         block_start(BlockStart {
             index: 1,
-            kind: "text",
+            kind: BlockKind::Text,
             id: Value::Null,
             name: Value::Null,
         }),
@@ -151,7 +155,7 @@ fn a_tool_call_joins_its_json_fragments_into_the_input() {
         conversation_event(),
         block_start(BlockStart {
             index: 0,
-            kind: "tool_call",
+            kind: BlockKind::ToolCall,
             id: json!("c1"),
             name: json!("shell"),
         }),
@@ -180,7 +184,7 @@ fn a_reply_past_the_bound_stops_assembling_and_is_incomplete() {
         conversation_event(),
         block_start(BlockStart {
             index: 0,
-            kind: "text",
+            kind: BlockKind::Text,
             id: Value::Null,
             name: Value::Null,
         }),
@@ -196,30 +200,13 @@ fn a_reply_past_the_bound_stops_assembling_and_is_incomplete() {
 }
 
 #[test]
-fn events_outside_the_common_kinds_write_no_record() {
-    // It ignores them, so an unconverted adapter is unaffected
-    let mut assembler = Assembler::default();
-    let old = TapEvent {
-        kind: "message_stop".into(),
-        payload: json!({}),
-        start: 0,
-        end: 0,
-    };
-
-    let records = feed(&mut assembler, vec![old], 0);
-
-    assert!(records.is_empty());
-    assert!(assembler.finish(0).is_none());
-}
-
-#[test]
 fn encrypted_reasoning_without_text_becomes_an_encrypted_block() {
     // It keeps the encrypted text when there is no readable text
     let mut assembler = Assembler::default();
     let events = vec![
         block_start(BlockStart {
             index: 0,
-            kind: "reasoning",
+            kind: BlockKind::Reasoning,
             id: Value::Null,
             name: Value::Null,
         }),
@@ -294,8 +281,9 @@ fn a_request_that_states_its_step_and_turn_gives_them_to_the_record() {
     // It copies the step and turn of the conversation onto the record
     let mut assembler = Assembler::default();
     let mut request = conversation_event();
-    request.payload["step"] = json!(3);
-    request.payload["turn"] = json!("u2");
+    let conversation = request.event.conversation_mut();
+    conversation.step = Some(3);
+    conversation.turn = Some("u2".into());
 
     let records = feed(&mut assembler, vec![request, reply_end(json!("end_turn"))], 0);
 

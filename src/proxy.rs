@@ -230,8 +230,8 @@ impl Tunnel {
         let exchanges = &self.proxy.exchanges;
         let Some(parser) = self.adapter.claim(head) else {
             let path = head.path.split('?').next().unwrap_or_default();
-            let event = crate::common::unsupported(&head.host, path);
-            exchanges.note_alone(self.adapter.name(), &event.kind, event.payload, self.label.as_ref());
+            let payload = json!({"host": head.host, "path": path});
+            exchanges.note_alone(self.adapter.name(), "unsupported", payload, self.label.as_ref());
             return None;
         };
         Some(exchanges.begin(Opening {

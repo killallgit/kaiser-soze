@@ -1,4 +1,5 @@
 use super::clock::Stamp;
+use crate::event::Event;
 use crate::graph::{Edge, Identity, Step, Threads};
 use crate::line::{Entry, Line};
 use crate::sink::Sink;
@@ -105,6 +106,16 @@ impl Recorder {
         let line = self.line(stamp, Entry::untyped(kind, payload), offsets);
         if !self.sink.write(line) {
             self.refused.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Writes a stream event under its own name; an event that cannot be written counts as refused.
+    pub fn write_event(&self, stamp: Stamp, event: &Event, offsets: (u64, u64)) {
+        match serde_json::to_value(event) {
+            Ok(payload) => self.write(stamp, event.kind(), payload, offsets),
+            Err(_) => {
+                self.refused.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 

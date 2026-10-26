@@ -1,6 +1,6 @@
+use crate::event::Event;
 use crate::graph::Identity;
 use bytes::Bytes;
-use serde_json::Value;
 
 pub struct RequestHead {
     pub method: String,
@@ -29,10 +29,19 @@ pub enum TapInput {
 }
 
 pub struct TapEvent {
-    pub kind: String,
-    pub payload: Value,
+    pub event: Event,
     pub start: u64,
     pub end: u64,
+}
+
+impl From<Event> for TapEvent {
+    fn from(event: Event) -> Self {
+        Self {
+            event,
+            start: 0,
+            end: 0,
+        }
+    }
 }
 
 /// Teaches the proxy about one tool: which hosts to decrypt and which exchanges to parse.

@@ -1,5 +1,5 @@
 use crate::message::Message;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// What an adapter says about one exchange. The payload structs declare their fields in the key
@@ -36,20 +36,20 @@ impl Event {
 
 /// A request: the messages it sent, with the system prompt and tools as sent. The optional fields
 /// are left out when missing, and the two flags when false.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Conversation {
     pub messages: Vec<Message>,
-    #[serde(skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub partial: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_message_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<u64>,
     pub system: Value,
     pub tools: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn: Option<String>,
-    #[serde(skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub warmup: bool,
 }
 
@@ -72,7 +72,7 @@ impl Conversation {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockKind {
     Text,
@@ -82,25 +82,25 @@ pub enum BlockKind {
 }
 
 /// A reply block opening. A `null` id or name is left out.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BlockStart {
-    #[serde(skip_serializing_if = "Value::is_null")]
+    #[serde(default, skip_serializing_if = "Value::is_null")]
     pub id: Value,
     pub index: u64,
     pub kind: BlockKind,
-    #[serde(skip_serializing_if = "Value::is_null")]
+    #[serde(default, skip_serializing_if = "Value::is_null")]
     pub name: Value,
 }
 
 /// One piece of an open block: its index, then the field named for the kind of piece.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BlockDelta {
     pub index: u64,
     #[serde(flatten)]
     pub delta: Delta,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Delta {
     Text(String),
@@ -109,13 +109,22 @@ pub enum Delta {
     Encrypted(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+impl Delta {
+    /// The text the delta carries, whichever kind it is.
+    pub fn piece(&self) -> &str {
+        match self {
+            Self::Text(piece) | Self::InputJson(piece) | Self::Signature(piece) | Self::Encrypted(piece) => piece,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BlockStop {
     pub index: u64,
 }
 
 /// The token counts one event reports; a count the upstream did not send is `null`.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
     pub cache_read: Option<u64>,
     pub cache_write: Option<u64>,
@@ -136,29 +145,47 @@ impl Usage {
 }
 
 /// The end of a reply. The stop reason passes through as sent; a missing message id is left out.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReplyEnd {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<Value>,
     pub stop_reason: Value,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Error {
     pub error_type: Value,
 }
 
 /// A request or a reply the adapter could not read.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Unparsed {
     pub side: Side,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Side {
     Request,
     Reply,
+}
+
+#[cfg(test)]
+impl Event {
+    /// The conversation an event holds; any other event fails the test.
+    pub(crate) fn conversation(&self) -> &Conversation {
+        match self {
+            Self::Conversation(conversation) => conversation,
+            other => panic!("expected a conversation, got {}", other.kind()),
+        }
+    }
+
+    pub(crate) fn conversation_mut(&mut self) -> &mut Conversation {
+        match self {
+            Self::Conversation(conversation) => conversation,
+            other => panic!("expected a conversation, got {}", other.kind()),
+        }
+    }
 }
 
 #[cfg(test)]

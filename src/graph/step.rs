@@ -1,4 +1,5 @@
 use super::Identity;
+use crate::event::Conversation;
 use serde_json::Value;
 
 /// One request and its reply: the unit `turn` and `continues` link.
@@ -45,12 +46,12 @@ pub struct Claimed {
     pub turn: Option<String>,
 }
 
-/// What a request claims, none without a conversation. A Claude exchange is one request, so it is step 1.
-pub fn claimed(conversation: &Value) -> Option<Claimed> {
-    (!conversation.is_null()).then(|| Claimed {
-        step: conversation["step"].as_u64().unwrap_or(1),
-        turn: conversation["turn"].as_str().map(String::from),
-    })
+/// What a request claims. A Claude exchange is one request, so it is step 1.
+pub fn claimed(conversation: &Conversation) -> Claimed {
+    Claimed {
+        step: conversation.step.unwrap_or(1),
+        turn: conversation.turn.clone(),
+    }
 }
 
 /// The turn a request names; an empty id, as a warm-up request sends, names none.
@@ -157,8 +158,13 @@ mod tests {
     #[test]
     fn a_conversation_that_states_no_step_claims_step_one() {
         // A Claude request states no step, a Codex one states its own
-        let claude = claimed(&json!({"messages": []})).unwrap();
-        let codex = claimed(&json!({"step": 3, "turn": "u2"})).unwrap();
+        let bare = Conversation::new(Value::Null, Value::Null, Vec::new());
+        let claude = claimed(&bare);
+        let codex = claimed(&Conversation {
+            step: Some(3),
+            turn: Some("u2".into()),
+            ..bare
+        });
 
         assert_eq!(claude, Claimed { step: 1, turn: None });
         assert_eq!(
@@ -168,12 +174,6 @@ mod tests {
                 turn: Some("u2".into())
             }
         );
-    }
-
-    #[test]
-    fn no_conversation_claims_nothing() {
-        // A reply with no request in front of it claims no step
-        assert_eq!(claimed(&Value::Null), None);
     }
 
     #[test]

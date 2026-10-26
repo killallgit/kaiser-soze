@@ -1,5 +1,6 @@
 use crate::adapter::TapEvent;
 use crate::common::*;
+use crate::event::{Conversation, Event};
 use crate::message::{Block, Message, Output, Role};
 use serde_json::Value;
 
@@ -14,11 +15,11 @@ pub(super) fn conversation_event(json: &Value) -> TapEvent {
             })
             .collect()
     });
-    let mut event = conversation(json["system"].clone(), json["tools"].clone(), messages);
-    if let Some(previous) = json["diagnostics"]["previous_message_id"].as_str() {
-        event.payload["previous_message_id"] = previous.into();
-    }
-    event
+    let conversation = Conversation {
+        previous_message_id: json["diagnostics"]["previous_message_id"].as_str().map(String::from),
+        ..Conversation::new(json["system"].clone(), json["tools"].clone(), messages)
+    };
+    TapEvent::from(Event::Conversation(conversation))
 }
 
 pub(super) fn content_blocks(location: &str, content: &Value) -> Vec<Block> {

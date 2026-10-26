@@ -229,3 +229,56 @@ fn an_event_writes_its_payload_alone_and_names_its_kind() {
     assert_eq!(written(&events[3]), r#"{"index":0}"#);
     assert_eq!(written(&events[7]), r#"{"side":"reply"}"#);
 }
+
+#[test]
+fn each_payload_reads_back_as_it_was_written() {
+    // A tap line can be replayed into the event it was written from
+    fn round_trip<T: Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(value: T) {
+        let read: T = serde_json::from_str(&written(&value)).unwrap();
+
+        assert_eq!(read, value);
+    }
+
+    round_trip(bare_conversation());
+    round_trip(Conversation {
+        partial: true,
+        previous_message_id: Some("m1".into()),
+        step: Some(3),
+        turn: Some("u2".into()),
+        warmup: true,
+        ..bare_conversation()
+    });
+    round_trip(BlockStart {
+        id: json!("c1"),
+        index: 1,
+        kind: BlockKind::ToolCall,
+        name: json!("shell"),
+    });
+    round_trip(BlockStart {
+        id: Value::Null,
+        index: 0,
+        kind: BlockKind::Other,
+        name: Value::Null,
+    });
+    round_trip(BlockDelta {
+        index: 2,
+        delta: Delta::Encrypted("e".into()),
+    });
+    round_trip(BlockStop { index: 4 });
+    round_trip(Usage {
+        input: Some(3),
+        ..Usage::default()
+    });
+    round_trip(ReplyEnd {
+        message_id: Some(json!("m1")),
+        stop_reason: Value::Null,
+    });
+    round_trip(ReplyEnd {
+        message_id: None,
+        stop_reason: json!("end_turn"),
+    });
+    round_trip(Error {
+        error_type: json!("overloaded_error"),
+    });
+    round_trip(Unparsed { side: Side::Request });
+}

@@ -3,6 +3,7 @@ use super::stream::stream_event;
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
 use crate::body::{is_encoded, RequestBuffer};
 use crate::common::*;
+use crate::event::{Conversation, Event};
 use crate::graph::named_turn;
 use crate::sse::{SseEvent, SseSplitter};
 use serde_json::Value;
@@ -31,12 +32,12 @@ impl CodexParser {
             Ok(json) if json["type"].as_str().is_some_and(|kind| kind != "response.create") => return Vec::new(),
             Ok(json) => {
                 self.steps += 1;
-                let mut event = self.history.join(&json);
-                event.payload["step"] = self.steps.into();
-                if let Some(turn) = named_turn(json["client_metadata"]["turn_id"].as_str()) {
-                    event.payload["turn"] = turn.into();
-                }
-                event
+                let conversation = Conversation {
+                    step: Some(self.steps),
+                    turn: named_turn(json["client_metadata"]["turn_id"].as_str()),
+                    ..self.history.join(&json)
+                };
+                TapEvent::from(Event::Conversation(conversation))
             }
             Err(_) => {
                 self.history.request_unreadable();

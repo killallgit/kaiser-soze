@@ -3,10 +3,11 @@ use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1::SendRequest;
 use hyper::{Request, StatusCode};
 use hyper_util::rt::TokioIo;
-use kaiser_soze::adapter::{Adapter, TapEvent};
+use kaiser_soze::adapter::Adapter;
 use kaiser_soze::assembler::Assembler;
 use kaiser_soze::claude::ClaudeAdapter;
 use kaiser_soze::codex::CodexAdapter;
+use kaiser_soze::event::Event;
 use kaiser_soze::live::Live;
 use kaiser_soze::project::ProjectCache;
 use kaiser_soze::proxy::{Proxy, ProxyConfig};
@@ -294,18 +295,26 @@ pub fn fold(lines: &[Value], exchange: u64) -> Vec<Value> {
     let mut records: Vec<Value> = lines
         .iter()
         .filter(|line| line["exchange"] == exchange)
-        .flat_map(|line| {
-            let event = TapEvent {
-                kind: line["event"].as_str().unwrap().to_string(),
-                payload: line["payload"].clone(),
-                start: 0,
-                end: 0,
-            };
-            assembler.push(&event, 0)
-        })
+        .filter_map(stream_event)
+        .flat_map(|event| assembler.push(&event, 0))
         .collect();
     records.extend(assembler.finish(0));
     records
+}
+
+fn stream_event(line: &Value) -> Option<Event> {
+    let payload = line["payload"].clone();
+    Some(match line["event"].as_str()? {
+        "conversation" => Event::Conversation(serde_json::from_value(payload).unwrap()),
+        "block_start" => Event::BlockStart(serde_json::from_value(payload).unwrap()),
+        "block_delta" => Event::BlockDelta(serde_json::from_value(payload).unwrap()),
+        "block_stop" => Event::BlockStop(serde_json::from_value(payload).unwrap()),
+        "usage" => Event::Usage(serde_json::from_value(payload).unwrap()),
+        "reply_end" => Event::ReplyEnd(serde_json::from_value(payload).unwrap()),
+        "error" => Event::Error(serde_json::from_value(payload).unwrap()),
+        "unparsed" => Event::Unparsed(serde_json::from_value(payload).unwrap()),
+        _ => return None,
+    })
 }
 
 pub fn records_of(lines: &[Value], exchange: u64) -> Vec<Value> {

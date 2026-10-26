@@ -1,9 +1,10 @@
+use serde::de::Error;
 use serde::ser::SerializeStruct;
-use serde::{Serialize, Serializer};
-use serde_json::Value;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::{Map, Value};
 
 /// Who a message is from. The upstream role passes through as sent, so any string is a role.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Role(String);
 
@@ -24,7 +25,7 @@ impl From<&str> for Role {
 }
 
 /// One turn of a conversation. The fields are declared in the order the tap file writes them.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub blocks: Vec<Block>,
     pub role: Role,
@@ -47,7 +48,7 @@ impl Message {
 }
 
 /// The output of a tool result: the blocks it holds, or the upstream value as sent.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Output {
     Blocks(Vec<Block>),
@@ -159,6 +160,44 @@ impl Serialize for Block {
                 block.end()
             }
         }
+    }
+}
+
+/// Reads a block back from what `Serialize` wrote, so a tap line can be replayed. A reasoning block
+/// with an `encrypted` key is the encrypted kind, since both write the kind `reasoning`.
+impl<'de> Deserialize<'de> for Block {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let fields = Map::<String, Value>::deserialize(deserializer)?;
+        let field = |name: &str| fields.get(name).cloned().unwrap_or(Value::Null);
+        let string = |name: &'static str| {
+            field(name)
+                .as_str()
+                .map(String::from)
+                .ok_or_else(|| D::Error::missing_field(name))
+        };
+        Ok(match field("kind").as_str() {
+            Some("text") => Block::Text { text: string("text")? },
+            Some("reasoning") if fields.contains_key("encrypted") => Block::EncryptedReasoning {
+                encrypted: field("encrypted"),
+            },
+            Some("reasoning") => Block::reasoning(field("text"), field("signature")),
+            Some("tool_call") => Block::ToolCall {
+                id: field("id"),
+                input: field("input"),
+                name: field("name"),
+            },
+            Some("tool_result") => Block::ToolResult {
+                call_id: field("call_id"),
+                is_error: field("is_error") == Value::Bool(true),
+                output: serde_json::from_value(field("output")).map_err(D::Error::custom)?,
+            },
+            Some("image") => Block::Image {
+                content_type: string("content_type")?,
+                reference: string("ref")?,
+                size: field("size").as_u64().ok_or_else(|| D::Error::missing_field("size"))? as usize,
+            },
+            _ => return Err(D::Error::missing_field("kind")),
+        })
     }
 }
 

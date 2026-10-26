@@ -1,6 +1,7 @@
 use super::*;
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
 use crate::body::MAX_REQUEST_BODY;
+use crate::common::*;
 use crate::graph::Identity;
 use crate::message::{Block, Message, Output};
 use bytes::Bytes;
@@ -80,8 +81,17 @@ fn no_ids_give_an_empty_identity() {
     assert_eq!(identity_of(&[]), Identity::default());
 }
 
-fn kinds(events: &[TapEvent]) -> Vec<&str> {
-    events.iter().map(|e| e.kind.as_str()).collect()
+fn untitled(index: u64, kind: BlockKind) -> BlockStart {
+    BlockStart {
+        id: Value::Null,
+        index,
+        kind,
+        name: Value::Null,
+    }
+}
+
+fn kinds(events: &[TapEvent]) -> Vec<&'static str> {
+    events.iter().map(|e| e.event.kind()).collect()
 }
 
 #[test]
@@ -116,15 +126,14 @@ fn maps_an_http_request_split_across_chunks_to_a_conversation() {
     let events = parser.feed(TapInput::RequestEnd);
 
     assert_eq!(kinds(&events), ["conversation"]);
-    assert_eq!(events[0].payload["system"], "sys");
+    assert_eq!(events[0].event.conversation().system, "sys");
     assert_eq!(
-        events[0].payload["tools"],
+        events[0].event.conversation().tools,
         json!([{"type": "function", "name": "shell"}])
     );
-    assert_eq!(events[0].payload.get("model"), None);
     assert_eq!(
-        events[0].payload["messages"],
-        json!([
+        events[0].event.conversation().messages,
+        vec![
             Message::user(vec![Block::text("hi")]),
             Message::assistant(vec![
                 Block::reasoning(json!("think"), Value::Null),
@@ -146,7 +155,7 @@ fn maps_an_http_request_split_across_chunks_to_a_conversation() {
                     size: 3
                 }
             ]),
-        ])
+        ]
     );
 }
 
@@ -160,8 +169,8 @@ fn maps_roles_other_than_assistant_and_system_ones_to_user() {
     );
 
     assert_eq!(
-        events[0].payload["messages"],
-        json!([Message::user(vec![Block::text("d"), Block::text("u")])])
+        events[0].event.conversation().messages,
+        vec![Message::user(vec![Block::text("d"), Block::text("u")])]
     );
 }
 
@@ -191,8 +200,8 @@ fn maps_a_websocket_request_message_like_an_http_body() {
     assert_eq!(kinds(&events), ["conversation"]);
     assert_eq!((events[0].start, events[0].end), (3, 9));
     assert_eq!(
-        events[0].payload["messages"],
-        json!([Message::user(vec![Block::text("hi")])])
+        events[0].event.conversation().messages,
+        vec![Message::user(vec![Block::text("hi")])]
     );
 }
 
@@ -208,7 +217,7 @@ fn each_request_on_a_socket_is_the_next_step_and_names_its_own_turn() {
             start: 0,
             end: 1,
         });
-        events[0].payload.clone()
+        events[0].event.conversation().clone()
     };
 
     let first = conversation(json!({"type":"response.create","input":[],"client_metadata":{"turn_id":"u1"}}));
@@ -217,15 +226,18 @@ fn each_request_on_a_socket_is_the_next_step_and_names_its_own_turn() {
     let bare = conversation(json!({"type":"response.create","input":[]}));
 
     assert_eq!(
-        [&first["step"], &second["step"], &third["step"]],
-        [&json!(1), &json!(2), &json!(3)]
+        [first.step, second.step, third.step, bare.step],
+        [Some(1), Some(2), Some(3), Some(4)]
     );
     assert_eq!(
-        [&first["turn"], &second["turn"], &third["turn"]],
-        [&json!("u1"), &json!("u1"), &json!("u2")]
+        [
+            first.turn.as_deref(),
+            second.turn.as_deref(),
+            third.turn.as_deref(),
+            bare.turn.as_deref()
+        ],
+        [Some("u1"), Some("u1"), Some("u2"), None]
     );
-    assert_eq!(bare["step"], 4);
-    assert!(bare.get("turn").is_none());
 }
 
 #[test]
@@ -239,8 +251,8 @@ fn a_request_with_an_empty_turn_id_names_no_turn() {
         end: 1,
     });
 
-    assert_eq!(events[0].payload["step"], 1);
-    assert!(events[0].payload.get("turn").is_none());
+    assert_eq!(events[0].event.conversation().step, Some(1));
+    assert_eq!(events[0].event.conversation().turn, None);
 }
 
 #[test]
@@ -256,12 +268,12 @@ fn moves_developer_and_system_items_to_system_and_leaves_messages() {
     let events = parser.feed(TapInput::RequestEnd);
 
     assert_eq!(
-        events[0].payload["system"],
+        events[0].event.conversation().system,
         json!([{"type": "text", "text": "d1"}, {"type": "text", "text": "s1"}])
     );
     assert_eq!(
-        events[0].payload["messages"],
-        json!([Message::user(vec![Block::text("hi")])])
+        events[0].event.conversation().messages,
+        vec![Message::user(vec![Block::text("hi")])]
     );
 }
 
@@ -275,10 +287,10 @@ fn reads_tools_from_an_additional_tools_item() {
     let events = parser.feed(TapInput::RequestEnd);
 
     assert_eq!(
-        events[0].payload["tools"],
+        events[0].event.conversation().tools,
         json!([{"type": "namespace", "name": "n", "tools": []}])
     );
-    assert_eq!(events[0].payload["messages"], json!([]));
+    assert_eq!(events[0].event.conversation().messages, vec![]);
 }
 
 #[test]
@@ -292,8 +304,8 @@ fn top_level_instructions_and_tools_win_over_the_input_forms() {
     parser.feed(TapInput::RequestBody(Bytes::from_static(body)));
     let events = parser.feed(TapInput::RequestEnd);
 
-    assert_eq!(events[0].payload["system"], "top");
-    assert_eq!(events[0].payload["tools"], json!([{"name": "top"}]));
+    assert_eq!(events[0].event.conversation().system, "top");
+    assert_eq!(events[0].event.conversation().tools, json!([{"name": "top"}]));
 }
 
 #[test]
@@ -305,8 +317,8 @@ fn a_request_without_system_or_tools_keeps_both_null() {
     parser.feed(TapInput::RequestBody(Bytes::from_static(body)));
     let events = parser.feed(TapInput::RequestEnd);
 
-    assert!(events[0].payload["system"].is_null());
-    assert!(events[0].payload["tools"].is_null());
+    assert!(events[0].event.conversation().system.is_null());
+    assert!(events[0].event.conversation().tools.is_null());
 }
 
 #[test]
@@ -321,8 +333,8 @@ fn maps_custom_tool_calls_and_their_output_in_a_request() {
     let events = parser.feed(TapInput::RequestEnd);
 
     assert_eq!(
-        events[0].payload["messages"],
-        json!([
+        events[0].event.conversation().messages,
+        vec![
             Message::assistant(vec![Block::ToolCall {
                 id: json!("c1"),
                 input: json!("*** Begin Patch"),
@@ -333,7 +345,7 @@ fn maps_custom_tool_calls_and_their_output_in_a_request() {
                 is_error: false,
                 output: Output::Blocks(vec![Block::text("done")])
             }]),
-        ])
+        ]
     );
 }
 
@@ -353,10 +365,19 @@ fn streams_a_custom_tool_call_as_a_tool_call_block() {
 
     assert_eq!(kinds(&events), ["block_start", "block_delta", "block_stop"]);
     assert_eq!(
-        events[0].payload,
-        json!({"index": 0, "kind": "tool_call", "id": "c1", "name": "apply_patch"})
+        events[0].event,
+        block_start(BlockStart {
+            id: json!("c1"),
+            index: 0,
+            kind: BlockKind::ToolCall,
+            name: json!("apply_patch")
+        })
+        .event
     );
-    assert_eq!(events[1].payload, json!({"index": 0, "input_json": "*** Begin"}));
+    assert_eq!(
+        events[1].event,
+        block_delta(0, Delta::InputJson("*** Begin".into())).event
+    );
 }
 
 #[test]
@@ -397,19 +418,33 @@ fn maps_sse_events_split_across_chunks_with_a_partial_final_line() {
             "reply_end"
         ]
     );
-    assert_eq!(events[0].payload, json!({"index": 0, "kind": "reasoning"}));
-    assert_eq!(events[1].payload, json!({"index": 0, "text": "hm"}));
-    assert_eq!(events[2].payload, json!({"index": 0, "encrypted": "enc"}));
-    assert_eq!(events[4].payload, json!({"index": 1, "kind": "text"}));
+    assert_eq!(events[0].event, block_start(untitled(0, BlockKind::Reasoning)).event);
+    assert_eq!(events[1].event, block_delta(0, Delta::Text("hm".into())).event);
+    assert_eq!(events[2].event, block_delta(0, Delta::Encrypted("enc".into())).event);
+    assert_eq!(events[4].event, block_start(untitled(1, BlockKind::Text)).event);
     assert_eq!(
-        events[6].payload,
-        json!({"index": 2, "kind": "tool_call", "id": "c1", "name": "shell"})
+        events[6].event,
+        block_start(BlockStart {
+            id: json!("c1"),
+            index: 2,
+            kind: BlockKind::ToolCall,
+            name: json!("shell")
+        })
+        .event
     );
-    assert_eq!(events[7].payload, json!({"index": 2, "input_json": "{}"}));
-    assert_eq!(events[8].payload["input"], 3);
-    assert_eq!(events[8].payload["cache_read"], 2);
-    assert_eq!(events[8].payload["reasoning"], 1);
-    assert_eq!(events[9].payload, json!({"stop_reason": "completed"}));
+    assert_eq!(events[7].event, block_delta(2, Delta::InputJson("{}".into())).event);
+    assert_eq!(
+        events[8].event,
+        usage(Usage {
+            input: Some(3),
+            output: Some(1),
+            cache_read: Some(2),
+            cache_write: None,
+            reasoning: Some(1)
+        })
+        .event
+    );
+    assert_eq!(events[9].event, reply_end(json!("completed")).event);
 }
 
 #[test]
@@ -425,7 +460,7 @@ fn maps_websocket_server_messages_like_sse_events() {
     });
 
     assert_eq!(kinds(&events), ["block_delta"]);
-    assert_eq!(events[0].payload, json!({"index": 1, "text": "x"}));
+    assert_eq!(events[0].event, block_delta(1, Delta::Text("x".into())).event);
 }
 
 #[test]
@@ -437,7 +472,7 @@ fn reports_a_failure_by_code_only() {
         b"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit\",\"message\":\"slow\"}}}\n\n",
     )));
 
-    assert_eq!(events[0].payload, json!({"error_type": "rate_limit"}));
+    assert_eq!(events[0].event, error(json!("rate_limit")).event);
 }
 
 #[test]
@@ -450,7 +485,7 @@ fn flags_a_request_body_over_the_cap_as_unparsed() {
     let events = parser.feed(TapInput::RequestEnd);
 
     assert_eq!(kinds(&events), ["unparsed"]);
-    assert_eq!(events[0].payload, json!({"side": "request"}));
+    assert_eq!(events[0].event, unparsed(Side::Request).event);
 }
 
 #[test]
@@ -466,7 +501,7 @@ fn an_encoded_reply_is_reported_as_unparsed() {
     let events = parser.feed(TapInput::ResponseEnd);
 
     assert_eq!(kinds(&events), ["unparsed"]);
-    assert_eq!(events[0].payload, json!({"side": "reply"}));
+    assert_eq!(events[0].event, unparsed(Side::Reply).event);
 }
 
 #[test]
@@ -537,16 +572,19 @@ fn a_continuing_request_is_emitted_as_stored_history_reply_and_new_items() {
     .remove(0);
 
     assert_eq!(
-        event.payload["messages"],
-        json!([
+        event.event.conversation().messages,
+        vec![
             Message::user(vec![Block::text("one")]),
             Message::assistant(vec![Block::text("answer")]),
             Message::user(vec![Block::text("two")]),
-        ])
+        ]
     );
-    assert_eq!(event.payload["system"], json!([{"type": "text", "text": "sys"}]));
-    assert_eq!(event.payload["tools"], json!([{"name": "t"}]));
-    assert!(event.payload["partial"].is_null());
+    assert_eq!(
+        event.event.conversation().system,
+        json!([{"type": "text", "text": "sys"}])
+    );
+    assert_eq!(event.event.conversation().tools, json!([{"name": "t"}]));
+    assert!(!event.event.conversation().partial);
 }
 
 #[test]
@@ -563,11 +601,11 @@ fn a_request_without_a_previous_id_starts_a_new_history() {
     .remove(0);
 
     assert_eq!(
-        event.payload["messages"],
-        json!([Message::user(vec![Block::text("fresh")])])
+        event.event.conversation().messages,
+        vec![Message::user(vec![Block::text("fresh")])]
     );
-    assert!(event.payload["system"].is_null());
-    assert!(event.payload["tools"].is_null());
+    assert!(event.event.conversation().system.is_null());
+    assert!(event.event.conversation().tools.is_null());
 }
 
 #[test]
@@ -582,8 +620,8 @@ fn a_later_request_that_sets_system_replaces_the_stored_one() {
     )
     .remove(0);
 
-    assert_eq!(event.payload["system"], json!("new"));
-    assert_eq!(event.payload["tools"], json!([{"name": "t"}]));
+    assert_eq!(event.event.conversation().system, json!("new"));
+    assert_eq!(event.event.conversation().tools, json!([{"name": "t"}]));
 }
 
 #[test]
@@ -595,10 +633,10 @@ fn an_unknown_previous_id_is_partial_and_stays_partial() {
         json!({"type": "response.create", "previous_response_id": "gone", "input": [user_item("two")]}),
     )
     .remove(0);
-    assert_eq!(event.payload["partial"], json!(true));
+    assert!(event.event.conversation().partial);
     assert_eq!(
-        event.payload["messages"],
-        json!([Message::user(vec![Block::text("two")])])
+        event.event.conversation().messages,
+        vec![Message::user(vec![Block::text("two")])]
     );
 
     server(&mut parser, &reply_frames("r2", "answer"));
@@ -607,14 +645,14 @@ fn an_unknown_previous_id_is_partial_and_stays_partial() {
         json!({"type": "response.create", "previous_response_id": "r2", "input": [user_item("three")]}),
     )
     .remove(0);
-    assert_eq!(next.payload["partial"], json!(true));
+    assert!(next.event.conversation().partial);
 
     let fresh = client(
         &mut parser,
         json!({"type": "response.create", "input": [user_item("new")]}),
     )
     .remove(0);
-    assert!(fresh.payload["partial"].is_null());
+    assert!(!fresh.event.conversation().partial);
 }
 
 #[test]
@@ -636,7 +674,7 @@ fn a_reply_with_fewer_items_than_its_output_breaks_the_chain() {
     )
     .remove(0);
 
-    assert_eq!(event.payload["partial"], json!(true));
+    assert!(event.event.conversation().partial);
 }
 
 #[test]
@@ -651,7 +689,7 @@ fn history_past_the_bound_makes_later_records_partial() {
     )
     .remove(0);
 
-    assert_eq!(event.payload["partial"], json!(true));
+    assert!(event.event.conversation().partial);
 }
 
 #[test]
@@ -669,7 +707,7 @@ fn a_request_body_that_cannot_be_read_makes_the_next_request_partial() {
     )
     .remove(0);
 
-    assert_eq!(event.payload["partial"], json!(true));
+    assert!(event.event.conversation().partial);
 }
 
 #[test]
@@ -690,7 +728,7 @@ fn a_request_message_that_is_not_json_makes_the_next_request_partial() {
     )
     .remove(0);
 
-    assert_eq!(event.payload["partial"], json!(true));
+    assert!(event.event.conversation().partial);
 }
 
 #[test]
@@ -706,7 +744,7 @@ fn parsers_do_not_share_history() {
     )
     .remove(0);
 
-    assert_eq!(event.payload["partial"], json!(true));
+    assert!(event.event.conversation().partial);
 }
 
 #[test]
@@ -718,7 +756,7 @@ fn a_generate_false_request_is_marked_warmup_and_the_chain_runs_through_it() {
         json!({"type": "response.create", "generate": false, "input": [user_item("one")]}),
     )
     .remove(0);
-    assert_eq!(warm.payload["warmup"], json!(true));
+    assert!(warm.event.conversation().warmup);
     server(
         &mut parser,
         &[
@@ -733,11 +771,11 @@ fn a_generate_false_request_is_marked_warmup_and_the_chain_runs_through_it() {
     )
     .remove(0);
 
-    assert!(next.payload["warmup"].is_null());
-    assert!(next.payload["partial"].is_null());
+    assert!(!next.event.conversation().warmup);
+    assert!(!next.event.conversation().partial);
     assert_eq!(
-        next.payload["messages"],
-        json!([Message::user(vec![Block::text("one"), Block::text("two")])])
+        next.event.conversation().messages,
+        vec![Message::user(vec![Block::text("one"), Block::text("two")])]
     );
 }
 
