@@ -2,8 +2,9 @@ use super::clock::Stamp;
 use crate::event::Event;
 use crate::graph::{Edge, Identity, Step, Threads};
 use crate::line::{Entry, Line};
+use crate::record::Record;
 use crate::sink::Sink;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use tokio::sync::watch;
@@ -68,19 +69,12 @@ impl Recorder {
         found.flatten()
     }
 
-    pub(super) fn with_ids(&self, mut record: Value, project: Option<String>, step: Option<&Step>) -> Value {
-        let ids = [
-            ("project", project.as_ref()),
-            ("session", self.identity.session.as_ref()),
-            ("thread", self.identity.thread.as_ref()),
-        ];
-        for (key, id) in ids {
-            if let Some(id) = id {
-                record[key] = json!(id);
-            }
-        }
+    pub(super) fn with_ids(&self, mut record: Record, project: Option<String>, step: Option<&Step>) -> Record {
+        record.project = project;
+        record.session = self.identity.session.clone();
+        record.thread = self.identity.thread.clone();
         if let Some(turn) = step.and_then(|step| step.turn.as_ref()) {
-            record["turn"] = json!(turn);
+            record.turn = Some(turn.clone());
         }
         record
     }
@@ -131,12 +125,12 @@ impl Recorder {
         self.sink.write_reliable(self.line(stamp, entry, (0, 0))).await;
     }
 
-    pub(super) async fn write_record(&self, stamp: Stamp, record: Value) {
+    pub(super) async fn write_record(&self, stamp: Stamp, record: Record) {
         let project = self.settled_project().await;
         let step = Step::of_record(&record, &self.identity, self.exchange);
         let record = self.with_ids(record, project, step.as_ref());
         let edges = self.step_edges(step.as_ref());
-        self.write_reliable(stamp, "record", record).await;
+        self.write_entry_reliable(stamp, Entry::Record(Box::new(record))).await;
         for edge in edges {
             self.write_edge(stamp, edge).await;
         }

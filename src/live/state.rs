@@ -29,12 +29,17 @@ impl LiveState {
     }
 
     pub fn line(&mut self, tap: &Line) -> Option<String> {
+        let record;
         let (kind, payload) = match &tap.entry {
-            Entry::Untyped { kind, payload } => (kind, payload),
+            Entry::Untyped { kind, payload } => (kind.as_str(), payload),
+            Entry::Record(typed) => {
+                record = serde_json::to_value(typed).ok()?;
+                ("record", &record)
+            }
             Entry::Edge(_) => return None,
         };
         let (exchange, wall) = (tap.exchange, tap.wall_ms);
-        let (body, command, dir) = match kind.as_str() {
+        let (body, command, dir) = match kind {
             "exchange_start" => {
                 let note = self.exchanges.entry(exchange).or_default();
                 (note.command, note.dir) = label_of(payload);

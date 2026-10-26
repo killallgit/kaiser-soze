@@ -35,6 +35,29 @@ pub struct Reply {
 }
 
 #[cfg(test)]
+impl Record {
+    /// A record of an empty reply to no request, with no ids.
+    pub(crate) fn empty() -> Self {
+        Self {
+            conversation: None,
+            dropped: 0,
+            incomplete: false,
+            project: None,
+            reply: Reply {
+                message: Message::assistant(Vec::new()),
+                message_id: None,
+                stop_reason: Value::Null,
+                usage: Usage::default(),
+            },
+            session: None,
+            step: None,
+            thread: None,
+            turn: None,
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::message::Block;
@@ -49,24 +72,13 @@ mod tests {
         }
     }
 
-    fn bare(reply: Reply) -> Record {
-        Record {
-            conversation: None,
-            dropped: 0,
-            incomplete: false,
-            project: None,
-            reply,
-            session: None,
-            step: None,
-            thread: None,
-            turn: None,
-        }
-    }
-
     #[test]
     fn a_record_with_no_request_and_no_ids_writes_a_null_conversation_and_leaves_the_ids_out() {
         // It writes null for the conversation and the counts, and nothing for step, ids and message id
-        let record = bare(reply());
+        let record = Record {
+            reply: reply(),
+            ..Record::empty()
+        };
 
         assert_eq!(
             serde_json::to_string(&record).unwrap(),
@@ -112,9 +124,10 @@ mod tests {
     fn each_optional_id_is_left_out_alone() {
         // It leaves out the ids that are none while keeping the ones that are set, in key order
         let record = Record {
+            reply: reply(),
             session: Some("s".into()),
             turn: Some("u1".into()),
-            ..bare(reply())
+            ..Record::empty()
         };
 
         assert_eq!(

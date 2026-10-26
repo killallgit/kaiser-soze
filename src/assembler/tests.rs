@@ -2,6 +2,7 @@ use super::*;
 use crate::adapter::TapEvent;
 use crate::common::*;
 use crate::message::{Block, Message};
+use crate::record::Record;
 use serde_json::json;
 
 fn conversation_event() -> TapEvent {
@@ -27,7 +28,7 @@ fn text_reply(text: &str) -> Vec<TapEvent> {
     ]
 }
 
-fn feed(assembler: &mut Assembler, events: Vec<TapEvent>, dropped: u64) -> Vec<Value> {
+fn feed(assembler: &mut Assembler, events: Vec<TapEvent>, dropped: u64) -> Vec<Record> {
     events
         .iter()
         .flat_map(|event| assembler.push(&event.event, dropped))
@@ -45,16 +46,13 @@ fn a_complete_exchange_yields_one_complete_record() {
 
     assert_eq!(records.len(), 1);
     let record = &records[0];
-    assert_eq!(record["incomplete"], false);
-    assert_eq!(record["dropped"], 0);
-    assert_eq!(record["conversation"]["system"], "sys");
-    assert_eq!(
-        record["reply"]["message"],
-        json!(Message::assistant(vec![Block::text("ok")]))
-    );
-    assert_eq!(record["reply"]["usage"]["input"], 3);
-    assert_eq!(record["reply"]["usage"]["output"], 1);
-    assert_eq!(record["reply"]["stop_reason"], "end_turn");
+    assert!(!record.incomplete);
+    assert_eq!(record.dropped, 0);
+    assert_eq!(record.conversation.as_ref().unwrap().system, json!("sys"));
+    assert_eq!(record.reply.message, Message::assistant(vec![Block::text("ok")]));
+    assert_eq!(record.reply.usage.input, Some(3));
+    assert_eq!(record.reply.usage.output, Some(1));
+    assert_eq!(record.reply.stop_reason, json!("end_turn"));
     assert!(assembler.finish(0).is_none());
 }
 
@@ -67,8 +65,8 @@ fn dropped_events_mark_the_record_incomplete_and_carry_the_count() {
 
     let records = feed(&mut assembler, events, 4);
 
-    assert_eq!(records[0]["incomplete"], true);
-    assert_eq!(records[0]["dropped"], 4);
+    assert!(records[0].incomplete);
+    assert_eq!(records[0].dropped, 4);
 }
 
 #[test]
@@ -80,11 +78,8 @@ fn finishing_with_an_open_reply_writes_one_incomplete_record() {
 
     let record = assembler.finish(0).unwrap();
 
-    assert_eq!(record["incomplete"], true);
-    assert_eq!(
-        record["reply"]["message"],
-        json!(Message::assistant(vec![Block::text("ok")]))
-    );
+    assert!(record.incomplete);
+    assert_eq!(record.reply.message, Message::assistant(vec![Block::text("ok")]));
     assert!(assembler.finish(0).is_none());
 }
 
@@ -98,7 +93,7 @@ fn an_unparsed_request_or_reply_marks_the_record_incomplete() {
 
         let records = feed(&mut assembler, events, 0);
 
-        assert_eq!(records[0]["incomplete"], true);
+        assert!(records[0].incomplete);
     }
 }
 
@@ -114,8 +109,8 @@ fn two_replies_on_one_exchange_yield_two_records() {
     let records = feed(&mut assembler, events, 0);
 
     assert_eq!(records.len(), 2);
-    assert_eq!(records[0]["reply"]["message"]["blocks"][0]["text"], "one");
-    assert_eq!(records[1]["reply"]["message"]["blocks"][0]["text"], "two");
+    assert_eq!(records[0].reply.message.blocks, [Block::text("one")]);
+    assert_eq!(records[1].reply.message.blocks, [Block::text("two")]);
 }
 
 #[test]
@@ -143,8 +138,8 @@ fn an_item_outside_the_format_is_skipped_and_later_blocks_keep_their_order() {
 
     let records = feed(&mut assembler, events, 0);
 
-    assert_eq!(records[0]["reply"]["message"]["blocks"], json!([Block::text("kept")]));
-    assert_eq!(records[0]["incomplete"], false);
+    assert_eq!(records[0].reply.message.blocks, [Block::text("kept")]);
+    assert!(!records[0].incomplete);
 }
 
 #[test]
@@ -167,12 +162,12 @@ fn a_tool_call_joins_its_json_fragments_into_the_input() {
     let records = feed(&mut assembler, events, 0);
 
     assert_eq!(
-        records[0]["reply"]["message"]["blocks"],
-        json!([Block::ToolCall {
+        records[0].reply.message.blocks,
+        [Block::ToolCall {
             id: json!("c1"),
             input: json!({"a": 1}),
             name: json!("shell")
-        }])
+        }]
     );
 }
 
@@ -195,8 +190,8 @@ fn a_reply_past_the_bound_stops_assembling_and_is_incomplete() {
 
     let records = feed(&mut assembler, events, 0);
 
-    assert_eq!(records[0]["reply"]["message"]["blocks"], json!([Block::text("abc")]));
-    assert_eq!(records[0]["incomplete"], true);
+    assert_eq!(records[0].reply.message.blocks, [Block::text("abc")]);
+    assert!(records[0].incomplete);
 }
 
 #[test]
@@ -217,10 +212,10 @@ fn encrypted_reasoning_without_text_becomes_an_encrypted_block() {
     let records = feed(&mut assembler, events, 0);
 
     assert_eq!(
-        records[0]["reply"]["message"]["blocks"],
-        json!([Block::EncryptedReasoning {
+        records[0].reply.message.blocks,
+        [Block::EncryptedReasoning {
             encrypted: json!("enc")
-        }])
+        }]
     );
 }
 
@@ -244,8 +239,8 @@ fn usage_fields_merge_across_events() {
 
     let records = feed(&mut assembler, events, 0);
 
-    assert_eq!(records[0]["reply"]["usage"]["input"], 9);
-    assert_eq!(records[0]["reply"]["usage"]["output"], 4);
+    assert_eq!(records[0].reply.usage.input, Some(9));
+    assert_eq!(records[0].reply.usage.output, Some(4));
 }
 
 #[test]
@@ -261,8 +256,8 @@ fn the_reply_message_id_reaches_the_record_when_the_end_names_one() {
     let named_records = feed(&mut assembler, named, 0);
     let unnamed_records = feed(&mut assembler, unnamed, 0);
 
-    assert_eq!(named_records[0]["reply"]["message_id"], "msg_1");
-    assert!(unnamed_records[0]["reply"].get("message_id").is_none());
+    assert_eq!(named_records[0].reply.message_id, Some(json!("msg_1")));
+    assert_eq!(unnamed_records[0].reply.message_id, None);
 }
 
 #[test]
@@ -280,7 +275,7 @@ fn a_reply_end_that_carries_a_null_message_id_names_no_message() {
 
     let records = feed(&mut assembler, vec![conversation_event(), end], 0);
 
-    assert!(records[0]["reply"].get("message_id").is_none());
+    assert_eq!(records[0].reply.message_id, None);
 }
 
 #[test]
@@ -291,7 +286,7 @@ fn a_record_without_a_request_names_no_step() {
 
     let records = feed(&mut assembler, events, 0);
 
-    assert!(records[0].get("step").is_none());
+    assert_eq!(records[0].step, None);
 }
 
 #[test]
@@ -305,10 +300,7 @@ fn a_request_that_states_its_step_and_turn_gives_them_to_the_record() {
 
     let records = feed(&mut assembler, vec![request, reply_end(json!("end_turn"))], 0);
 
-    assert_eq!(
-        (records[0]["step"].clone(), records[0]["turn"].clone()),
-        (json!(3), json!("u2"))
-    );
+    assert_eq!((records[0].step, records[0].turn.as_deref()), (Some(3), Some("u2")));
 }
 
 #[test]
@@ -322,8 +314,7 @@ fn a_request_that_states_no_step_is_step_one_and_has_no_turn() {
         0,
     );
 
-    assert_eq!(records[0]["step"], 1);
-    assert!(records[0].get("turn").is_none());
+    assert_eq!((records[0].step, records[0].turn.as_deref()), (Some(1), None));
 }
 
 #[test]
@@ -337,5 +328,5 @@ fn a_record_without_a_request_names_no_turn() {
         0,
     );
 
-    assert!(records[0].get("turn").is_none());
+    assert_eq!(records[0].turn, None);
 }

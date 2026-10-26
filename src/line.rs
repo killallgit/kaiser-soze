@@ -1,4 +1,5 @@
 use crate::graph::Edge;
+use crate::record::Record;
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use serde_json::Value;
 
@@ -7,6 +8,7 @@ use serde_json::Value;
 pub enum Entry {
     Untyped { kind: String, payload: Value },
     Edge(Edge),
+    Record(Box<Record>),
 }
 
 impl Entry {
@@ -22,6 +24,7 @@ impl Entry {
         match self {
             Self::Untyped { kind, .. } => kind,
             Self::Edge(_) => "edge",
+            Self::Record(_) => "record",
         }
     }
 }
@@ -32,6 +35,7 @@ impl Serialize for Entry {
         match self {
             Self::Untyped { payload, .. } => payload.serialize(serializer),
             Self::Edge(edge) => edge.serialize(serializer),
+            Self::Record(record) => record.serialize(serializer),
         }
     }
 }
@@ -101,6 +105,17 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&line).unwrap(),
             r#"{"adapter":"claude","end":9,"event":"edge","exchange":7,"mono_us":1500,"payload":{"from":"step:7.1","kind":"turn","to":"turn:u1"},"start":4,"wall_ms":1700000000000}"#
+        );
+    }
+
+    #[test]
+    fn a_record_line_is_a_record_event_with_the_sorted_record_as_its_payload() {
+        // It names the event record and nests the record in key order
+        let line = line(Entry::Record(Box::new(Record::empty())));
+
+        assert_eq!(
+            serde_json::to_string(&line).unwrap(),
+            r#"{"adapter":"claude","end":9,"event":"record","exchange":7,"mono_us":1500,"payload":{"conversation":null,"dropped":0,"incomplete":false,"reply":{"message":{"blocks":[],"role":"assistant"},"stop_reason":null,"usage":{"cache_read":null,"cache_write":null,"input":null,"output":null,"reasoning":null}}},"start":4,"wall_ms":1700000000000}"#
         );
     }
 }
