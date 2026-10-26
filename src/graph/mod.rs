@@ -1,12 +1,16 @@
 mod calls;
 mod edge;
+mod place;
 mod step;
 
 use crate::project::Project;
 use calls::Calls;
+use place::Queue;
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 pub use edge::{Edge, EdgeKind};
+pub use place::Place;
 pub use step::{claimed, named_turn, Claimed, Step};
 
 /// Which session, thread and turn an exchange belongs to, as its request headers say.
@@ -62,9 +66,15 @@ pub struct Threads {
     seen: HashMap<String, Seen>,
     order: VecDeque<String>,
     calls: Calls,
+    queue: Arc<Queue>,
 }
 
 impl Threads {
+    /// Puts an exchange in line among the exchanges of its thread, so its records can wait for earlier ones.
+    pub fn join(&self, thread: &str, exchange: u64) -> Place {
+        self.queue.join(thread, exchange)
+    }
+
     /// The `turn`, `continues` and `calls` edges one finished step adds, then remembers the step.
     /// A previous message id continues the step that replied with it, or nothing when that
     /// reply is unknown; without one the step continues the thread's last step.

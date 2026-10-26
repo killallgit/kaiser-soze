@@ -548,6 +548,7 @@ fn edge(kind: &str, from: &str, to: &str) -> Edge {
     (kind.into(), from.into(), to.into())
 }
 
+/// The edges written, sorted, so they say which edges were written and not in what order.
 fn written_edges(lines: &[Value]) -> Vec<Edge> {
     let mut edges: Vec<Edge> = lines
         .iter()
@@ -599,9 +600,8 @@ fn which_exchange_is_late(run: usize, exchanges: usize) -> Option<usize> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_claude_exchanges_of_one_thread_continue_by_message_id_whichever_record_arrives_first() {
-    // The step naming m1 continues the reply with m1 and pairs c1 when that reply came first; when it came
-    // second, nothing is known of m1, and the reply without a previous id continues the last step
+async fn two_claude_exchanges_of_one_thread_continue_by_message_id_however_the_first_record_is_held_up() {
+    // Whichever exchange's record is held up, the step naming m1 continues the reply with m1 and pairs c1
     use crate::common::*;
     use crate::message::{Block, Message, Output};
     let calling = || {
@@ -628,45 +628,40 @@ async fn two_claude_exchanges_of_one_thread_continue_by_message_id_whichever_rec
         events[0].event.conversation_mut().previous_message_id = Some("m1".into());
         events
     };
-    let calling_first = vec![
+    let in_order = vec![
         edge("calls", "call:c1", "result:c1"),
         edge("continues", "step:2.1", "step:1.1"),
     ];
-    let answering_first = vec![edge("continues", "step:1.1", "step:2.1")];
 
     for run in 0..50 {
         let edges = race_one_thread(vec![calling(), answering()], which_exchange_is_late(run, 2)).await;
 
-        assert!(
-            edges == calling_first || edges == answering_first,
-            "run {run} wrote neither order's edges: {edges:?}"
-        );
+        assert_eq!(edges, in_order, "run {run}");
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn codex_exchanges_of_one_thread_form_one_chain_in_the_order_their_records_arrive() {
-    // With no previous message id each step continues the one before it, so no step continues itself or is continued twice
+async fn codex_exchanges_of_one_thread_form_one_chain_in_the_order_their_exchanges_began() {
+    // With no previous message id each step continues the one before it, however the records are held up
     for run in 0..50 {
         let replies = vec![closed_reply(), closed_reply(), closed_reply()];
         let edges = race_one_thread(replies, which_exchange_is_late(run, 3)).await;
-
-        let continues: Vec<&Edge> = edges.iter().filter(|(kind, ..)| kind == "continues").collect();
-        let distinct = |ends: Vec<&String>| ends.iter().collect::<std::collections::HashSet<_>>().len();
-        assert_eq!(continues.len(), 2, "run {run}: {edges:?}");
-        assert!(continues.iter().all(|(_, from, to)| from != to), "run {run}: {edges:?}");
-        assert_eq!(
-            distinct(continues.iter().map(|(_, from, _)| from).collect()),
-            2,
-            "run {run}: {edges:?}"
-        );
-        assert_eq!(
-            distinct(continues.iter().map(|(_, _, to)| to).collect()),
-            2,
-            "run {run}: {edges:?}"
-        );
-        assert_eq!(edges.len(), 2, "run {run}: {edges:?}");
+        let chain = vec![
+            edge("continues", "step:2.1", "step:1.1"),
+            edge("continues", "step:3.1", "step:2.1"),
+        ];
+        assert_eq!(edges, chain, "run {run}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_exchange_that_ends_without_a_record_does_not_hold_back_its_threads_later_exchanges() {
+    // It lets the later exchange write its record, which continues nothing as no step came before it
+    let started = std::time::Instant::now();
+    let edges = race_one_thread(vec![Vec::new(), closed_reply()], None).await;
+
+    assert!(edges.is_empty());
+    assert!(started.elapsed() < Duration::from_millis(1500));
 }
 
 #[tokio::test]
