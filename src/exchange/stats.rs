@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use crate::note::ExchangeEnd;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -49,19 +49,20 @@ impl Stats {
         self.forward_max_us.fetch_max(us, Ordering::Relaxed);
     }
 
-    pub(super) fn summary(&self) -> Value {
-        let unset_as_null = |cell: &AtomicU64| match cell.load(Ordering::Relaxed) {
-            UNSET => Value::Null,
-            us => json!(us),
+    pub(super) fn summary(&self, sink_dropped: u64) -> ExchangeEnd {
+        let unset_as_none = |cell: &AtomicU64| match cell.load(Ordering::Relaxed) {
+            UNSET => None,
+            us => Some(us),
         };
-        json!({
-            "chunks": self.chunks.load(Ordering::Relaxed),
-            "bytes": self.bytes.load(Ordering::Relaxed),
-            "tap_dropped": self.dropped.load(Ordering::Relaxed),
-            "response_head_us": unset_as_null(&self.head_us),
-            "first_byte_us": unset_as_null(&self.first_byte_us),
-            "forward_sum_us": self.forward_sum_us.load(Ordering::Relaxed),
-            "forward_max_us": self.forward_max_us.load(Ordering::Relaxed),
-        })
+        ExchangeEnd {
+            bytes: self.bytes.load(Ordering::Relaxed),
+            chunks: self.chunks.load(Ordering::Relaxed),
+            first_byte_us: unset_as_none(&self.first_byte_us),
+            forward_max_us: self.forward_max_us.load(Ordering::Relaxed),
+            forward_sum_us: self.forward_sum_us.load(Ordering::Relaxed),
+            response_head_us: unset_as_none(&self.head_us),
+            sink_dropped,
+            tap_dropped: self.dropped.load(Ordering::Relaxed),
+        }
     }
 }

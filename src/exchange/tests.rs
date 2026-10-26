@@ -1,9 +1,9 @@
 use super::*;
 use crate::adapter::{Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
-use crate::graph::Identity;
-use crate::graph::Threads;
+use crate::graph::{self, EdgeKind, Identity, Threads};
 use crate::label::Label;
 use crate::line::Entry;
+use crate::note::{self, Note};
 use crate::project::{ProjectCache, ProjectLookups};
 use crate::sink::Sink;
 use bytes::Bytes;
@@ -126,7 +126,7 @@ async fn exchange_end_reports_records_the_sink_had_to_drop() {
     };
     let tap = ExchangeTap::spawn(recorder.clone(), Clock::start(), Box::new(parser));
     for _ in 0..5000 {
-        recorder.write(Clock::start().stamp(), "filler", json!({}), (0, 0));
+        recorder.write(Clock::start().stamp(), filler(), (0, 0));
     }
 
     drop(tap);
@@ -135,6 +135,14 @@ async fn exchange_end_reports_records_the_sink_had_to_drop() {
     let text = std::fs::read_to_string(&tap_file).unwrap();
     let end: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
     assert!(end["payload"]["sink_dropped"].as_u64().unwrap() > 0);
+}
+
+fn filler() -> Entry {
+    Entry::Note(Note::Tunnel(note::Tunnel {
+        host: "filler".into(),
+        label: None,
+        port: 443,
+    }))
 }
 
 struct Emits {
@@ -747,13 +755,10 @@ async fn a_reliable_write_waits_for_room_in_a_full_queue() {
     // It delivers the line once the queue drains, where a plain write would drop it
     let (sink, mut drained) = Sink::detached(1);
     let recorder = Recorder::new(sink, 1, "test");
-    recorder.write(Clock::start().stamp(), "filler", json!({}), (0, 0));
+    recorder.write(Clock::start().stamp(), filler(), (0, 0));
     let writer = recorder.clone();
-    let written = tokio::spawn(async move {
-        writer
-            .write_reliable(Clock::start().stamp(), "edge", json!({"kind": "in_thread"}))
-            .await
-    });
+    let edge = Entry::Edge(graph::Edge::new(EdgeKind::InThread, "exchange:1", "thread:t1"));
+    let written = tokio::spawn(async move { writer.write_reliable(Clock::start().stamp(), edge).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
     let mut kinds = Vec::new();
@@ -765,7 +770,7 @@ async fn a_reliable_write_waits_for_room_in_a_full_queue() {
     }
 
     written.await.unwrap();
-    assert_eq!(kinds, ["filler", "edge"]);
+    assert_eq!(kinds, ["tunnel", "edge"]);
 }
 
 #[tokio::test]
@@ -1010,9 +1015,11 @@ async fn a_note_alone_takes_the_next_exchange_id_and_carries_the_label() {
     drop(begin(&exchanges, &nobody(), None));
     exchanges.note_alone(
         "none",
-        "tunnel",
-        json!({"host": "h", "port": 443}),
-        Some(&labelled("/work")),
+        Note::Tunnel(note::Tunnel {
+            host: "h".into(),
+            label: Some(labelled("/work")),
+            port: 443,
+        }),
     );
     drop(begin(&exchanges, &nobody(), None));
 

@@ -1,20 +1,14 @@
 use hyper::header::{HeaderMap, PROXY_AUTHORIZATION};
-use serde_json::{json, Value};
+use serde::Serialize;
 
 const MAX_COMMAND: usize = 32;
 const MAX_DIR: usize = 4096;
 
 /// Which agent command and directory started a connection, as the wrapper told the proxy.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Label {
     pub command: String,
     pub dir: String,
-}
-
-impl Label {
-    pub fn to_json(&self) -> Value {
-        json!({"command": self.command, "dir": self.dir})
-    }
 }
 
 /// Reads the label from the `Proxy-Authorization: Basic` header of a CONNECT request.
@@ -196,5 +190,15 @@ mod tests {
         let dir = format!("/{}", "b".repeat(MAX_DIR - 1));
 
         assert_eq!(from_headers(&basic(&format!("{command}:{dir}"))), label(&command, &dir));
+    }
+
+    #[test]
+    fn a_label_serialises_its_command_then_its_directory() {
+        let found = label("claude", "/tmp").unwrap();
+
+        assert_eq!(
+            serde_json::to_string(&found).unwrap(),
+            r#"{"command":"claude","dir":"/tmp"}"#
+        );
     }
 }

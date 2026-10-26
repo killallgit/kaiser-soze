@@ -1,17 +1,21 @@
 use super::printer::PRINT_QUEUE;
 use super::state::MAX_COLUMNS;
 use super::*;
-use crate::event::Usage;
+use crate::event::{
+    BlockDelta, BlockKind, BlockStart, BlockStop, Conversation, Delta, Error, Event, ReplyEnd, Side, Unparsed, Usage,
+};
 use crate::graph::{Edge, EdgeKind};
+use crate::label::Label;
 use crate::line::Entry;
 use crate::message::{Block, Message};
+use crate::note::{ExchangeEnd, ExchangeStart, Note, ResponseHead, Transport, Tunnel, Unsupported};
 use crate::record::Record;
 use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
 
 const T0: u64 = 43_421_000; // 12:03:41 UTC
 
-fn tap(exchange: u64, adapter: &'static str, event: &str, wall_ms: u64, payload: Value) -> Line {
+fn line(exchange: u64, adapter: &'static str, wall_ms: u64, entry: Entry) -> Line {
     Line {
         exchange,
         adapter,
@@ -19,40 +23,81 @@ fn tap(exchange: u64, adapter: &'static str, event: &str, wall_ms: u64, payload:
         wall_ms,
         start: 0,
         end: 0,
-        entry: Entry::untyped(event, payload),
+        entry,
     }
+}
+
+fn event(exchange: u64, adapter: &'static str, wall_ms: u64, event: Event) -> Line {
+    line(exchange, adapter, wall_ms, Entry::Event(event))
+}
+
+fn note(exchange: u64, adapter: &'static str, wall_ms: u64, note: Note) -> Line {
+    line(exchange, adapter, wall_ms, Entry::Note(note))
+}
+
+fn label(command: &str, dir: &str) -> Option<Label> {
+    Some(Label {
+        command: command.into(),
+        dir: dir.into(),
+    })
+}
+
+fn exchange_start(label: Option<Label>) -> Note {
+    Note::ExchangeStart(ExchangeStart {
+        headers: Vec::new(),
+        host: "h".into(),
+        http_version: "HTTP/1.1".into(),
+        label,
+        method: "POST".into(),
+        path: "/".into(),
+        upgrade: false,
+    })
+}
+
+fn tunnel(host: &str, label: Option<Label>) -> Note {
+    Note::Tunnel(Tunnel {
+        host: host.into(),
+        label,
+        port: 443,
+    })
+}
+
+fn unsupported(path: &str, label: Option<Label>) -> Note {
+    Note::Unsupported(Unsupported {
+        host: "h".into(),
+        label,
+        path: path.into(),
+    })
 }
 
 #[test]
 fn an_edge_gives_no_live_line() {
     // It shows requests, replies and notes only, never the graph
-    let edge = Line {
-        entry: Entry::Edge(Edge::new(EdgeKind::InThread, "exchange:3", "thread:t1")),
-        ..tap(3, "codex", "edge", T0, Value::Null)
-    };
+    let edge = Entry::Edge(Edge::new(EdgeKind::InThread, "exchange:3", "thread:t1"));
 
-    assert_eq!(state().line(&edge), None);
+    assert_eq!(state().line(&line(3, "codex", T0, edge)), None);
 }
 
 fn state() -> LiveState {
     LiveState::new("/Users/me".into(), 0)
 }
 
-fn conversation(messages: usize, tools: usize) -> Value {
-    json!({
-        "system": [{"type": "text", "text": "SECRET-SYSTEM"}],
-        "tools": (0..tools).map(|_| json!({"name": "SECRET-TOOL"})).collect::<Vec<_>>(),
-        "messages": (0..messages)
-            .map(|_| json!({"role": "user", "blocks": [{"kind": "text", "text": "SECRET-MESSAGE"}]}))
-            .collect::<Vec<_>>(),
-    })
+fn conversation(messages: usize, tools: usize) -> Conversation {
+    Conversation::new(
+        json!([{"type": "text", "text": "SECRET-SYSTEM"}]),
+        Value::Array((0..tools).map(|_| json!({"name": "SECRET-TOOL"})).collect()),
+        (0..messages)
+            .map(|_| Message::user(vec![Block::text("SECRET-MESSAGE")]))
+            .collect(),
+    )
+}
+
+fn request_line(exchange: u64, adapter: &'static str, wall_ms: u64, conversation: Conversation) -> Line {
+    event(exchange, adapter, wall_ms, Event::Conversation(conversation))
 }
 
 fn reply_line(exchange: u64, adapter: &'static str, wall_ms: u64, record: Record) -> Line {
-    Line {
-        entry: Entry::Record(Box::new(record)),
-        ..tap(exchange, adapter, "record", wall_ms, Value::Null)
-    }
+    line(exchange, adapter, wall_ms, Entry::Record(Box::new(record)))
 }
 
 fn record(blocks: Vec<Block>, stop: Value) -> Record {
@@ -78,7 +123,7 @@ fn text_and_tool_call() -> Vec<Block> {
 #[test]
 fn a_conversation_gives_one_request_line_with_counts() {
     let mut state = state();
-    let line = state.line(&tap(3, "codex", "conversation", T0, conversation(7, 4)));
+    let line = state.line(&request_line(3, "codex", T0, conversation(7, 4)));
 
     assert_eq!(line.as_deref(), Some("12:03:41  #3 codex  -> 7 msgs  4 tools"));
 }
@@ -86,12 +131,14 @@ fn a_conversation_gives_one_request_line_with_counts() {
 #[test]
 fn a_missing_tools_list_counts_as_zero_and_flags_are_shown() {
     let mut state = state();
-    let mut payload = conversation(2, 0);
-    payload["tools"] = Value::Null;
-    payload["warmup"] = json!(true);
-    payload["partial"] = json!(true);
+    let flagged = Conversation {
+        tools: Value::Null,
+        warmup: true,
+        partial: true,
+        ..conversation(2, 0)
+    };
 
-    let line = state.line(&tap(3, "codex", "conversation", T0, payload));
+    let line = state.line(&request_line(3, "codex", T0, flagged));
 
     assert_eq!(
         line.as_deref(),
@@ -102,10 +149,10 @@ fn a_missing_tools_list_counts_as_zero_and_flags_are_shown() {
 #[test]
 fn the_request_line_ends_with_the_directory_from_the_exchange_label() {
     let mut state = state();
-    let start = json!({"label": {"command": "claude", "dir": "/Users/me/Code/kaiser-soze"}});
-    assert_eq!(state.line(&tap(3, "claude", "exchange_start", T0, start)), None);
+    let start = exchange_start(label("claude", "/Users/me/Code/kaiser-soze"));
+    assert_eq!(state.line(&note(3, "claude", T0, start)), None);
 
-    let line = state.line(&tap(3, "claude", "conversation", T0, conversation(1, 2)));
+    let line = state.line(&request_line(3, "claude", T0, conversation(1, 2)));
 
     assert_eq!(
         line.as_deref(),
@@ -116,7 +163,7 @@ fn the_request_line_ends_with_the_directory_from_the_exchange_label() {
 #[test]
 fn a_record_gives_one_reply_line_with_elapsed_usage_and_block_kinds() {
     let mut state = state();
-    state.line(&tap(3, "codex", "conversation", T0, conversation(1, 1)));
+    state.line(&request_line(3, "codex", T0, conversation(1, 1)));
 
     let line = state.line(&reply_line(
         3,
@@ -150,38 +197,39 @@ fn a_cut_off_record_shows_dashes_and_the_incomplete_and_dropped_notes() {
 #[test]
 fn other_events_have_their_own_short_lines() {
     let mut state = state();
-    let at = |event: &str, payload: Value| state_line(event, payload);
-    fn state_line(event: &str, payload: Value) -> Option<String> {
-        LiveState::new("/Users/me".into(), 0).line(&tap(5, "claude", event, T0, payload))
-    }
+    let mut shown = |entry: Entry| state.line(&line(5, "claude", T0, entry));
 
     assert_eq!(
-        at("unsupported", json!({"host": "h", "path": "/v1/count"})).as_deref(),
+        shown(Entry::Note(unsupported("/v1/count", None))).as_deref(),
         Some("12:03:41  #5 claude  unsupported /v1/count")
     );
     assert_eq!(
-        at("unparsed", json!({"side": "reply"})).as_deref(),
+        shown(Entry::Event(Event::Unparsed(Unparsed { side: Side::Reply }))).as_deref(),
         Some("12:03:41  #5 claude  unparsed reply")
     );
+    let rate_limited = Error {
+        error_type: json!("rate_limit"),
+    };
     assert_eq!(
-        at("error", json!({"error_type": "rate_limit"})).as_deref(),
+        shown(Entry::Event(Event::Error(rate_limited))).as_deref(),
         Some("12:03:41  #5 claude  error rate_limit")
     );
-    let tunnel = json!({"host": "api2.cursor.sh", "port": 443,
-        "label": {"command": "agent", "dir": "/Users/me/Code/x"}});
+    let labelled = tunnel("api2.cursor.sh", label("agent", "/Users/me/Code/x"));
     assert_eq!(
-        state.line(&tap(6, "none", "tunnel", T0, tunnel)).as_deref(),
-        Some("12:03:41  #6 none  tunnel api2.cursor.sh:443  agent")
+        shown(Entry::Note(labelled)).as_deref(),
+        Some("12:03:41  #5 claude  tunnel api2.cursor.sh:443  agent")
     );
 }
 
 #[test]
 fn an_unsupported_path_keeps_two_parts_so_ids_deeper_down_stay_out_of_the_line() {
     let mut state = state();
-    let payload = json!({"host": "h", "path": "/api/oauth/organizations/ORG-ID-123/plugins",
-        "label": {"command": "claude", "dir": "/Users/me/p"}});
+    let deep = unsupported(
+        "/api/oauth/organizations/ORG-ID-123/plugins",
+        label("claude", "/Users/me/p"),
+    );
 
-    let line = state.line(&tap(7, "claude", "unsupported", T0, payload));
+    let line = state.line(&note(7, "claude", T0, deep));
 
     assert_eq!(
         line.as_deref(),
@@ -189,31 +237,60 @@ fn an_unsupported_path_keeps_two_parts_so_ids_deeper_down_stay_out_of_the_line()
     );
 }
 
+fn quiet_entries() -> Vec<Entry> {
+    let head = ResponseHead {
+        headers: Vec::new(),
+        http_version: "HTTP/1.1".into(),
+        status: 200,
+        transport: Transport::Sse,
+    };
+    let end = ExchangeEnd {
+        bytes: 0,
+        chunks: 0,
+        first_byte_us: None,
+        forward_max_us: 0,
+        forward_sum_us: 0,
+        response_head_us: None,
+        sink_dropped: 0,
+        tap_dropped: 0,
+    };
+    vec![
+        Entry::Event(Event::BlockStart(BlockStart {
+            id: Value::Null,
+            index: 0,
+            kind: BlockKind::Text,
+            name: Value::Null,
+        })),
+        Entry::Event(Event::BlockDelta(BlockDelta {
+            index: 0,
+            delta: Delta::Text("SECRET-DELTA".into()),
+        })),
+        Entry::Event(Event::BlockStop(BlockStop { index: 0 })),
+        Entry::Event(Event::Usage(Usage::default())),
+        Entry::Event(Event::ReplyEnd(ReplyEnd {
+            message_id: None,
+            stop_reason: Value::Null,
+        })),
+        Entry::Note(Note::ResponseHead(head)),
+        Entry::Note(exchange_start(None)),
+        Entry::Note(Note::ExchangeEnd(end)),
+    ]
+}
+
 #[test]
 fn streaming_and_bookkeeping_events_print_nothing() {
     let mut state = state();
-    for event in [
-        "block_start",
-        "block_delta",
-        "block_stop",
-        "usage",
-        "reply_end",
-        "response_head",
-        "exchange_start",
-        "exchange_end",
-    ] {
-        assert_eq!(
-            state.line(&tap(1, "codex", event, T0, json!({"text": "SECRET-DELTA"}))),
-            None
-        );
+    for entry in quiet_entries() {
+        assert_eq!(state.line(&line(1, "codex", T0, entry)), None);
     }
 }
 
 #[test]
 fn exchange_end_drops_that_exchanges_state() {
     let mut state = state();
-    state.line(&tap(3, "codex", "conversation", T0, conversation(1, 1)));
-    state.line(&tap(3, "codex", "exchange_end", T0, json!({})));
+    let end = quiet_entries().pop().unwrap();
+    state.line(&request_line(3, "codex", T0, conversation(1, 1)));
+    state.line(&line(3, "codex", T0, end));
 
     let line = state.line(&reply_line(
         3,
@@ -231,9 +308,13 @@ fn exchange_end_drops_that_exchanges_state() {
 #[test]
 fn no_line_contains_message_system_tool_or_reply_text() {
     let mut state = state();
+    let delta = Event::BlockDelta(BlockDelta {
+        index: 0,
+        delta: Delta::Text("SECRET-DELTA".into()),
+    });
     let lines: Vec<String> = [
-        tap(3, "codex", "conversation", T0, conversation(3, 2)),
-        tap(3, "codex", "block_delta", T0, json!({"text": "SECRET-DELTA"})),
+        request_line(3, "codex", T0, conversation(3, 2)),
+        event(3, "codex", T0, delta),
         reply_line(3, "codex", T0 + 1, record(text_and_tool_call(), json!("completed"))),
     ]
     .iter()
@@ -248,17 +329,9 @@ fn no_line_contains_message_system_tool_or_reply_text() {
 fn a_long_directory_is_cut_from_the_left_to_fit_the_line() {
     let mut state = state();
     let dir = format!("/Users/me/{}/project", "deep/".repeat(40));
-    state.line(&tap(
-        3,
-        "claude",
-        "exchange_start",
-        T0,
-        json!({"label": {"command": "claude", "dir": dir}}),
-    ));
+    state.line(&note(3, "claude", T0, exchange_start(label("claude", &dir))));
 
-    let line = state
-        .line(&tap(3, "claude", "conversation", T0, conversation(1, 1)))
-        .unwrap();
+    let line = state.line(&request_line(3, "claude", T0, conversation(1, 1))).unwrap();
 
     assert_eq!(line.chars().count(), MAX_COLUMNS);
     assert!(line.contains("  …"));
@@ -270,9 +343,7 @@ fn a_long_non_directory_line_is_cut_at_the_limit() {
     let mut state = state();
     let host = "h".repeat(200);
 
-    let line = state
-        .line(&tap(3, "none", "tunnel", T0, json!({"host": host, "port": 443})))
-        .unwrap();
+    let line = state.line(&note(3, "none", T0, tunnel(&host, None))).unwrap();
 
     assert_eq!(line.chars().count(), MAX_COLUMNS);
 }
@@ -281,7 +352,7 @@ fn a_long_non_directory_line_is_cut_at_the_limit() {
 fn the_time_uses_the_given_utc_offset() {
     let mut state = LiveState::new("/Users/me".into(), -5 * 3600);
 
-    let line = state.line(&tap(1, "codex", "conversation", T0, conversation(1, 1)));
+    let line = state.line(&request_line(1, "codex", T0, conversation(1, 1)));
 
     assert_eq!(line.as_deref(), Some("07:03:41  #1 codex  -> 1 msgs  1 tools"));
 }

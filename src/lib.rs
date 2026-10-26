@@ -14,6 +14,7 @@ pub mod label;
 pub mod line;
 pub mod live;
 pub mod message;
+pub mod note;
 pub mod project;
 pub mod proxy;
 pub mod record;
