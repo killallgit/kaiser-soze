@@ -7,7 +7,7 @@ Consumer: any application that reads the JSONL tap file. One JSON object per lin
 | `event` | `payload` | When |
 |---------|-----------|------|
 | `conversation` | `{system, tools, messages}`, plus `partial: true` and `warmup: true` when they apply (Codex), `previous_message_id` when the request body has `diagnostics.previous_message_id` (Claude Code), and `step` (Codex: 1-based request count on the socket) and `turn` (Codex: `client_metadata.turn_id` when the request has one) | The request body is complete |
-| `block_start` | `{index, kind, id?, name?}` where kind is `text`, `reasoning` or `tool_call` | A reply block begins |
+| `block_start` | `{index, kind, id?, name?}` where kind is `text`, `reasoning`, `tool_call` or `other` (any other Claude Code block type) | A reply block begins |
 | `block_delta` | `{index, text?, input_json?, signature?, encrypted?}` | A chunk of a reply block arrives |
 | `block_stop` | `{index}` | A reply block ends |
 | `usage` | `{input, output, cache_read, cache_write, reasoning}` | The agent reports usage |
