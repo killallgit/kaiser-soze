@@ -5,7 +5,7 @@ set -u
 
 input=$(cat)
 command=$(jq -r '.tool_input.command // empty' <<<"$input")
-grep -Eq '(^|[;&|[:space:](])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$)' <<<"$command" || exit 0
+grep -Eq '(^|[;&|[:space:](])gh[[:space:]]+pr[[:space:]]+create([[:space:];&|)]|$)' <<<"$command" || exit 0
 
 dir=$(jq -r '.cwd // empty' <<<"$input")
 [ -n "$dir" ] && cd "$dir" || exit 0

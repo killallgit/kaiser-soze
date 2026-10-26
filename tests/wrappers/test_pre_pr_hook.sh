@@ -32,7 +32,18 @@ a_chained_pr_create_runs_the_check_and_passes_when_it_does() {
   eq "$([ -e "$HOME/task.ran" ] && echo ran)" ran check_ran
 }
 
+a_pr_create_followed_by_another_command_still_runs_the_check() {
+  task_stub 1
+  code=0
+  hook_runs 'gh pr create; echo done' || code=$?
+  eq "$code" 2 exit_code_after_semicolon
+  code=0
+  hook_runs 'gh pr create && echo done' || code=$?
+  eq "$code" 2 exit_code_after_and
+}
+
 case_run non_pr_command_skips_check a_command_that_is_not_a_pr_create_never_runs_the_check
 case_run failing_check_blocks_pr a_pr_create_with_a_failing_check_is_blocked
 case_run chained_pr_create_runs_check a_chained_pr_create_runs_the_check_and_passes_when_it_does
+case_run pr_create_followed_by_a_command a_pr_create_followed_by_another_command_still_runs_the_check
 finish
