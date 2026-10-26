@@ -85,7 +85,7 @@ fn a_block_start_names_each_kind_in_snake_case() {
 
 #[test]
 fn a_block_delta_writes_its_index_and_the_one_field_it_carries() {
-    // The field is named for the kind of delta, and the keys are sorted as the recorder writes them
+    // The field is named for the kind of delta, and the keys are sorted whichever side of the index it falls
     let deltas = [
         Delta::Text("a".into()),
         Delta::InputJson("{}".into()),
@@ -95,11 +95,7 @@ fn a_block_delta_writes_its_index_and_the_one_field_it_carries() {
 
     let written: Vec<_> = deltas
         .into_iter()
-        .map(|delta| {
-            serde_json::to_value(BlockDelta { index: 2, delta })
-                .unwrap()
-                .to_string()
-        })
+        .map(|delta| written(&BlockDelta { index: 2, delta }))
         .collect();
 
     assert_eq!(

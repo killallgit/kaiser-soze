@@ -1,11 +1,11 @@
 use crate::message::Message;
+use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// What an adapter says about one exchange. The payload structs declare their fields in the key
 /// order the tap file writes, and an event serialises as its payload alone: the event name is the
-/// tap line's own key. `BlockDelta` flattens its delta, so it is sorted only through a `Value`,
-/// which is how the recorder writes every event.
+/// tap line's own key.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Event {
@@ -93,15 +93,31 @@ pub struct BlockStart {
     pub name: Value,
 }
 
-/// One piece of an open block: its index, then the field named for the kind of piece.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One piece of an open block: its index and the field named for the kind of piece. The two keys
+/// are written sorted, so the index follows `encrypted` and comes before the other fields.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct BlockDelta {
     pub index: u64,
     #[serde(flatten)]
     pub delta: Delta,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+impl Serialize for BlockDelta {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let (field, piece) = self.delta.field();
+        let mut delta = serializer.serialize_map(Some(2))?;
+        if field < "index" {
+            delta.serialize_entry(field, piece)?;
+            delta.serialize_entry("index", &self.index)?;
+        } else {
+            delta.serialize_entry("index", &self.index)?;
+            delta.serialize_entry(field, piece)?;
+        }
+        delta.end()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Delta {
     Text(String),
@@ -111,6 +127,16 @@ pub enum Delta {
 }
 
 impl Delta {
+    /// The key the delta is written under, and the piece it carries.
+    fn field(&self) -> (&'static str, &str) {
+        match self {
+            Self::Text(piece) => ("text", piece),
+            Self::InputJson(piece) => ("input_json", piece),
+            Self::Signature(piece) => ("signature", piece),
+            Self::Encrypted(piece) => ("encrypted", piece),
+        }
+    }
+
     /// The text the delta carries, whichever kind it is.
     pub fn piece(&self) -> &str {
         match self {
@@ -169,6 +195,16 @@ pub struct Unparsed {
 pub enum Side {
     Request,
     Reply,
+}
+
+impl Side {
+    /// The name the side is written under.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::Reply => "reply",
+        }
+    }
 }
 
 #[cfg(test)]
