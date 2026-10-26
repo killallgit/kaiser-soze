@@ -225,3 +225,33 @@ fn a_message_reads_back_with_its_role() {
 
     assert_eq!(read, message);
 }
+
+#[test]
+fn a_block_names_the_kind_it_writes() {
+    let blocks = [
+        Block::text("hi"),
+        Block::reasoning(json!("t"), Value::Null),
+        Block::EncryptedReasoning { encrypted: json!("e") },
+        Block::ToolCall {
+            id: json!("c1"),
+            input: json!({}),
+            name: json!("shell"),
+        },
+        Block::ToolResult {
+            call_id: json!("c1"),
+            is_error: false,
+            output: Output::Raw(Value::Null),
+        },
+        Block::Image {
+            content_type: "image/png".into(),
+            reference: "0:1".into(),
+            size: 5,
+        },
+    ];
+
+    for block in blocks {
+        let kind = serde_json::to_value(&block).unwrap()["kind"].clone();
+
+        assert_eq!(kind, block.kind());
+    }
+}

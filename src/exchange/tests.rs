@@ -817,11 +817,11 @@ async fn a_record_is_written_when_the_sink_refuses_live_lines_and_counts_them() 
     }
 
     let record = written.iter().find(|line| line.entry.event() == "record").unwrap();
-    let Entry::Untyped { payload, .. } = &record.entry else {
-        panic!("a record is untyped");
+    let Entry::Record(record) = &record.entry else {
+        panic!("a record is typed");
     };
-    assert!(payload["dropped"].as_u64().unwrap() > 0);
-    assert_eq!(payload["incomplete"], true);
+    assert!(record.dropped > 0);
+    assert!(record.incomplete);
 }
 
 #[tokio::test(flavor = "multi_thread")]

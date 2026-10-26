@@ -1,8 +1,11 @@
 use super::printer::PRINT_QUEUE;
 use super::state::MAX_COLUMNS;
 use super::*;
+use crate::event::Usage;
 use crate::graph::{Edge, EdgeKind};
 use crate::line::Entry;
+use crate::message::{Block, Message};
+use crate::record::Record;
 use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
 
@@ -45,17 +48,31 @@ fn conversation(messages: usize, tools: usize) -> Value {
     })
 }
 
-fn record(blocks: Value, stop: Value) -> Value {
-    json!({
-        "conversation": conversation(1, 1),
-        "reply": {
-            "message": {"role": "assistant", "blocks": blocks},
-            "usage": {"input": 1203, "output": 88},
-            "stop_reason": stop,
+fn reply_line(exchange: u64, adapter: &'static str, wall_ms: u64, record: Record) -> Line {
+    Line {
+        entry: Entry::Record(Box::new(record)),
+        ..tap(exchange, adapter, "record", wall_ms, Value::Null)
+    }
+}
+
+fn record(blocks: Vec<Block>, stop: Value) -> Record {
+    let mut record = Record::empty();
+    record.reply.message = Message::assistant(blocks);
+    record.reply.usage.input = Some(1203);
+    record.reply.usage.output = Some(88);
+    record.reply.stop_reason = stop;
+    record
+}
+
+fn text_and_tool_call() -> Vec<Block> {
+    vec![
+        Block::text("SECRET-REPLY"),
+        Block::ToolCall {
+            id: json!("c1"),
+            input: json!({"cmd": "SECRET-INPUT"}),
+            name: json!("SECRET-TOOL"),
         },
-        "incomplete": false,
-        "dropped": 0,
-    })
+    ]
 }
 
 #[test]
@@ -100,17 +117,12 @@ fn the_request_line_ends_with_the_directory_from_the_exchange_label() {
 fn a_record_gives_one_reply_line_with_elapsed_usage_and_block_kinds() {
     let mut state = state();
     state.line(&tap(3, "codex", "conversation", T0, conversation(1, 1)));
-    let blocks = json!([
-        {"kind": "text", "text": "SECRET-REPLY"},
-        {"kind": "tool_call", "id": "c1", "name": "SECRET-TOOL", "input": {"cmd": "SECRET-INPUT"}}
-    ]);
 
-    let line = state.line(&tap(
+    let line = state.line(&reply_line(
         3,
         "codex",
-        "record",
         T0 + 2_140,
-        record(blocks, json!("completed")),
+        record(text_and_tool_call(), json!("completed")),
     ));
 
     assert_eq!(
@@ -122,12 +134,12 @@ fn a_record_gives_one_reply_line_with_elapsed_usage_and_block_kinds() {
 #[test]
 fn a_cut_off_record_shows_dashes_and_the_incomplete_and_dropped_notes() {
     let mut state = state();
-    let mut payload = record(json!([]), Value::Null);
-    payload["reply"]["usage"] = json!({"input": null, "output": null});
-    payload["incomplete"] = json!(true);
-    payload["dropped"] = json!(3);
+    let mut cut_off = record(Vec::new(), Value::Null);
+    cut_off.reply.usage = Usage::default();
+    cut_off.incomplete = true;
+    cut_off.dropped = 3;
 
-    let line = state.line(&tap(4, "claude", "record", T0, payload));
+    let line = state.line(&reply_line(4, "claude", T0, cut_off));
 
     assert_eq!(
         line.as_deref(),
@@ -203,12 +215,11 @@ fn exchange_end_drops_that_exchanges_state() {
     state.line(&tap(3, "codex", "conversation", T0, conversation(1, 1)));
     state.line(&tap(3, "codex", "exchange_end", T0, json!({})));
 
-    let line = state.line(&tap(
+    let line = state.line(&reply_line(
         3,
         "codex",
-        "record",
         T0 + 5_000,
-        record(json!([]), json!("completed")),
+        record(Vec::new(), json!("completed")),
     ));
 
     assert_eq!(
@@ -220,12 +231,10 @@ fn exchange_end_drops_that_exchanges_state() {
 #[test]
 fn no_line_contains_message_system_tool_or_reply_text() {
     let mut state = state();
-    let blocks = json!([{"kind": "text", "text": "SECRET-REPLY"},
-        {"kind": "tool_call", "id": "c1", "name": "SECRET-TOOL", "input": {"cmd": "SECRET-INPUT"}}]);
     let lines: Vec<String> = [
         tap(3, "codex", "conversation", T0, conversation(3, 2)),
         tap(3, "codex", "block_delta", T0, json!({"text": "SECRET-DELTA"})),
-        tap(3, "codex", "record", T0 + 1, record(blocks, json!("completed"))),
+        reply_line(3, "codex", T0 + 1, record(text_and_tool_call(), json!("completed"))),
     ]
     .iter()
     .filter_map(|line| state.line(line))

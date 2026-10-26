@@ -11,6 +11,7 @@ use kaiser_soze::event::Event;
 use kaiser_soze::live::Live;
 use kaiser_soze::project::ProjectCache;
 use kaiser_soze::proxy::{Proxy, ProxyConfig};
+use kaiser_soze::record::Record;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
@@ -292,7 +293,7 @@ pub async fn wait_for_line(tap_file: &Path, kind: &str) {
 
 pub fn fold(lines: &[Value], exchange: u64) -> Vec<Value> {
     let mut assembler = Assembler::default();
-    let mut records: Vec<Value> = lines
+    let mut records: Vec<Record> = lines
         .iter()
         .filter(|line| line["exchange"] == exchange)
         .filter_map(stream_event)
@@ -300,6 +301,9 @@ pub fn fold(lines: &[Value], exchange: u64) -> Vec<Value> {
         .collect();
     records.extend(assembler.finish(0));
     records
+        .iter()
+        .map(|record| serde_json::to_value(record).unwrap())
+        .collect()
 }
 
 fn stream_event(line: &Value) -> Option<Event> {

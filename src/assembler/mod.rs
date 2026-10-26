@@ -1,7 +1,8 @@
 use crate::body::MAX_REQUEST_BODY;
 use crate::event::{BlockDelta, BlockKind, BlockStart, Conversation, Delta, Event, Usage};
-use crate::graph::{claimed, Claimed};
+use crate::graph::claimed;
 use crate::message::{Block, Message};
+use crate::record::{Record, Reply};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -42,7 +43,7 @@ fn parse_input(joined: &str) -> Value {
 }
 
 #[derive(Default)]
-struct Reply {
+struct OpenReply {
     blocks: BTreeMap<u64, OpenBlock>,
     usage: Usage,
     stop_reason: Value,
@@ -56,7 +57,7 @@ struct Reply {
 pub struct Assembler {
     bound: usize,
     conversation: Option<Conversation>,
-    reply: Reply,
+    reply: OpenReply,
     seen: bool,
 }
 
@@ -71,14 +72,14 @@ impl Assembler {
         Self {
             bound,
             conversation: None,
-            reply: Reply::default(),
+            reply: OpenReply::default(),
             seen: false,
         }
     }
 
     /// Returns the records this event completes: one on a reply end, and one more when a new
     /// conversation arrives while a reply is still open.
-    pub fn push(&mut self, event: &Event, dropped: u64) -> Vec<Value> {
+    pub fn push(&mut self, event: &Event, dropped: u64) -> Vec<Record> {
         let mut records = Vec::new();
         match event {
             Event::Conversation(conversation) => {
@@ -103,7 +104,7 @@ impl Assembler {
     }
 
     /// Returns the open reply as an incomplete record, if any event was seen since the last record.
-    pub fn finish(&mut self, dropped: u64) -> Option<Value> {
+    pub fn finish(&mut self, dropped: u64) -> Option<Record> {
         self.seen.then(|| self.take_record(dropped, true))
     }
 
@@ -143,33 +144,29 @@ impl Assembler {
         }
     }
 
-    fn take_record(&mut self, dropped: u64, cut: bool) -> Value {
+    fn take_record(&mut self, dropped: u64, cut: bool) -> Record {
         let reply = std::mem::take(&mut self.reply);
         let conversation = self.conversation.take();
         self.seen = false;
         let incomplete = cut || dropped > 0 || reply.unparsed || reply.truncated;
         let blocks = reply.blocks.into_values().map(OpenBlock::into_block).collect();
         let claim = conversation.as_ref().map(claimed);
-        let mut record = json!({
-            "conversation": conversation,
-            "reply": {
-                "message": Message::assistant(blocks),
-                "usage": reply.usage,
-                "stop_reason": reply.stop_reason,
+        Record {
+            conversation,
+            dropped,
+            incomplete,
+            project: None,
+            reply: Reply {
+                message: Message::assistant(blocks),
+                message_id: reply.message_id,
+                stop_reason: reply.stop_reason,
+                usage: reply.usage,
             },
-            "incomplete": incomplete,
-            "dropped": dropped,
-        });
-        if let Some(Claimed { step, turn }) = claim {
-            record["step"] = json!(step);
-            if let Some(turn) = turn {
-                record["turn"] = json!(turn);
-            }
+            session: None,
+            step: claim.as_ref().map(|claim| claim.step),
+            thread: None,
+            turn: claim.and_then(|claim| claim.turn),
         }
-        if let Some(message_id) = reply.message_id {
-            record["reply"]["message_id"] = message_id;
-        }
-        record
     }
 }
 

@@ -16,6 +16,7 @@ pub mod live;
 pub mod message;
 pub mod project;
 pub mod proxy;
+pub mod record;
 pub mod redact;
 pub mod shape;
 pub mod sink;
