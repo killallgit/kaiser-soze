@@ -3,6 +3,7 @@ use crate::adapter::{Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
 use crate::graph::Identity;
 use crate::graph::Threads;
 use crate::label::Label;
+use crate::line::Entry;
 use crate::project::{ProjectCache, ProjectLookups};
 use crate::sink::Sink;
 use bytes::Bytes;
@@ -744,8 +745,8 @@ async fn a_reliable_write_waits_for_room_in_a_full_queue() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     let mut kinds = Vec::new();
     while let Ok(Some(line)) = tokio::time::timeout(Duration::from_secs(2), drained.recv()).await {
-        kinds.push(line["event"].as_str().unwrap().to_string());
-        if line["event"] == "edge" {
+        kinds.push(line.entry.event().to_string());
+        if line.entry.event() == "edge" {
             break;
         }
     }
@@ -795,16 +796,19 @@ async fn a_record_is_written_when_the_sink_refuses_live_lines_and_counts_them() 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let mut written = Vec::new();
     while let Some(line) = drained.recv().await {
-        let last = line["event"] == "exchange_end";
+        let last = line.entry.event() == "exchange_end";
         written.push(line);
         if last {
             break;
         }
     }
 
-    let record = written.iter().find(|line| line["event"] == "record").unwrap();
-    assert!(record["payload"]["dropped"].as_u64().unwrap() > 0);
-    assert_eq!(record["payload"]["incomplete"], true);
+    let record = written.iter().find(|line| line.entry.event() == "record").unwrap();
+    let Entry::Untyped { payload, .. } = &record.entry else {
+        panic!("a record is untyped");
+    };
+    assert!(payload["dropped"].as_u64().unwrap() > 0);
+    assert_eq!(payload["incomplete"], true);
 }
 
 #[tokio::test(flavor = "multi_thread")]

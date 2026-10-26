@@ -52,12 +52,12 @@ fn walk(value: &Value, key: Option<&str>, depth: usize) -> Value {
 
 /// Writes each distinct shape once per run to its own file.
 pub struct ShapeLog {
-    sink: Sink,
+    sink: Sink<Value>,
     seen: Mutex<HashSet<String>>,
 }
 
 impl ShapeLog {
-    pub fn new(sink: Sink) -> Arc<Self> {
+    pub fn new(sink: Sink<Value>) -> Arc<Self> {
         Arc::new(Self {
             sink,
             seen: Mutex::default(),

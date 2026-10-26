@@ -1,13 +1,34 @@
 use super::printer::PRINT_QUEUE;
 use super::state::MAX_COLUMNS;
 use super::*;
-use serde_json::json;
+use crate::graph::{Edge, EdgeKind};
+use crate::line::Entry;
+use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
 
 const T0: u64 = 43_421_000; // 12:03:41 UTC
 
-fn tap(exchange: u64, adapter: &str, event: &str, wall_ms: u64, payload: Value) -> Value {
-    json!({"exchange": exchange, "adapter": adapter, "event": event, "wall_ms": wall_ms, "payload": payload})
+fn tap(exchange: u64, adapter: &'static str, event: &str, wall_ms: u64, payload: Value) -> Line {
+    Line {
+        exchange,
+        adapter,
+        mono_us: 0,
+        wall_ms,
+        start: 0,
+        end: 0,
+        entry: Entry::untyped(event, payload),
+    }
+}
+
+#[test]
+fn an_edge_gives_no_live_line() {
+    // It shows requests, replies and notes only, never the graph
+    let edge = Line {
+        entry: Entry::Edge(Edge::new(EdgeKind::InThread, "exchange:3", "thread:t1")),
+        ..tap(3, "codex", "edge", T0, Value::Null)
+    };
+
+    assert_eq!(state().line(&edge), None);
 }
 
 fn state() -> LiveState {
