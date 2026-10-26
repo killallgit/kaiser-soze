@@ -121,38 +121,6 @@ pub fn unparsed(side: Side) -> TapEvent {
     live("unparsed", json!({"side": side}))
 }
 
-pub fn message(role: &str, blocks: Vec<Value>) -> Value {
-    json!({"role": role, "blocks": blocks})
-}
-
-pub fn text_block(text: &str) -> Value {
-    json!({"kind": "text", "text": text})
-}
-
-pub fn reasoning_block(text: Value, signature: Value) -> Value {
-    let mut block = json!({"kind": "reasoning", "text": text});
-    if !signature.is_null() {
-        block["signature"] = signature;
-    }
-    block
-}
-
-pub fn encrypted_reasoning_block(encrypted: Value) -> Value {
-    json!({"kind": "reasoning", "encrypted": encrypted})
-}
-
-pub fn tool_call_block(id: Value, name: Value, input: Value) -> Value {
-    json!({"kind": "tool_call", "id": id, "name": name, "input": input})
-}
-
-pub fn tool_result_block(call_id: Value, output: Value, is_error: bool) -> Value {
-    json!({"kind": "tool_result", "call_id": call_id, "output": output, "is_error": is_error})
-}
-
-pub fn image_block(reference: &str, content_type: &str, size: usize) -> Value {
-    json!({"kind": "image", "ref": reference, "content_type": content_type, "size": size})
-}
-
 pub fn base64_size(data: &str) -> usize {
     let padding = data.bytes().rev().take_while(|byte| *byte == b'=').count();
     (data.len() / 4 * 3).saturating_sub(padding)
@@ -238,44 +206,6 @@ mod tests {
         assert_eq!(
             event.payload,
             json!({"input": 3, "output": 1, "cache_read": null, "cache_write": null, "reasoning": null})
-        );
-    }
-
-    #[test]
-    fn an_image_block_holds_only_a_reference_a_content_type_and_a_size() {
-        // It has no field that could carry the image bytes
-        let block = image_block("0:2", "image/png", 2048);
-
-        assert_eq!(
-            block,
-            json!({"kind": "image", "ref": "0:2", "content_type": "image/png", "size": 2048})
-        );
-    }
-
-    #[test]
-    fn builds_each_block_kind_in_the_common_shape() {
-        // It uses kind plus the fields in data-model.md
-        assert_eq!(text_block("a"), json!({"kind": "text", "text": "a"}));
-        assert_eq!(
-            reasoning_block(json!("t"), json!("s")),
-            json!({"kind": "reasoning", "text": "t", "signature": "s"})
-        );
-        assert_eq!(
-            tool_call_block(json!("c1"), json!("shell"), json!({"a": 1})),
-            json!({"kind": "tool_call", "id": "c1", "name": "shell", "input": {"a": 1}})
-        );
-        assert_eq!(
-            tool_result_block(json!("c1"), json!("ok"), true),
-            json!({"kind": "tool_result", "call_id": "c1", "output": "ok", "is_error": true})
-        );
-    }
-
-    #[test]
-    fn an_encrypted_reasoning_block_carries_the_encrypted_text_only() {
-        // It uses the encrypted field instead of text
-        assert_eq!(
-            encrypted_reasoning_block(json!("x")),
-            json!({"kind": "reasoning", "encrypted": "x"})
         );
     }
 
