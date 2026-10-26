@@ -91,6 +91,17 @@ impl Block {
         Self::Text { text: text.into() }
     }
 
+    /// The `kind` the block writes.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Block::Text { .. } => "text",
+            Block::Reasoning { .. } | Block::EncryptedReasoning { .. } => "reasoning",
+            Block::ToolCall { .. } => "tool_call",
+            Block::ToolResult { .. } => "tool_result",
+            Block::Image { .. } => "image",
+        }
+    }
+
     /// A reasoning block; a `null` signature is no signature.
     pub fn reasoning(text: Value, signature: Value) -> Self {
         Self::Reasoning {

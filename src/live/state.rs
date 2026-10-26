@@ -1,6 +1,11 @@
 use crate::line::{Entry, Line};
+use crate::message::Block;
+use crate::record::Record;
 use serde_json::Value;
 use std::collections::HashMap;
+
+/// A line's text, then the command and directory it ends with.
+type Shown = (String, Option<String>, Option<String>);
 
 pub(super) const MAX_COLUMNS: usize = 120;
 
@@ -29,17 +34,19 @@ impl LiveState {
     }
 
     pub fn line(&mut self, tap: &Line) -> Option<String> {
-        let record;
-        let (kind, payload) = match &tap.entry {
-            Entry::Untyped { kind, payload } => (kind.as_str(), payload),
-            Entry::Record(typed) => {
-                record = serde_json::to_value(typed).ok()?;
-                ("record", &record)
-            }
+        let (body, command, dir) = match &tap.entry {
+            Entry::Untyped { kind, payload } => self.untyped_body(tap, kind, payload)?,
+            Entry::Record(record) => (self.record_body(tap, record), None, None),
             Entry::Edge(_) => return None,
         };
         let (exchange, wall) = (tap.exchange, tap.wall_ms);
-        let (body, command, dir) = match kind {
+        let head = format!("{}  #{exchange} {}  {body}", self.clock(wall), tap.adapter);
+        Some(self.fit(head, command, dir))
+    }
+
+    fn untyped_body(&mut self, tap: &Line, kind: &str, payload: &Value) -> Option<Shown> {
+        let (exchange, wall) = (tap.exchange, tap.wall_ms);
+        Some(match kind {
             "exchange_start" => {
                 let note = self.exchanges.entry(exchange).or_default();
                 (note.command, note.dir) = label_of(payload);
@@ -68,17 +75,6 @@ impl LiveState {
                 );
                 (body, None, note.dir.clone())
             }
-            "record" => {
-                let requested = self
-                    .exchanges
-                    .get_mut(&exchange)
-                    .and_then(|note| note.requested_ms.take());
-                (
-                    reply_body(payload, requested.map(|at| wall.saturating_sub(at))),
-                    None,
-                    None,
-                )
-            }
             "unsupported" => {
                 let path = short_path(payload["path"].as_str().unwrap_or("-"));
                 (format!("unsupported {path}"), label_of(payload).0, None)
@@ -103,9 +99,15 @@ impl LiveState {
                 )
             }
             _ => return None,
-        };
-        let head = format!("{}  #{exchange} {}  {body}", self.clock(wall), tap.adapter);
-        Some(self.fit(head, command, dir))
+        })
+    }
+
+    fn record_body(&mut self, tap: &Line, record: &Record) -> String {
+        let requested = self
+            .exchanges
+            .get_mut(&tap.exchange)
+            .and_then(|note| note.requested_ms.take());
+        reply_body(record, requested.map(|at| tap.wall_ms.saturating_sub(at)))
     }
 
     fn clock(&self, wall_ms: u64) -> String {
@@ -164,32 +166,27 @@ fn label_of(payload: &Value) -> (Option<String>, Option<String>) {
     (text("command"), text("dir"))
 }
 
-fn reply_body(record: &Value, elapsed_ms: Option<u64>) -> String {
-    let reply = &record["reply"];
-    let number = |value: &Value| value.as_u64().map_or("-".to_string(), |n| n.to_string());
-    let kinds: Vec<&str> = reply["message"]["blocks"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|block| block["kind"].as_str())
-        .collect();
+fn reply_body(record: &Record, elapsed_ms: Option<u64>) -> String {
+    let reply = &record.reply;
+    let number = |count: Option<u64>| count.map_or("-".to_string(), |n| n.to_string());
+    let kinds: Vec<&str> = reply.message.blocks.iter().map(Block::kind).collect();
     let elapsed = elapsed_ms.map_or(String::new(), |ms| format!("  {:.1}s", ms as f64 / 1000.0));
     let mut body = format!(
         "<- {}{elapsed}  in {} out {}  {}",
-        reply["stop_reason"].as_str().unwrap_or("-"),
-        number(&reply["usage"]["input"]),
-        number(&reply["usage"]["output"]),
+        reply.stop_reason.as_str().unwrap_or("-"),
+        number(reply.usage.input),
+        number(reply.usage.output),
         if kinds.is_empty() {
             "-".to_string()
         } else {
             kinds.join(",")
         },
     );
-    if record["incomplete"] == true {
+    if record.incomplete {
         body.push_str("  incomplete");
     }
-    if let Some(dropped) = record["dropped"].as_u64().filter(|n| *n > 0) {
-        body.push_str(&format!("  dropped {dropped}"));
+    if record.dropped > 0 {
+        body.push_str(&format!("  dropped {}", record.dropped));
     }
     body
 }
