@@ -1,10 +1,8 @@
 use super::clock::Stamp;
-use crate::event::Event;
 use crate::graph::{Edge, Identity, Step, Threads};
 use crate::line::{Entry, Line};
 use crate::record::Record;
 use crate::sink::Sink;
-use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use tokio::sync::watch;
@@ -96,33 +94,20 @@ impl Recorder {
         }
     }
 
-    pub fn write(&self, stamp: Stamp, kind: &str, payload: Value, offsets: (u64, u64)) {
-        let line = self.line(stamp, Entry::untyped(kind, payload), offsets);
-        if !self.sink.write(line) {
+    /// Writes a line the sink may refuse; a refused line is counted.
+    pub fn write(&self, stamp: Stamp, entry: Entry, offsets: (u64, u64)) {
+        if !self.sink.write(self.line(stamp, entry, offsets)) {
             self.refused.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    /// Writes a stream event under its own name; an event that cannot be written counts as refused.
-    pub fn write_event(&self, stamp: Stamp, event: &Event, offsets: (u64, u64)) {
-        match serde_json::to_value(event) {
-            Ok(payload) => self.write(stamp, event.kind(), payload, offsets),
-            Err(_) => {
-                self.refused.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
-
-    pub async fn write_reliable(&self, stamp: Stamp, kind: &str, payload: Value) {
-        self.write_entry_reliable(stamp, Entry::untyped(kind, payload)).await;
+    /// Writes a line that waits for room in the sink rather than being refused.
+    pub async fn write_reliable(&self, stamp: Stamp, entry: Entry) {
+        self.sink.write_reliable(self.line(stamp, entry, (0, 0))).await;
     }
 
     pub(super) async fn write_edge(&self, stamp: Stamp, edge: Edge) {
-        self.write_entry_reliable(stamp, Entry::Edge(edge)).await;
-    }
-
-    async fn write_entry_reliable(&self, stamp: Stamp, entry: Entry) {
-        self.sink.write_reliable(self.line(stamp, entry, (0, 0))).await;
+        self.write_reliable(stamp, Entry::Edge(edge)).await;
     }
 
     pub(super) async fn write_record(&self, stamp: Stamp, record: Record) {
@@ -130,7 +115,7 @@ impl Recorder {
         let step = Step::of_record(&record, &self.identity, self.exchange);
         let record = self.with_ids(record, project, step.as_ref());
         let edges = self.step_edges(step.as_ref());
-        self.write_entry_reliable(stamp, Entry::Record(Box::new(record))).await;
+        self.write_reliable(stamp, Entry::Record(Box::new(record))).await;
         for edge in edges {
             self.write_edge(stamp, edge).await;
         }

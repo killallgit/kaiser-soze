@@ -3,11 +3,11 @@ use super::{Clock, ExchangeTap, Recorder};
 use crate::adapter::{Adapter, ExchangeParser, RequestHead};
 use crate::graph::{self, Identity, Threads};
 use crate::label::Label;
-use crate::line::Line;
+use crate::line::{Entry, Line};
+use crate::note::{ExchangeStart, Note};
 use crate::project::ProjectLookups;
 use crate::shape::{ShapeLog, ShapedParser};
 use crate::sink::Sink;
-use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -46,7 +46,7 @@ impl Exchanges {
 
     /// Starts tapping one exchange: writes `exchange_start` now, and the edges once the project is found.
     pub fn begin(&self, opening: Opening<'_>) -> ExchangeTap {
-        let start = start_payload(&opening);
+        let start = exchange_start(&opening);
         let exchange = self.next_exchange();
         let identity = opening.adapter.identity(opening.head);
         let recorder = Recorder::new(self.sink.clone(), exchange, opening.adapter.name())
@@ -59,7 +59,7 @@ impl Exchanges {
             None => opening.parser,
         };
         let tap = ExchangeTap::spawn(recorder.clone(), self.clock, parser);
-        tap.note("exchange_start", with_label(start, opening.label));
+        tap.note(start);
         tokio::spawn(
             StartEdges {
                 recorder,
@@ -76,9 +76,9 @@ impl Exchanges {
     }
 
     /// Writes one line under an exchange id of its own, for something that happened without an exchange.
-    pub fn note_alone(&self, adapter: &'static str, kind: &str, payload: Value, label: Option<&Label>) {
+    pub fn note_alone(&self, adapter: &'static str, note: Note) {
         let recorder = Recorder::new(self.sink.clone(), self.next_exchange(), adapter);
-        recorder.write(self.clock.stamp(), kind, with_label(payload, label), (0, 0));
+        recorder.write(self.clock.stamp(), Entry::Note(note), (0, 0));
     }
 
     fn next_exchange(&self) -> u64 {
@@ -86,22 +86,16 @@ impl Exchanges {
     }
 }
 
-fn start_payload(opening: &Opening<'_>) -> Value {
-    json!({
-        "method": opening.head.method,
-        "host": opening.head.host,
-        "path": opening.head.path,
-        "http_version": format!("{:?}", opening.http_version),
-        "upgrade": opening.upgrade,
-        "headers": opening.head.headers,
+fn exchange_start(opening: &Opening<'_>) -> Note {
+    Note::ExchangeStart(ExchangeStart {
+        headers: opening.head.headers.clone(),
+        host: opening.head.host.clone(),
+        http_version: format!("{:?}", opening.http_version),
+        label: opening.label.cloned(),
+        method: opening.head.method.clone(),
+        path: opening.head.path.clone(),
+        upgrade: opening.upgrade,
     })
-}
-
-fn with_label(mut payload: Value, label: Option<&Label>) -> Value {
-    if let Some(label) = label {
-        payload["label"] = label.to_json();
-    }
-    payload
 }
 
 /// Finds the project of the exchange's directory, settles the record's project signal, then writes the edges.

@@ -9,6 +9,7 @@ use kaiser_soze::claude::ClaudeAdapter;
 use kaiser_soze::codex::CodexAdapter;
 use kaiser_soze::exchange::{ExchangeTap, Exchanges, Opening};
 use kaiser_soze::label::Label;
+use kaiser_soze::note::{self, Note};
 use kaiser_soze::project::{ProjectCache, ProjectLookups};
 use kaiser_soze::sink::Sink;
 use serde_json::{json, Value};
@@ -527,19 +528,26 @@ async fn notes_alone_write_these_exact_bytes() {
     // It writes an unsupported request and a tunnel, each with and without a label
     let recording = Recording::new().await;
     let label = recording.label();
-    let unsupported = json!({"host": "other.test", "path": "/v1/other"});
-    let tunnel = json!({"host": "tunnel.test", "port": 443});
+    let unsupported = |label| {
+        Note::Unsupported(note::Unsupported {
+            host: "other.test".into(),
+            label,
+            path: "/v1/other".into(),
+        })
+    };
+    let tunnel = |label| {
+        Note::Tunnel(note::Tunnel {
+            host: "tunnel.test".into(),
+            label,
+            port: 443,
+        })
+    };
 
-    recording
-        .exchanges
-        .note_alone("claude", "unsupported", unsupported.clone(), Some(&label));
-    recording
-        .exchanges
-        .note_alone("claude", "unsupported", unsupported, None);
-    recording
-        .exchanges
-        .note_alone("none", "tunnel", tunnel.clone(), Some(&label));
-    recording.exchanges.note_alone("none", "tunnel", tunnel, None);
+    let exchanges = &recording.exchanges;
+    exchanges.note_alone("claude", unsupported(Some(label.clone())));
+    exchanges.note_alone("claude", unsupported(None));
+    exchanges.note_alone("none", tunnel(Some(label)));
+    exchanges.note_alone("none", tunnel(None));
     recording.wait_for_lines(4).await;
 
     assert_golden("notes", &recording.normalised());

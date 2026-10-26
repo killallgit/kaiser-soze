@@ -1,7 +1,9 @@
+use crate::event::{Conversation, Event};
+use crate::label::Label;
 use crate::line::{Entry, Line};
 use crate::message::Block;
+use crate::note::Note;
 use crate::record::Record;
-use serde_json::Value;
 use std::collections::HashMap;
 
 /// A line's text, then the command and directory it ends with.
@@ -10,7 +12,7 @@ type Shown = (String, Option<String>, Option<String>);
 pub(super) const MAX_COLUMNS: usize = 120;
 
 #[derive(Default)]
-struct Note {
+struct OpenExchange {
     command: Option<String>,
     dir: Option<String>,
     requested_ms: Option<u64>,
@@ -21,7 +23,7 @@ struct Note {
 pub struct LiveState {
     home: String,
     offset_secs: i64,
-    exchanges: HashMap<u64, Note>,
+    exchanges: HashMap<u64, OpenExchange>,
 }
 
 impl LiveState {
@@ -35,7 +37,8 @@ impl LiveState {
 
     pub fn line(&mut self, tap: &Line) -> Option<String> {
         let (body, command, dir) = match &tap.entry {
-            Entry::Untyped { kind, payload } => self.untyped_body(tap, kind, payload)?,
+            Entry::Event(event) => self.event_body(tap, event)?,
+            Entry::Note(note) => self.note_body(tap, note)?,
             Entry::Record(record) => (self.record_body(tap, record), None, None),
             Entry::Edge(_) => return None,
         };
@@ -44,61 +47,45 @@ impl LiveState {
         Some(self.fit(head, command, dir))
     }
 
-    fn untyped_body(&mut self, tap: &Line, kind: &str, payload: &Value) -> Option<Shown> {
-        let (exchange, wall) = (tap.exchange, tap.wall_ms);
-        Some(match kind {
-            "exchange_start" => {
-                let note = self.exchanges.entry(exchange).or_default();
-                (note.command, note.dir) = label_of(payload);
-                return None;
+    fn event_body(&mut self, tap: &Line, event: &Event) -> Option<Shown> {
+        Some(match event {
+            Event::Conversation(conversation) => {
+                let open = self.exchanges.entry(tap.exchange).or_default();
+                open.requested_ms = Some(tap.wall_ms);
+                (request_body(conversation), None, open.dir.clone())
             }
-            "exchange_end" => {
-                self.exchanges.remove(&exchange);
-                return None;
-            }
-            "conversation" => {
-                let note = self.exchanges.entry(exchange).or_default();
-                note.requested_ms = Some(wall);
-                let flag = |name: &str, shown: &str| {
-                    if payload[name] == true {
-                        format!("  {shown}")
-                    } else {
-                        String::new()
-                    }
-                };
-                let body = format!(
-                    "-> {} msgs  {} tools{}{}",
-                    count(&payload["messages"]),
-                    count(&payload["tools"]),
-                    flag("warmup", "warmup"),
-                    flag("partial", "partial"),
-                );
-                (body, None, note.dir.clone())
-            }
-            "unsupported" => {
-                let path = short_path(payload["path"].as_str().unwrap_or("-"));
-                (format!("unsupported {path}"), label_of(payload).0, None)
-            }
-            "unparsed" => (
-                format!("unparsed {}", payload["side"].as_str().unwrap_or("-")),
+            Event::Unparsed(unparsed) => (format!("unparsed {}", unparsed.side.as_str()), None, None),
+            Event::Error(error) => (
+                format!("error {}", error.error_type.as_str().unwrap_or("-")),
                 None,
                 None,
             ),
-            "error" => (
-                format!("error {}", payload["error_type"].as_str().unwrap_or("-")),
-                None,
-                None,
-            ),
-            "tunnel" => {
-                let command = label_of(payload).0;
-                let host = payload["host"].as_str().unwrap_or("-");
-                (
-                    format!("tunnel {host}:{}", payload["port"].as_u64().unwrap_or_default()),
-                    command,
-                    None,
-                )
-            }
             _ => return None,
+        })
+    }
+
+    fn note_body(&mut self, tap: &Line, note: &Note) -> Option<Shown> {
+        Some(match note {
+            Note::ExchangeStart(start) => {
+                let open = self.exchanges.entry(tap.exchange).or_default();
+                (open.command, open.dir) = label_of(start.label.as_ref());
+                return None;
+            }
+            Note::ExchangeEnd(_) => {
+                self.exchanges.remove(&tap.exchange);
+                return None;
+            }
+            Note::Unsupported(unsupported) => (
+                format!("unsupported {}", short_path(&unsupported.path)),
+                label_of(unsupported.label.as_ref()).0,
+                None,
+            ),
+            Note::Tunnel(tunnel) => (
+                format!("tunnel {}:{}", tunnel.host, tunnel.port),
+                label_of(tunnel.label.as_ref()).0,
+                None,
+            ),
+            Note::ResponseHead(_) => return None,
         })
     }
 
@@ -106,7 +93,7 @@ impl LiveState {
         let requested = self
             .exchanges
             .get_mut(&tap.exchange)
-            .and_then(|note| note.requested_ms.take());
+            .and_then(|open| open.requested_ms.take());
         reply_body(record, requested.map(|at| tap.wall_ms.saturating_sub(at)))
     }
 
@@ -157,13 +144,22 @@ fn short_path(path: &str) -> String {
     }
 }
 
-fn count(list: &Value) -> usize {
-    list.as_array().map_or(0, Vec::len)
+fn request_body(conversation: &Conversation) -> String {
+    let flag = |set: bool, shown: &str| if set { format!("  {shown}") } else { String::new() };
+    format!(
+        "-> {} msgs  {} tools{}{}",
+        conversation.messages.len(),
+        conversation.tools.as_array().map_or(0, Vec::len),
+        flag(conversation.warmup, "warmup"),
+        flag(conversation.partial, "partial"),
+    )
 }
 
-fn label_of(payload: &Value) -> (Option<String>, Option<String>) {
-    let text = |field: &str| payload["label"][field].as_str().map(String::from);
-    (text("command"), text("dir"))
+fn label_of(label: Option<&Label>) -> (Option<String>, Option<String>) {
+    (
+        label.map(|label| label.command.clone()),
+        label.map(|label| label.dir.clone()),
+    )
 }
 
 fn reply_body(record: &Record, elapsed_ms: Option<u64>) -> String {

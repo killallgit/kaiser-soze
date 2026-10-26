@@ -3,6 +3,7 @@ use crate::ca::Ca;
 use crate::exchange::{ExchangeTap, Exchanges, Opening, Side, TeeBody};
 use crate::label::{self, Label};
 use crate::live::Live;
+use crate::note::{self, Note};
 use crate::project::{ProjectCache, ProjectLookups};
 use crate::redact::redact_headers;
 use crate::shape::ShapeLog;
@@ -20,7 +21,6 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, RootCertStore};
-use serde_json::json;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -152,8 +152,12 @@ impl Proxy {
             eprintln!("connect {host}:{port}");
         }
         let Some(adapter) = self.adapters.iter().find(|a| claims_host(a.as_ref(), &host)) else {
-            self.exchanges
-                .note_alone("none", "tunnel", json!({"host": host, "port": port}), label.as_ref());
+            let tunnel = note::Tunnel {
+                host: host.clone(),
+                label,
+                port,
+            };
+            self.exchanges.note_alone("none", Note::Tunnel(tunnel));
             let upstream = self.dial(&host, port).await?;
             let upgrade = hyper::upgrade::on(req);
             tokio::spawn(async move {
@@ -230,8 +234,12 @@ impl Tunnel {
         let exchanges = &self.proxy.exchanges;
         let Some(parser) = self.adapter.claim(head) else {
             let path = head.path.split('?').next().unwrap_or_default();
-            let payload = json!({"host": head.host, "path": path});
-            exchanges.note_alone(self.adapter.name(), "unsupported", payload, self.label.as_ref());
+            let unsupported = note::Unsupported {
+                host: head.host.clone(),
+                label: self.label.clone(),
+                path: path.to_string(),
+            };
+            exchanges.note_alone(self.adapter.name(), Note::Unsupported(unsupported));
             return None;
         };
         Some(exchanges.begin(Opening {

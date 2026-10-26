@@ -3,11 +3,12 @@ use super::recorder::Recorder;
 use super::stats::Stats;
 use crate::adapter::{ExchangeParser, ResponseHead, TapInput};
 use crate::assembler::Assembler;
+use crate::line::Entry;
+use crate::note::{self, Note, Transport};
 use crate::redact::redact_headers;
 use crate::ws::WsDecoder;
 use bytes::Bytes;
 use hyper::{Response, StatusCode};
-use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -40,8 +41,8 @@ impl ExchangeTap {
         }
     }
 
-    pub(super) fn note(&self, kind: &str, payload: Value) {
-        self.recorder.write(self.clock.stamp(), kind, payload, (0, 0));
+    pub(super) fn note(&self, note: Note) {
+        self.recorder.write(self.clock.stamp(), Entry::Note(note), (0, 0));
     }
 
     /// Writes the `response_head` line and hands the head to the parser.
@@ -53,22 +54,19 @@ impl ExchangeTap {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         let transport = if res.status() == StatusCode::SWITCHING_PROTOCOLS {
-            "websocket"
+            Transport::Websocket
         } else if content_type.contains("event-stream") {
-            "sse"
+            Transport::Sse
         } else {
-            "http"
+            Transport::Http
         };
         self.stats.response_head_arrived();
-        self.note(
-            "response_head",
-            json!({
-                "status": res.status().as_u16(),
-                "http_version": format!("{:?}", res.version()),
-                "transport": transport,
-                "headers": headers,
-            }),
-        );
+        self.note(Note::ResponseHead(note::ResponseHead {
+            headers: headers.clone(),
+            http_version: format!("{:?}", res.version()),
+            status: res.status().as_u16(),
+            transport,
+        }));
         self.send(TapInput::ResponseHead(ResponseHead {
             status: res.status().as_u16(),
             headers,
@@ -125,7 +123,7 @@ async fn run_parser(
         };
         for event in inputs.into_iter().flat_map(|input| parser.feed(input)) {
             let records = assembler.push(&event.event, dropped());
-            recorder.write_event(stamp, &event.event, (event.start, event.end));
+            recorder.write(stamp, Entry::Event(event.event), (event.start, event.end));
             for record in records {
                 recorder.write_record(stamp, record).await;
             }
@@ -134,7 +132,6 @@ async fn run_parser(
     if let Some(record) = assembler.finish(dropped()) {
         recorder.write_record(clock.stamp(), record).await;
     }
-    let mut summary = stats.summary();
-    summary["sink_dropped"] = json!(recorder.sink.dropped());
-    recorder.write_reliable(clock.stamp(), "exchange_end", summary).await;
+    let end = Note::ExchangeEnd(stats.summary(recorder.sink.dropped()));
+    recorder.write_reliable(clock.stamp(), Entry::Note(end)).await;
 }

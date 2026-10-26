@@ -1,28 +1,24 @@
+use crate::event::Event;
 use crate::graph::Edge;
+use crate::note::Note;
 use crate::record::Record;
 use serde::ser::{Serialize, SerializeStruct, Serializer};
-use serde_json::Value;
 
-/// What one tap line says. `Untyped` holds every kind that has no type yet: its event name and its payload as the producer built them.
+/// What one tap line says: a stream event, a note of the proxy, a graph edge or a finished record.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Entry {
-    Untyped { kind: String, payload: Value },
+    Event(Event),
+    Note(Note),
     Edge(Edge),
     Record(Box<Record>),
 }
 
 impl Entry {
-    pub fn untyped(kind: &str, payload: Value) -> Self {
-        Self::Untyped {
-            kind: kind.to_string(),
-            payload,
-        }
-    }
-
     /// The name the line carries under its `event` key.
     pub fn event(&self) -> &str {
         match self {
-            Self::Untyped { kind, .. } => kind,
+            Self::Event(event) => event.kind(),
+            Self::Note(note) => note.event(),
             Self::Edge(_) => "edge",
             Self::Record(_) => "record",
         }
@@ -33,7 +29,8 @@ impl Entry {
 impl Serialize for Entry {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Self::Untyped { payload, .. } => payload.serialize(serializer),
+            Self::Event(event) => event.serialize(serializer),
+            Self::Note(note) => note.serialize(serializer),
             Self::Edge(edge) => edge.serialize(serializer),
             Self::Record(record) => record.serialize(serializer),
         }
@@ -71,7 +68,9 @@ impl Serialize for Line {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::{BlockDelta, Delta, Usage};
     use crate::graph::EdgeKind;
+    use crate::note::Tunnel;
     use serde_json::json;
 
     fn line(entry: Entry) -> Line {
@@ -87,13 +86,39 @@ mod tests {
     }
 
     #[test]
-    fn an_untyped_line_serialises_its_keys_in_sorted_order() {
-        // It writes the event name from the entry and the payload as the producer built it
-        let line = line(Entry::untyped("usage", json!({"output": 3, "input": null})));
+    fn an_event_line_names_its_kind_and_nests_the_event_in_key_order() {
+        // It writes the event name from the event, and a delta whose key sorts before the index in that order
+        let usage = Usage {
+            input: Some(3),
+            ..Usage::default()
+        };
+        let delta = BlockDelta {
+            index: 1,
+            delta: Delta::Encrypted("e".into()),
+        };
 
         assert_eq!(
-            serde_json::to_string(&line).unwrap(),
-            r#"{"adapter":"claude","end":9,"event":"usage","exchange":7,"mono_us":1500,"payload":{"input":null,"output":3},"start":4,"wall_ms":1700000000000}"#
+            serde_json::to_string(&line(Entry::Event(Event::Usage(usage)))).unwrap(),
+            r#"{"adapter":"claude","end":9,"event":"usage","exchange":7,"mono_us":1500,"payload":{"cache_read":null,"cache_write":null,"input":3,"output":null,"reasoning":null},"start":4,"wall_ms":1700000000000}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&line(Entry::Event(Event::BlockDelta(delta)))).unwrap(),
+            r#"{"adapter":"claude","end":9,"event":"block_delta","exchange":7,"mono_us":1500,"payload":{"encrypted":"e","index":1},"start":4,"wall_ms":1700000000000}"#
+        );
+    }
+
+    #[test]
+    fn a_note_line_names_its_event_and_nests_the_note() {
+        // It writes the note's event name and, with no label, leaves the label key out
+        let tunnel = Note::Tunnel(Tunnel {
+            host: "t.test".into(),
+            label: None,
+            port: 443,
+        });
+
+        assert_eq!(
+            serde_json::to_string(&line(Entry::Note(tunnel))).unwrap(),
+            r#"{"adapter":"claude","end":9,"event":"tunnel","exchange":7,"mono_us":1500,"payload":{"host":"t.test","port":443},"start":4,"wall_ms":1700000000000}"#
         );
     }
 
