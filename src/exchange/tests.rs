@@ -61,9 +61,13 @@ async fn blocked_tap() -> Fixture {
 }
 
 async fn wait_for_exchange_end(tap_file: &std::path::Path) {
+    wait_for_exchange_ends(tap_file, 1).await;
+}
+
+async fn wait_for_exchange_ends(tap_file: &std::path::Path, count: usize) {
     for _ in 0..50 {
         let text = std::fs::read_to_string(tap_file).unwrap_or_default();
-        if text.contains("exchange_end") {
+        if text.matches("exchange_end").count() >= count {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -519,6 +523,128 @@ async fn a_claude_and_a_codex_exchange_write_these_exact_records_and_edges() {
             json!({"kind": "calls", "from": "call:c1", "to": "result:c1"}),
         ]
     );
+}
+
+type Edge = (String, String, String);
+
+fn edge(kind: &str, from: &str, to: &str) -> Edge {
+    (kind.into(), from.into(), to.into())
+}
+
+fn written_edges(lines: &[Value]) -> Vec<Edge> {
+    let mut edges: Vec<Edge> = lines
+        .iter()
+        .filter(|line| line["event"] == "edge")
+        .map(|line| ["kind", "from", "to"].map(|key| line["payload"][key].as_str().unwrap().to_string()))
+        .map(|[kind, from, to]| (kind, from, to))
+        .collect();
+    edges.sort();
+    edges
+}
+
+/// Runs one exchange of thread `t1` per entry of `replies` at once, all recording through one `Threads`.
+/// The exchange numbered `late` (counting from 0) has its record held back briefly, so either order can win.
+async fn race_one_thread(replies: Vec<Vec<TapEvent>>, late: Option<usize>) -> Vec<Edge> {
+    let dir = tempfile::tempdir().unwrap();
+    let tap_file = dir.path().join("tap.jsonl");
+    let sink = Sink::open(&tap_file).await.unwrap();
+    let threads = Arc::new(Mutex::new(Threads::default()));
+    let known = Identity {
+        thread: Some("t1".into()),
+        ..Identity::default()
+    };
+    let count = replies.len();
+    let mut taps = Vec::new();
+    for (index, events) in replies.into_iter().enumerate() {
+        let mut recorder = Recorder::new(sink.clone(), index as u64 + 1, "test")
+            .knowing(known.clone())
+            .tracking(threads.clone());
+        if late == Some(index) {
+            recorder = recorder.awaiting_project();
+            let signal = recorder.project_signal();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                signal.settle(None);
+            });
+        }
+        let tap = ExchangeTap::spawn(recorder, Clock::start(), Box::new(Emits { events, release: None }));
+        tap.send(TapInput::ResponseEnd);
+        taps.push(tap);
+    }
+    drop(taps);
+    wait_for_exchange_ends(&tap_file, count).await;
+
+    written_edges(&lines(&tap_file))
+}
+
+fn which_exchange_is_late(run: usize, exchanges: usize) -> Option<usize> {
+    (run % (exchanges + 1)).checked_sub(1)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_claude_exchanges_of_one_thread_continue_by_message_id_whichever_record_arrives_first() {
+    // The step naming m1 continues the reply with m1 and pairs c1 when that reply came first; when it came
+    // second, nothing is known of m1, and the reply without a previous id continues the last step
+    use crate::common::*;
+    let calling = || {
+        vec![
+            conversation(json!("sys"), json!([]), vec![message("user", vec![text_block("hi")])]),
+            block_start(BlockStart {
+                index: 0,
+                kind: "tool_call",
+                id: json!("c1"),
+                name: json!("shell"),
+            }),
+            block_stop(0),
+            reply_end_of_message(json!("tool_use"), json!("m1")),
+        ]
+    };
+    let answering = || {
+        let result = message("user", vec![tool_result_block(json!("c1"), json!("done"), false)]);
+        let mut events = closed_reply();
+        events[0] = conversation(json!("sys"), json!([]), vec![result]);
+        events[0].payload["previous_message_id"] = json!("m1");
+        events
+    };
+    let calling_first = vec![
+        edge("calls", "call:c1", "result:c1"),
+        edge("continues", "step:2.1", "step:1.1"),
+    ];
+    let answering_first = vec![edge("continues", "step:1.1", "step:2.1")];
+
+    for run in 0..50 {
+        let edges = race_one_thread(vec![calling(), answering()], which_exchange_is_late(run, 2)).await;
+
+        assert!(
+            edges == calling_first || edges == answering_first,
+            "run {run} wrote neither order's edges"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_exchanges_of_one_thread_form_one_chain_in_the_order_their_records_arrive() {
+    // With no previous message id each step continues the one before it, so no step continues itself or is continued twice
+    for run in 0..50 {
+        let replies = vec![closed_reply(), closed_reply(), closed_reply()];
+        let edges = race_one_thread(replies, which_exchange_is_late(run, 3)).await;
+
+        let continues: Vec<&Edge> = edges.iter().filter(|(kind, ..)| kind == "continues").collect();
+        let distinct = |ends: Vec<&String>| ends.iter().collect::<std::collections::HashSet<_>>().len();
+        assert_eq!(continues.len(), 2, "run {run}");
+        assert!(continues.iter().all(|(_, from, to)| from != to), "run {run}");
+        assert_eq!(
+            distinct(continues.iter().map(|(_, from, _)| from).collect()),
+            2,
+            "run {run}"
+        );
+        assert_eq!(
+            distinct(continues.iter().map(|(_, _, to)| to).collect()),
+            2,
+            "run {run}"
+        );
+        assert_eq!(edges.len(), 2, "run {run}");
+    }
 }
 
 #[tokio::test]
