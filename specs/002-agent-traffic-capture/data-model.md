@@ -2,9 +2,13 @@
 
 All shapes are JSON values. Field lists match [docs/common-format.md](../../docs/common-format.md).
 
-## Envelope (existing, kept)
+## Envelope
 
-`exchange` (id), `adapter` (name), `event` (kind), `mono_us`, `wall_ms`, `start`, `end` (byte offsets), `payload`.
+`run_id` (opaque capture epoch), `sequence` (1-based emission order within that epoch), `exchange` (id within that epoch), `adapter` (name), `event` (kind), `mono_us`, `wall_ms`, `start`, `end` (byte offsets), `payload`.
+
+Every Proxy instance generates a fresh random `run_id` before emitting any tap lines. All its exchanges and cloned recorders share it, including traffic with no native session or thread. Appending to the same file after a restart preserves the earlier lines and starts a new epoch. See the [envelope contract](contracts/records.md#envelope) for identity scopes and guarantees.
+
+The single writer assigns `sequence` after dequeue, before encoding. `(run_id, sequence)` is a delivery cursor, separate from native identity and capture-attempt identity. Pre-writer drops do not consume numbers; contiguous cursors do not prove complete capture. The [delivery cursor contract](contracts/records.md#delivery-cursor) defines gaps, filtered views and the limits of this metadata.
 
 ## Conversation
 

@@ -1,8 +1,9 @@
 use crate::adapter::{claims_host, Adapter, RequestHead};
 use crate::ca::Ca;
-use crate::exchange::{ExchangeTap, Exchanges, Opening, Side, TeeBody};
+use crate::exchange::{ExchangeTap, Exchanges, Opening, Side, TapOutput, TeeBody};
 use crate::label::{self, Label};
 use crate::live::Live;
+use crate::logging::{Fields, Level, Logger};
 use crate::note::{self, Note};
 use crate::project::{ProjectCache, ProjectLookups};
 use crate::redact::redact_headers;
@@ -45,6 +46,7 @@ pub struct ProxyConfig {
     pub upstream_addr: Option<SocketAddr>,
     /// Shows a short line per event on a terminal, or none.
     pub live: Option<Live>,
+    pub logging: Logger,
 }
 
 pub struct Proxy {
@@ -52,7 +54,7 @@ pub struct Proxy {
     ca: Ca,
     connector: TlsConnector,
     upstream_addr: Option<SocketAddr>,
-    live: bool,
+    logging: Logger,
     exchanges: Exchanges,
 }
 
@@ -82,37 +84,53 @@ impl Proxy {
             .with_root_certificates(config.upstream_roots)
             .with_no_client_auth();
         client.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let output = TapOutput::open(&config.tap_file, config.live, config.logging).await?;
+        let logging = output.logging.component("proxy");
         let shapes = match &config.shape_file {
-            Some(path) => Some(ShapeLog::new(Sink::open(path).await?)),
+            Some(path) => Some(ShapeLog::new(
+                Sink::open_reporting(path, logging.component("shape")).await?,
+            )),
             None => None,
         };
+        let ca = Ca::load_or_create(&config.ca_dir, &hosts).inspect_err(|_| {
+            logging.event(Level::Error, "ca_initialization_failed", Fields::default());
+        })?;
         Ok(Arc::new(Self {
-            ca: Ca::load_or_create(&config.ca_dir, &hosts)?,
+            ca,
             adapters: config.adapters,
             connector: TlsConnector::from(Arc::new(client)),
             upstream_addr: config.upstream_addr,
-            live: config.live.is_some(),
-            exchanges: Exchanges::new(
-                Sink::open_with(&config.tap_file, config.live).await?,
-                shapes,
-                ProjectLookups::new(projects),
-            ),
+            logging,
+            exchanges: Exchanges::new(output, shapes, ProjectLookups::new(projects)),
         }))
+    }
+
+    pub fn logger(&self) -> Logger {
+        self.logging.clone()
     }
 
     pub async fn serve(self: Arc<Self>, listener: TcpListener) {
         loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                tokio::time::sleep(ACCEPT_RETRY).await;
-                continue;
+            let stream = match listener.accept().await {
+                Ok((stream, _)) => stream,
+                Err(error) => {
+                    self.logging.event(Level::Warn, "accept_failed", Fields::io(&error));
+                    tokio::time::sleep(ACCEPT_RETRY).await;
+                    continue;
+                }
             };
             let proxy = self.clone();
             tokio::spawn(async move {
+                let log = proxy.logging.clone();
                 let service = service_fn(move |req| proxy.clone().handle_connect(req));
-                let _ = hyper::server::conn::http1::Builder::new()
+                if hyper::server::conn::http1::Builder::new()
                     .serve_connection(TokioIo::new(stream), service)
                     .with_upgrades()
-                    .await;
+                    .await
+                    .is_err()
+                {
+                    log.event(Level::Debug, "client_http_failed", Fields::default());
+                }
             });
         }
     }
@@ -120,7 +138,17 @@ impl Proxy {
     async fn handle_connect(self: Arc<Self>, req: Request<Incoming>) -> Result<Response<Out>, Infallible> {
         let status = match self.open_tunnel(req).await {
             Ok(()) => StatusCode::OK,
-            Err(_) => StatusCode::BAD_GATEWAY,
+            Err(_) => {
+                self.logging.event(
+                    Level::Warn,
+                    "connect_failed",
+                    Fields {
+                        status: Some(502),
+                        ..Fields::default()
+                    },
+                );
+                StatusCode::BAD_GATEWAY
+            }
         };
         Ok(empty_response(status))
     }
@@ -131,13 +159,30 @@ impl Proxy {
     }
 
     async fn connect_upstream(&self, host: &str, port: u16) -> Result<Upstream, BoxError> {
-        let tcp = self.dial(host, port).await?;
+        let tcp = self.dial(host, port).await.inspect_err(|error| {
+            self.logging
+                .event(Level::Warn, "upstream_connect_failed", Fields::io(error));
+        })?;
         let tls = self
             .connector
             .connect(ServerName::try_from(host.to_string())?, tcp)
-            .await?;
-        let (sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await?;
-        tokio::spawn(connection.with_upgrades());
+            .await
+            .inspect_err(|_| {
+                self.logging
+                    .event(Level::Warn, "upstream_tls_failed", Fields::default());
+            })?;
+        let (sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
+            .await
+            .inspect_err(|_| {
+                self.logging
+                    .event(Level::Warn, "upstream_http_failed", Fields::default());
+            })?;
+        let log = self.logging.clone();
+        tokio::spawn(async move {
+            if connection.with_upgrades().await.is_err() {
+                log.event(Level::Debug, "upstream_connection_closed", Fields::default());
+            }
+        });
         Ok(sender)
     }
 
@@ -148,9 +193,14 @@ impl Proxy {
         let authority = req.uri().authority().ok_or("CONNECT without a host")?;
         let (host, port) = (authority.host().to_string(), authority.port_u16().unwrap_or(443));
         let label = label::from_headers(req.headers());
-        if !self.live {
-            eprintln!("connect {host}:{port}");
-        }
+        self.logging.event(
+            Level::Debug,
+            "connection_opened",
+            Fields {
+                port: Some(port),
+                ..Fields::default()
+            },
+        );
         let Some(adapter) = self.adapters.iter().find(|a| claims_host(a.as_ref(), &host)) else {
             let tunnel = note::Tunnel {
                 host: host.clone(),
@@ -160,9 +210,17 @@ impl Proxy {
             self.exchanges.note_alone("none", Note::Tunnel(tunnel));
             let upstream = self.dial(&host, port).await?;
             let upgrade = hyper::upgrade::on(req);
+            let log = self.logging.clone();
             tokio::spawn(async move {
                 if let Ok(client) = upgrade.await {
-                    let _ = tokio::io::copy_bidirectional(&mut TokioIo::new(client), &mut { upstream }).await;
+                    if tokio::io::copy_bidirectional(&mut TokioIo::new(client), &mut { upstream })
+                        .await
+                        .is_err()
+                    {
+                        log.event(Level::Warn, "tunnel_copy_failed", Fields::default());
+                    }
+                } else {
+                    log.event(Level::Debug, "client_upgrade_failed", Fields::default());
                 }
             });
             return Ok(());
@@ -178,16 +236,25 @@ impl Proxy {
             label,
             upstream: tokio::sync::Mutex::new(sender),
         });
+        let log = self.logging.clone();
         tokio::spawn(async move {
-            let Ok(client) = upgrade.await else { return };
+            let Ok(client) = upgrade.await else {
+                log.event(Level::Debug, "client_upgrade_failed", Fields::default());
+                return;
+            };
             let Ok(tls) = acceptor.accept(TokioIo::new(client)).await else {
+                log.event(Level::Warn, "client_tls_failed", Fields::default());
                 return;
             };
             let service = service_fn(move |req| tunnel.clone().forward(req));
-            let _ = hyper::server::conn::http1::Builder::new()
+            if hyper::server::conn::http1::Builder::new()
                 .serve_connection(TokioIo::new(tls), service)
                 .with_upgrades()
-                .await;
+                .await
+                .is_err()
+            {
+                log.event(Level::Debug, "client_http_failed", Fields::default());
+            }
         });
         Ok(())
     }
@@ -216,6 +283,16 @@ impl Tunnel {
         let req = Request::from_parts(parts, TeeBody::new(body, tap.clone(), Side::Request));
         let sent = self.send_upstream(req).await;
         let Ok(mut res) = sent else {
+            self.proxy.logging.event(
+                Level::Warn,
+                "upstream_request_failed",
+                Fields {
+                    exchange: tap.as_ref().map(ExchangeTap::exchange_id),
+                    adapter: Some(self.adapter.name()),
+                    status: Some(502),
+                    ..Fields::default()
+                },
+            );
             return Ok(empty_response(StatusCode::BAD_GATEWAY));
         };
         if let Some(tap) = &tap {
@@ -223,7 +300,12 @@ impl Tunnel {
         }
         if res.status() == StatusCode::SWITCHING_PROTOCOLS {
             if let Some(client_upgrade) = client_upgrade {
-                tokio::spawn(bridge(client_upgrade, hyper::upgrade::on(&mut res), tap));
+                tokio::spawn(bridge(
+                    client_upgrade,
+                    hyper::upgrade::on(&mut res),
+                    tap,
+                    self.proxy.logging.clone(),
+                ));
             }
             return Ok(res.map(|body| body.boxed_unsync()));
         }
@@ -268,36 +350,71 @@ fn empty_response(status: StatusCode) -> Response<Out> {
     res
 }
 
-async fn bridge(client: OnUpgrade, server: OnUpgrade, tap: Option<ExchangeTap>) {
+async fn bridge(client: OnUpgrade, server: OnUpgrade, tap: Option<ExchangeTap>, log: Logger) {
     let (Ok(client), Ok(server)) = (client.await, server.await) else {
+        log.event(Level::Warn, "websocket_upgrade_failed", Fields::default());
         return;
     };
     let (client_read, client_write) = tokio::io::split(TokioIo::new(client));
     let (server_read, server_write) = tokio::io::split(TokioIo::new(server));
     tokio::join!(
-        pump(client_read, server_write, tap.clone(), true),
-        pump(server_read, client_write, tap, false)
+        pump(
+            client_read,
+            server_write,
+            Pump {
+                tap: tap.clone(),
+                from_client: true,
+                log: log.clone()
+            }
+        ),
+        pump(
+            server_read,
+            client_write,
+            Pump {
+                tap,
+                from_client: false,
+                log
+            }
+        )
     );
 }
 
-async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
-    mut from: R,
-    mut to: W,
+struct Pump {
     tap: Option<ExchangeTap>,
     from_client: bool,
-) {
+    log: Logger,
+}
+
+async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(mut from: R, mut to: W, context: Pump) {
     let mut buf = vec![0u8; 16 * 1024];
-    while let Ok(n @ 1..) = from.read(&mut buf).await {
+    loop {
+        let n = match from.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(error) => {
+                context.log.event(Level::Warn, "stream_read_failed", Fields::io(&error));
+                break;
+            }
+        };
         let received_at = Instant::now();
-        if to.write_all(&buf[..n]).await.is_err() || to.flush().await.is_err() {
+        if let Err(error) = to.write_all(&buf[..n]).await {
+            context
+                .log
+                .event(Level::Warn, "stream_write_failed", Fields::io(&error));
             break;
         }
-        if let Some(tap) = &tap {
+        if let Err(error) = to.flush().await {
+            context
+                .log
+                .event(Level::Warn, "stream_flush_failed", Fields::io(&error));
+            break;
+        }
+        if let Some(tap) = &context.tap {
             tap.stats.chunk_handed_on(received_at.elapsed());
-            if !from_client {
+            if !context.from_client {
                 tap.stats.response_chunk_arrived(n);
             }
-            tap.send_ws_bytes(from_client, Bytes::copy_from_slice(&buf[..n]));
+            tap.send_ws_bytes(context.from_client, Bytes::copy_from_slice(&buf[..n]));
         }
     }
     let _ = to.shutdown().await;

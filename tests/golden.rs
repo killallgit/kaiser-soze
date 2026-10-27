@@ -1,13 +1,13 @@
 //! Pins the bytes of the tap file. Synthetic exchanges run end to end through `Exchanges::begin`,
 //! and the file they write is compared as raw text with the golden files in `tests/golden/`.
-//! The clock digits are replaced by a zero, so every other byte, key order included, must match.
+//! Clock digits and the random run id are normalised; every other byte, key order included, must match.
 //! Set `SOZE_BLESS_GOLDEN` to write the golden files from the current code.
 
 use bytes::Bytes;
 use kaiser_soze::adapter::{Adapter, RequestHead, TapInput};
 use kaiser_soze::claude::ClaudeAdapter;
 use kaiser_soze::codex::CodexAdapter;
-use kaiser_soze::exchange::{ExchangeTap, Exchanges, Opening};
+use kaiser_soze::exchange::{ExchangeTap, Exchanges, Opening, TapOutput};
 use kaiser_soze::label::Label;
 use kaiser_soze::note::{self, Note};
 use kaiser_soze::project::{ProjectCache, ProjectLookups};
@@ -73,8 +73,12 @@ impl Recording {
             "[remote \"origin\"]\n\turl = https://example.com/owner/repo.git\n",
         )
         .unwrap();
-        let sink = Sink::open(&dir.path().join("tap.jsonl")).await.unwrap();
-        let exchanges = Exchanges::new(sink, None, ProjectLookups::new(ProjectCache::default()));
+        let sink = Sink::open_with(&dir.path().join("tap.jsonl"), None).await.unwrap();
+        let exchanges = Exchanges::new(
+            TapOutput::new(sink).unwrap(),
+            None,
+            ProjectLookups::new(ProjectCache::default()),
+        );
         Self {
             dir,
             repo,
@@ -136,6 +140,9 @@ impl Recording {
 
     fn normalised(&self) -> String {
         let mut text = self.written().replace(&self.repo.display().to_string(), "/golden/repo");
+        let first: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        let run_id = first["run_id"].as_str().unwrap();
+        text = text.replace(&format!(r#""run_id":"{run_id}""#), r#""run_id":"run-synthetic""#);
         for key in CLOCK_KEYS {
             text = zero_digits_after(&text, key);
         }

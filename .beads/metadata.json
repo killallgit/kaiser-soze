@@ -1,7 +1,0 @@
-{
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "kaiser_soze",
-  "project_id": "42223ea5-022c-4366-8d32-1686d1e871d2"
-}

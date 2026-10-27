@@ -1,10 +1,11 @@
 use crate::line::Line;
 use crate::live::Live;
+use crate::logging::{Fields, Level, Logger};
 use serde::Serialize;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 const SINK_QUEUE: usize = 4096;
@@ -25,47 +26,90 @@ impl<T> Clone for Sink<T> {
 
 impl<T: Serialize + Send + 'static> Sink<T> {
     pub async fn open(path: &Path) -> std::io::Result<Self> {
-        Self::open_showing(path, |_| {}).await
+        Self::open_reporting(path, Logger::default()).await
+    }
+
+    pub async fn open_reporting(path: &Path, log: Logger) -> std::io::Result<Self> {
+        Self::open_showing(path, |_, _| {}, |_| {}, log).await
     }
 
     /// Opens the file; each item written is one JSON line, then handed to `shown` without waiting for anything.
     /// An item that cannot be serialised is dropped and counted, and the next one is written.
-    async fn open_showing(path: &Path, mut shown: impl FnMut(&T) + Send + 'static) -> std::io::Result<Self> {
-        let mut file = tokio::fs::OpenOptions::new()
+    async fn open_showing(
+        path: &Path,
+        prepare: impl FnMut(&mut T, u64) + Send + 'static,
+        shown: impl FnMut(&T) + Send + 'static,
+        log: Logger,
+    ) -> std::io::Result<Self> {
+        let file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
             .open(path)
-            .await?;
+            .await
+            .inspect_err(|error| {
+                log.event(Level::Error, "sink_open_failed", Fields::io(error));
+            })?;
+        Ok(Self::writing(file, prepare, shown, log))
+    }
+
+    fn writing<W: AsyncWrite + Unpin + Send + 'static>(
+        mut file: W,
+        mut prepare: impl FnMut(&mut T, u64) + Send + 'static,
+        mut shown: impl FnMut(&T) + Send + 'static,
+        log: Logger,
+    ) -> Self {
         let (tx, mut rx) = mpsc::channel::<T>(SINK_QUEUE);
         let dropped = Arc::<AtomicU64>::default();
         let unwritable = dropped.clone();
         tokio::spawn(async move {
-            while let Some(record) = rx.recv().await {
+            let mut emitted = 0u64;
+            while let Some(mut record) = rx.recv().await {
+                let Some(sequence) = emitted.checked_add(1) else {
+                    log.event(Level::Error, "sequence_exhausted", Fields::default());
+                    break;
+                };
+                prepare(&mut record, sequence);
                 let Ok(mut line) = serde_json::to_string(&record) else {
                     unwritable.fetch_add(1, Ordering::Relaxed);
+                    log.event(Level::Warn, "sink_encode_failed", Fields::default());
                     continue;
                 };
+                emitted = sequence;
                 line.push('\n');
-                if file.write_all(line.as_bytes()).await.is_err() || file.flush().await.is_err() {
+                if let Err(error) = file.write_all(line.as_bytes()).await {
+                    log.event(Level::Error, "sink_write_failed", Fields::io(&error));
+                    break;
+                }
+                if let Err(error) = file.flush().await {
+                    log.event(Level::Error, "sink_flush_failed", Fields::io(&error));
                     break;
                 }
                 shown(&record);
             }
         });
-        Ok(Self { tx, dropped })
+        Self { tx, dropped }
     }
 }
 
 impl Sink<Line> {
     /// Opens the tap file; each line written is also shown by `live`, after the file write and
-    /// without ever waiting for it.
+    /// without ever waiting for it. The writer assigns each tap line its 1-based sequence after dequeue.
     pub async fn open_with(path: &Path, mut live: Option<Live>) -> std::io::Result<Self> {
-        Self::open_showing(path, move |line| {
-            if let Some(live) = live.as_mut() {
-                live.show(line);
-            }
-        })
+        Self::open_with_reporting(path, live.take(), Logger::default()).await
+    }
+
+    pub async fn open_with_reporting(path: &Path, mut live: Option<Live>, log: Logger) -> std::io::Result<Self> {
+        Self::open_showing(
+            path,
+            |line, sequence| line.sequence = sequence,
+            move |line| {
+                if let Some(live) = live.as_mut() {
+                    live.show(line);
+                }
+            },
+            log,
+        )
         .await
     }
 }
@@ -105,6 +149,9 @@ impl<T> Sink<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exchange::{Clock, Recorder, TapOutput};
+    use crate::line::Entry;
+    use crate::note::{Note, Tunnel};
     use serde::ser::Error;
     use serde::Serializer;
     use serde_json::{json, Value};
@@ -149,6 +196,66 @@ mod tests {
         wait_for_text(&path, "reliable").await;
     }
 
+    #[tokio::test]
+    async fn tap_sequences_follow_file_order_with_a_reliable_producer_waiting_on_a_full_queue() {
+        // It counts emissions after dequeue, sharing one sequence across producers and skipping refused inputs.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tap.jsonl");
+        let sink = Sink::open_with(&path, None).await.unwrap();
+        let output = TapOutput::new(sink.clone()).unwrap();
+        let first = Recorder::new(output.clone(), 1, "test");
+        let stamp = Clock::start().stamp();
+        let entry = Entry::Note(Note::Tunnel(Tunnel {
+            host: "synthetic.test".into(),
+            label: None,
+            port: 443,
+        }));
+        for _ in 0..SINK_QUEUE {
+            first.write(stamp, entry.clone(), (0, 0));
+        }
+        assert_eq!(first.refused(), 0);
+        first.write(stamp, entry.clone(), (0, 0));
+        assert_eq!(first.refused(), 1);
+        assert_eq!(sink.dropped(), 1);
+
+        let second = Recorder::new(output.clone(), 2, "test");
+        let mut waiting = std::pin::pin!(second.write_reliable(stamp, entry.clone()));
+        let pending = std::future::poll_fn(|cx| {
+            std::task::Poll::Ready(std::future::Future::poll(waiting.as_mut(), cx).is_pending())
+        })
+        .await;
+        assert!(pending);
+
+        let mut producers = Vec::new();
+        for exchange in 3..11 {
+            let recorder = Recorder::new(output.clone(), exchange, "test");
+            let entry = entry.clone();
+            producers.push(tokio::spawn(async move {
+                recorder.write_reliable(stamp, entry).await;
+            }));
+        }
+        waiting.await;
+        for producer in producers {
+            producer.await.unwrap();
+        }
+        Recorder::new(output, 100, "test").write_reliable(stamp, entry).await;
+        wait_for_text(&path, "\"exchange\":100,").await;
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<Value> = text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(lines.len(), SINK_QUEUE + 10);
+        assert!(lines.iter().position(|line| line["exchange"] == 2).unwrap() >= SINK_QUEUE);
+        for exchange in 2..11 {
+            assert_eq!(lines.iter().filter(|line| line["exchange"] == exchange).count(), 1);
+        }
+        assert_eq!(lines.last().unwrap()["exchange"], 100);
+        for (index, line) in lines.iter().enumerate() {
+            assert_eq!(line["sequence"].as_u64(), Some(index as u64 + 1));
+            assert_eq!(line["run_id"], lines[0]["run_id"]);
+        }
+        assert_eq!(sink.dropped(), 1);
+    }
+
     enum Item {
         Plain(u8),
         Unserialisable,
@@ -177,5 +284,73 @@ mod tests {
         wait_for_text(&path, "2").await;
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "1\n2\n");
         assert_eq!(sink.dropped(), 1);
+    }
+
+    struct FailingWriter {
+        flush: bool,
+    }
+
+    impl tokio::io::AsyncWrite for FailingWriter {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(if self.flush {
+                Ok(bytes.len())
+            } else {
+                Err(std::io::ErrorKind::StorageFull.into())
+            })
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(if self.flush {
+                Err(std::io::ErrorKind::PermissionDenied.into())
+            } else {
+                Ok(())
+            })
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn disk_write_and_flush_failures_are_reported_through_an_independent_log() {
+        use crate::logging::{Format, Logger, Settings};
+        use tokio::io::AsyncReadExt;
+        for (flush, event, kind) in [
+            (false, "sink_write_failed", "storage_full"),
+            (true, "sink_flush_failed", "permission_denied"),
+        ] {
+            let (writer, mut reader) = tokio::io::duplex(8192);
+            let log = Logger::new(
+                writer,
+                Settings {
+                    format: Format::Json,
+                    ..Settings::default()
+                },
+            );
+            let sink = Sink::writing(FailingWriter { flush }, |_: &mut Value, _| {}, |_| {}, log.clone());
+            assert!(sink.write_reliable(json!({"body": "synthetic private capture"})).await);
+            drop(sink);
+            drop(log);
+            let mut output = String::new();
+            tokio::time::timeout(std::time::Duration::from_secs(2), reader.read_to_string(&mut output))
+                .await
+                .unwrap()
+                .unwrap();
+            let records: Vec<Value> = output.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0]["level"], "error");
+            assert_eq!(records[0]["event"], event);
+            assert_eq!(records[0]["error_kind"], kind);
+            assert!(records[0].get("body").is_none());
+        }
     }
 }

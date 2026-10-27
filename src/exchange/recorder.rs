@@ -1,8 +1,8 @@
 use super::clock::Stamp;
+use super::TapOutput;
 use crate::graph::{Edge, Identity, Place, Step, Threads};
 use crate::line::{Entry, Line};
 use crate::record::Record;
-use crate::sink::Sink;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -16,7 +16,7 @@ type ProjectLookup = Option<Option<String>>;
 
 #[derive(Clone)]
 pub struct Recorder {
-    pub sink: Sink<Line>,
+    pub(super) output: TapOutput,
     pub exchange: u64,
     pub adapter: &'static str,
     pub(super) refused: Arc<AtomicU64>,
@@ -27,9 +27,9 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    pub fn new(sink: Sink<Line>, exchange: u64, adapter: &'static str) -> Self {
+    pub fn new(output: TapOutput, exchange: u64, adapter: &'static str) -> Self {
         Self {
-            sink,
+            output,
             exchange,
             adapter,
             refused: Arc::default(),
@@ -98,6 +98,8 @@ impl Recorder {
 
     fn line(&self, stamp: Stamp, entry: Entry, offsets: (u64, u64)) -> Line {
         Line {
+            run_id: self.output.run_id.clone(),
+            sequence: 0,
             exchange: self.exchange,
             adapter: self.adapter,
             mono_us: stamp.mono_us,
@@ -110,14 +112,18 @@ impl Recorder {
 
     /// Writes a line the sink may refuse; a refused line is counted.
     pub fn write(&self, stamp: Stamp, entry: Entry, offsets: (u64, u64)) {
-        if !self.sink.write(self.line(stamp, entry, offsets)) {
+        let line = self.line(stamp, entry, offsets);
+        self.output.logging.tap(&line);
+        if !self.output.sink.write(line) {
             self.refused.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     /// Writes a line that waits for room in the sink rather than being refused.
     pub async fn write_reliable(&self, stamp: Stamp, entry: Entry) {
-        self.sink.write_reliable(self.line(stamp, entry, (0, 0))).await;
+        let line = self.line(stamp, entry, (0, 0));
+        self.output.logging.tap(&line);
+        self.output.sink.write_reliable(line).await;
     }
 
     pub(super) async fn write_edge(&self, stamp: Stamp, edge: Edge) {

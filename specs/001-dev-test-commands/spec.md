@@ -103,7 +103,7 @@ A new contributor learns which tasks exist and what each does from the README an
 ### Edge Cases
 
 - A check fails early. `task check` must still report every failing check in one run, so one run shows all fixes needed.
-- `task dev` runs long. It must stop at the bounded-run limits in the constitution (default 300 s, never above 600 s).
+- `task dev` is a shared service. It runs until explicitly stopped; callers bound separate smoke tests rather than imposing a service lifetime.
 - A task runs from a directory other than the repo root. Tasks must work from any directory inside the repo.
 - Integration tests need no network or real credentials. They must pass offline, including in CI.
 - A task body grows past a few lines. Its logic moves to a script under `scripts/`, and the task calls the script.
@@ -121,7 +121,7 @@ A new contributor learns which tasks exist and what each does from the README an
 - **FR-007**: `task dev` MUST start the proxy and print its listening address and CA file path.
 - **FR-008**: `task dev` MUST NOT install the CA into a trust store and MUST NOT write under agent folders.
 - **FR-009**: Every task MUST work from any directory inside the repo.
-- **FR-010**: `task dev` MUST be bounded by the constitution's run limits. Other tasks end on their own; callers wrap them in `timeout` as the constitution requires.
+- **FR-010**: `task dev` MUST stay running until explicitly stopped, per the user's service-lifetime decision. Automated tests and smoke runs remain bounded by their callers.
 - **FR-011**: CI MUST run on every pull request and on every push to `main`, and MUST report pass or fail on the pull request.
 - **FR-012**: CI MUST run the same checks as `task check` (formatting, lint with warnings as errors, all tests) using standard Rust steps. CI MUST NOT install or call Task.
 - **FR-013**: The README MUST list every task with one line of purpose. `AGENTS.md` MUST name `task check` in place of the chained checks.

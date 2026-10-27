@@ -1,6 +1,6 @@
 # Quickstart: Validate Dev and Test Commands
 
-Prerequisites: `task` installed, Rust toolchain installed, a clean checkout of the feature branch. Contract: [contracts/tasks.md](contracts/tasks.md). Wrap each run in `timeout 300`.
+Prerequisites: `task` installed, Rust toolchain installed, a clean checkout of the feature branch. Contract: [contracts/tasks.md](contracts/tasks.md). Bound automated checks with `timeout 300`; the shared dev service runs until explicitly stopped.
 
 ## 1. List the tasks (US5, FR-013)
 
@@ -42,10 +42,10 @@ Run `task test:integration` again with the network off. Expect the same result (
 ## 5. Dev proxy (US3, SC-004)
 
 ```sh
-DEV_TIMEOUT=20 task dev
+task dev
 ```
 
-Expect: stderr shows the listening address and `ca.pem` path under `target/dev/ca`. The run stops after 20 s. Then run `DEV_TIMEOUT=601 task dev` and expect non-zero exit with no proxy started. Confirm the tap file and `ca.pem` paths it prints are both under `target/dev/`, and that `git status` shows no new file outside `target/`. Delete `target/dev/` after the run.
+Expect: stderr shows the listening address on port 48731 and the CA path `~/.config/soze/ca.pem`. Tap files are under `target/dev/`. Agents and consumer apps share this service; it stays up until explicitly stopped with Ctrl-C. For an isolated automated smoke test, choose an unused port and wrap that test invocation in an external timeout. Do not stop the shared service or delete its tap files as test cleanup.
 
 ## 6. Any directory (FR-009)
 

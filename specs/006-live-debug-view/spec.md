@@ -37,7 +37,7 @@ The wrapper tells the proxy which command and which working directory started ea
 ## User Story 3 (P2): Turn it on and off
 
 **Acceptance**
-1. `soze --live` prints the lines to standard error. Without it the proxy prints what it prints today (its `connect host:port` line per tunnel); with it, the `tunnel` line replaces that line.
+1. `soze --live` prints metadata summaries to standard error. `--stream` adds bounded event metadata; operational diagnostics use the same nonblocking logger and severity filter. See the [current CLI output contract](contracts/live-line.md).
 2. `task dev` passes `--live` by default and `LIVE=0 task dev` turns it off.
 3. Printing is best-effort and never in the way: a slow or closed terminal drops lines and counts them, and never delays forwarding or the tap file.
 4. The listening and CA lines at start-up still print first.

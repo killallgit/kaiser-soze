@@ -1,13 +1,12 @@
 use super::recorder::ProjectSignal;
-use super::{Clock, ExchangeTap, Recorder};
+use super::{Clock, ExchangeTap, Recorder, TapOutput};
 use crate::adapter::{Adapter, ExchangeParser, RequestHead};
 use crate::graph::{self, Identity, Threads};
 use crate::label::Label;
-use crate::line::{Entry, Line};
+use crate::line::Entry;
 use crate::note::{ExchangeStart, Note};
 use crate::project::ProjectLookups;
 use crate::shape::{ShapeLog, ShapedParser};
-use crate::sink::Sink;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,18 +25,18 @@ pub struct Opening<'a> {
 pub struct Exchanges {
     next_exchange: AtomicU64,
     clock: Clock,
-    sink: Sink<Line>,
+    output: TapOutput,
     shapes: Option<Arc<ShapeLog>>,
     threads: Arc<Mutex<Threads>>,
     projects: ProjectLookups,
 }
 
 impl Exchanges {
-    pub fn new(sink: Sink<Line>, shapes: Option<Arc<ShapeLog>>, projects: ProjectLookups) -> Self {
+    pub fn new(output: TapOutput, shapes: Option<Arc<ShapeLog>>, projects: ProjectLookups) -> Self {
         Self {
             next_exchange: AtomicU64::new(1),
             clock: Clock::start(),
-            sink,
+            output,
             shapes,
             threads: Arc::default(),
             projects,
@@ -49,7 +48,7 @@ impl Exchanges {
         let start = exchange_start(&opening);
         let exchange = self.next_exchange();
         let identity = opening.adapter.identity(opening.head);
-        let recorder = Recorder::new(self.sink.clone(), exchange, opening.adapter.name())
+        let recorder = Recorder::new(self.output.clone(), exchange, opening.adapter.name())
             .knowing(identity.clone())
             .awaiting_project()
             .tracking(self.threads.clone());
@@ -77,7 +76,7 @@ impl Exchanges {
 
     /// Writes one line under an exchange id of its own, for something that happened without an exchange.
     pub fn note_alone(&self, adapter: &'static str, note: Note) {
-        let recorder = Recorder::new(self.sink.clone(), self.next_exchange(), adapter);
+        let recorder = Recorder::new(self.output.clone(), self.next_exchange(), adapter);
         recorder.write(self.clock.stamp(), Entry::Note(note), (0, 0));
     }
 

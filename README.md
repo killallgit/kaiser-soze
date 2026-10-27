@@ -11,10 +11,10 @@ Hosts an adapter claims (Codex: `chatgpt.com`, `api.openai.com`; Claude Code: `a
 1. Start the proxy. It prints its port and the CA path.
 
    ```sh
-   task dev            # tap file and CA under target/dev/, stops after DEV_TIMEOUT seconds (default 300, max 600)
+   task dev            # shared proxy; tap files under target/dev/, runs until Ctrl-C
    ```
 
-   Or run the binary: `soze --tap-file out.jsonl [--shape-file shapes.jsonl] [--port 0]`. `--shape-file` writes the keys and types of each distinct request and reply event, never values. The CA is always `~/.config/soze/ca.pem`, made on first run.
+   The shared proxy stays up until explicitly stopped; agents and consumer apps can use it concurrently. There is no automatic timeout. Or run the binary: `soze --tap-file out.jsonl [--shape-file shapes.jsonl] [--log-file debug.jsonl] [--port 0]`. `--shape-file` writes the keys and types of each distinct request and reply event, never values. The CA is always `~/.config/soze/ca.pem`, made on first run.
 
 2. Run an agent through it. The CA is created on first run, is name-constrained to the adapter hosts, and is never installed into a trust store. The agent trusts it through its own variable:
 
@@ -55,19 +55,36 @@ Open a new shell, start the proxy on the wrappers' port (`task dev` uses it, or 
 
 ## The live view
 
-`task dev` prints one short line per request and per reply, so you can see traffic arriving without reading the tap file. `LIVE=0 task dev` turns it off; `soze --live` turns it on for the binary. Lines go to standard error and never hold message text, system text or tool names and inputs: only counts, token numbers, the stop reason, block kinds, and the agent command and directory.
+`task dev` prints compact request/reply metadata. Add `--stream` to see events as the stream arrives, including block indexes, delta field names and byte counts. This observes capture before disk writes; a terminal line is not proof that its tap record was persisted.
 
-```
-12:03:41  #3 codex  -> 7 msgs  4 tools  warmup  ~/Code/kaiser-soze
-12:03:44  #3 codex  <- completed  2.1s  in 1203 out 88  text,tool_call
-12:03:45  #5 none  tunnel api2.cursor.sh:443  agent
+```sh
+task dev:stream                              # compact real-time metadata, debug level by default
+task dev:stream:json                         # structured stderr for collection
+task dev -- --log-level warn                 # warnings and errors only
+LIVE=0 task dev                              # operational logs without request/reply summaries
 ```
 
-The directory comes from the wrappers: they set the proxy address to `http://<command>:<directory>@127.0.0.1:<port>` and `soze` reads it from the connection. A missing or malformed label is ignored and never affects the connection. Claude Code, Codex and Cursor's `agent` were each checked and all pass the label on. If a terminal stalls, lines are dropped and counted, and the tap file and forwarding are not delayed.
+Human output uses UTC time, a short run id, exchange id, adapter and a few metadata keys, capped at 160 characters per line. JSON keeps the full run id and numeric metadata in valid records of at most 1 KiB, excluding the newline. Message, system and reasoning text, tool names/inputs/outputs, headers and credentials are never included. For example, a delta is identified by its block index, field name and byte count; its text is not previewed.
+
+`messages` counts conversation entries in the model request, including any system/context entries and history; it does not count prompts you typed. `tools` counts available tool definitions, not executions. Structured records also give `user_messages`, `assistant_messages`, `system_messages`, `other_messages`, and `tool_calls` (calls present in request history). `unsupported` means a claimed host used an endpoint the adapter does not parse; `run=…` is a separate capture id. `adapter=none` on a `tunnel` means no adapter claims that host, so traffic passes through without decryption or parsing. These decisions do not prevent forwarding.
+
+Levels are `off`, `error`, `warn`, `info` and `debug`. `--log-level` overrides `SOZE_LOG`; otherwise the default is `info`, or `debug` with `--stream`. An explicitly selected level is respected even with `--stream`. `--log-format human|json` overrides `SOZE_LOG_FORMAT`; the default is human for a terminal and JSON otherwise. The binary accepts these same flags; `--live` enables request/reply summaries independently of `--stream`.
+
+Terminal stream detail has a budget of 20 records per one-second window; summaries and non-error operational events have a separate budget of 20. Error diagnostics bypass the rate filter but still use the bounded 256-record queue. A subsequent accepted record reports `suppressed` counts; queue/oversize losses are reported as a `log_dropped` event. A blocked or broken log destination never delays forwarding or the tap. Small startup-failure logs get a bounded drain before exit.
+
+Every dev task also writes `target/dev/debug.jsonl` through a separate logger transport. It resets when the service starts, always selects debug metadata (even with terminal logging off), and does not apply the terminal rate filter. It includes full run/exchange ids, role counts, status/timing/loss counters, and adapter `decision` reasons. `endpoint` is a known API route or `other`; arbitrary paths and query values are excluded. New files are created with mode `0600`. The binary enables this transport with `--log-file <path>`; its parent directory must already exist. Starting a second service on an occupied port leaves the active debug file intact. A debug file cannot alias the tap or shape file, including through dangling symbolic links.
+
+The debug file stops accepting records at 16 MiB per run and reports `debug_file_limit` on stderr; it resumes after the next start resets the file. Open/write/flush failures also report safe diagnostics on stderr while the proxy keeps running. Its independent 256-record queue can drop under load, and abrupt shutdown may lose queued records. This is a disposable debug log, not a durable audit trail. Tap capture files continue to append across runs and are unaffected.
+
+```sh
+tail -f target/dev/debug.jsonl               # metadata only; safe to inspect while developing
+```
+
+Operational diagnostics go to stderr independently of the tap file. Disk open/write/flush failures, TLS/upstream failures and connection failures use fixed event names and safe error categories, never raw error text. Process exit after startup failure stays bounded even if stderr is blocked. A service supervisor can collect stderr; log retention is separate from capture retention. The shared dev service continues running until explicitly stopped.
 
 ## The tap file
 
-Each line has `exchange`, `adapter`, `event`, `mono_us`, `wall_ms`, `start`, `end` and `payload`. Credential headers are redacted before anything is written.
+Each line has `run_id`, `sequence`, `exchange`, `adapter`, `event`, `mono_us`, `wall_ms`, `start`, `end` and `payload`. Credential headers are redacted before anything is written. Tap files append across runs; disk size and retention are currently unbounded.
 
 - **Live events** are written as each chunk arrives: `conversation`, `block_start`, `block_delta`, `block_stop`, `usage`, `reply_end`, `error`.
 - **`record`** is one line per reply, written when it ends, with the whole conversation and reply. `incomplete` and `dropped` are set when events were lost or the stream was cut off.
@@ -85,4 +102,12 @@ Run `task --list`. Tasks run from any directory in the repo.
 - `task test:unit -- <module>::`: unit tests; the module filter is optional.
 - `task test:integration`: integration tests only.
 - `task dev`: see above.
+- `task dev:stream`: real-time metadata in compact terminal format.
+- `task dev:stream:json`: real-time metadata as JSON logs.
 - `task test:wrappers`: shell tests for the wrappers and their installer, run under every shell installed. `task check` runs them too.
+
+## Build disk use
+
+The dev profile disables debug information and incremental compilation; tests inherit those settings. Builds keep debug assertions and overflow checks. Rebuilding changed Rust code does more work without the incremental cache, while Cargo still reuses compiled dependencies.
+
+Cargo respects your configured target directory, including a shared one. Use `cargo clean -p kaiser-soze` for package-specific cleanup. Cargo's automatic global-cache cleanup covers unused downloaded dependencies and extracted sources, not build artifacts. `target/dev/` holds capture data and must be preserved when cleaning build output.

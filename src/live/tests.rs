@@ -17,6 +17,8 @@ const T0: u64 = 43_421_000; // 12:03:41 UTC
 
 fn line(exchange: u64, adapter: &'static str, wall_ms: u64, entry: Entry) -> Line {
     Line {
+        run_id: "run-synthetic".into(),
+        sequence: 0,
         exchange,
         adapter,
         mono_us: 0,
