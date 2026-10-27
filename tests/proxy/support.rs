@@ -99,7 +99,7 @@ pub async fn start_upstream(events: Vec<String>) -> FakeUpstream {
                 let Ok(mut tls) = acceptor.accept(stream).await else {
                     return;
                 };
-                if let Some(head) = serve_sse(&mut tls, &events).await {
+                if let Some(head) = serve_upstream(&mut tls, &events).await {
                     seen_heads.lock().unwrap().push(head);
                 }
                 drop(tls);
@@ -117,7 +117,7 @@ pub async fn start_upstream(events: Vec<String>) -> FakeUpstream {
     }
 }
 
-pub async fn serve_sse<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+pub async fn serve_upstream<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     tls: &mut S,
     events: &[String],
 ) -> Option<String> {
@@ -136,6 +136,10 @@ pub async fn serve_sse<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         .map_or(0, |n| n.trim().parse().unwrap());
     let mut body = vec![0u8; body_len];
     tls.read_exact(&mut body).await.unwrap();
+    if head.contains("upgrade: websocket") {
+        super::websocket::serve(tls).await;
+        return Some(head);
+    }
     let events = if head.contains("/v1/messages") {
         anthropic_events()
     } else {
@@ -239,18 +243,26 @@ pub async fn connect_tunnel_as(proxy: SocketAddr, host: &str, auth: Option<&str>
 }
 
 pub async fn http_client(tunnel: TcpStream, host: &str, trusted: RootCertStore) -> SendRequest<Full<Bytes>> {
+    let tls = tls_client(tunnel, host, trusted).await;
+    let (sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await.unwrap();
+    tokio::spawn(connection);
+    sender
+}
+
+pub async fn tls_client(
+    tunnel: TcpStream,
+    host: &str,
+    trusted: RootCertStore,
+) -> tokio_rustls::client::TlsStream<TcpStream> {
     let config = ClientConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
         .unwrap()
         .with_root_certificates(trusted)
         .with_no_client_auth();
-    let tls = TlsConnector::from(Arc::new(config))
+    TlsConnector::from(Arc::new(config))
         .connect(ServerName::try_from(host.to_string()).unwrap(), tunnel)
         .await
-        .unwrap();
-    let (sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await.unwrap();
-    tokio::spawn(connection);
-    sender
+        .unwrap()
 }
 
 pub fn post_request(host: &str) -> Request<Full<Bytes>> {
