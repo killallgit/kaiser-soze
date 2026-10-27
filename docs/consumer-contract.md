@@ -55,24 +55,28 @@ Required behaviors, independent of transport:
 
 | Behavior | Requirement | Gap today |
 |---|---|---|
-| Identity across restarts | records keyed by `(adapter, thread, turn, step)`, plus a run id because exchange ids restart | no run id |
-| Ordering | per-exchange order is preserved; across exchanges only file order, and the file is appended across runs with no run marker, so `wall_ms` is the only cross-run hint. Live lines can be dropped while records and edges are reliable, so file order is not gap-free | no sequence number on lines |
-| Schema compatibility | every stream starts with a schema version | none written |
-| Snapshot to live | a snapshot carries the cursor it was taken at; live resumes from that cursor | no cursor |
-| Resume | a consumer resumes from `(run, sequence)`; an unknown run restarts from a fresh snapshot | no cursor |
-| Duplicates and gaps | duplicates dropped by record key; a sequence gap triggers a fresh snapshot | no key for Codex replies (no reply id) |
+| Identity across restarts | native conversation keyed by `(adapter, thread)`; capture attempts by `(run_id, exchange, step)` when the step is known | `run_id` implemented on every tap envelope; native identity is unchanged |
+| Ordering | emission/file order across exchanges, separate from model causality and producer timestamps; pre-writer drops use loss counters | writer-assigned 1-based `sequence` implemented on every tap envelope; it restarts with a new `run_id` |
+| Schema compatibility | every tap envelope carries a schema version | none written |
+| Snapshot to live | a snapshot carries the cursor it was taken at; live resumes from that cursor | cursor metadata exists; no snapshot/subscription API or atomic handoff |
+| Resume | a future consumer resumes from `(run_id, sequence)` with explicit history-unavailable / resync-required when recovery is unavailable | cursor metadata exists; no replay buffer, resume protocol or restart recovery |
+| Duplicates and gaps | delivery duplicates identified by cursor; an unfiltered same-run sequence gap reports missed emitted output | no recovery API; semantic reply deduplication still lacks Codex provider reply ids |
+| Filtered feeds | advance a watermark or signal gaps separately; skipped global values alone do not prove loss | no filtered delivery interface |
+| Durability | state the persistence and acknowledgement guarantees explicitly | queued or flushed lines do not imply fsync durability or durable acknowledgement |
 | Retention | bounded history; a consumer asking for dropped history gets a snapshot and a marker | rotation and retention are roadmap item 6 |
 | Resource use | bounded queues; a slow consumer is dropped or lagged, never waited on | already true for the tap |
 
 Plausible emit options, none approved: (1) tail the tap file with a cursor; (2) a local socket stream with replay; (3) a local HTTP stream; (4) a library the consumer embeds. Against the table: (1) is simplest but pushes rotation, cursors and snapshots onto every consumer; (2) and (3) can own cursors and handoff in the service; (4) couples consumer and proxy lifetimes. All must keep "never in the way".
 
-Walks: *join after answer* takes a snapshot then follows from its cursor; *update during handoff* is covered by that cursor; *slow consumer* is lagged and told to resync; *reconnect* resumes from its cursor; *service restart* changes the run id, so the consumer resyncs; *partial record* (`incomplete: true`) is delivered flagged, never as finished; *unavailable history* returns a snapshot and a marker.
+The implemented cursor `(run_id, sequence)` describes emitted output only. Pre-writer rejections consume no sequence numbers; `tap_dropped`, `sink_dropped`, record `dropped` and `incomplete` describe capture loss. A contiguous sequence does not prove complete capture. Sequence is not an observed-event count, native conversation identity or speech bookmark. Future replay must preserve stored cursors, and another emit target must share the ordered publication source. Today a consumer can report a gap; it cannot request a fresh snapshot.
+
+Target recovery walks, still requiring a delivery API: *join after answer* takes a snapshot then follows from its cursor; *update during handoff* is covered by that cursor; *slow consumer* is lagged and told to resync; *reconnect* resumes from its cursor if history is available; *service restart* changes the run id and starts sequence 1, requiring an explicit recovery decision; *partial record* (`incomplete: true`) is delivered flagged, never as finished; *unavailable history* returns history-unavailable / resync-required, with a snapshot only if a future API provides one.
 
 ## Assistant text (168.5)
 
 - **Eligible prose.** `text` blocks of assistant replies on a `main` thread. Excluded: `reasoning`, `tool_call`, `tool_result`, `image`, and every subagent thread by default. No commentary/final marker is observed in either harness, so soze offers none.
-- **Committed blocks vs deltas.** The record is a committed whole reply; live `block_delta` events are incremental, with block indexes local to one reply. vk assumes whole append-only blocks, so the smallest compatible change is to deliver committed blocks only: a text block is eligible once its `block_stop` arrives. The Claude `message_id` is read at `message_start` but written only on `reply_end`, after the deltas, so a live consumer cannot key deltas by it. Live text pairs with its record by `(exchange, step, index)`; `(message_id, index)` is a stable key only once the reply has ended, and Codex has no reply id yet.
-- **Traces** (synthetic): live text then its record, where the record replaces the live copy by `(exchange, step, index)`; an extended block, where a later delta of the same key appends; duplicated delivery, dropped by key (Claude Code only, and not for an interrupted reply, which has no `message_id`); a missing delta, detected by the `dropped` count and `incomplete`, so the block is not played as final; a correction, which needs revision semantics soze does not have; several replies on one Codex socket, separated by `step`.
+- **Committed blocks vs deltas.** The record is a committed whole reply; live `block_delta` events are incremental, with block indexes local to one reply. vk assumes whole append-only blocks, so the smallest compatible change is to deliver committed blocks only: a text block is eligible once its `block_stop` arrives. The Claude `message_id` is read at `message_start` but written only on `reply_end`, after the deltas, so a live consumer cannot key deltas by it. Live text pairs with its record by `(run_id, exchange, step, index)`; `(message_id, index)` is a stable key only once the reply has ended, and Codex has no reply id yet.
+- **Traces** (synthetic): live text then its record, where the record replaces the live copy by `(run_id, exchange, step, index)`; an extended block, where a later delta of the same key appends; duplicated delivery, dropped by key (Claude Code only, and not for an interrupted reply, which has no `message_id`); a missing delta, detected by the `dropped` count and `incomplete`, so the block is not played as final; a correction, which needs revision semantics soze does not have; several replies on one Codex socket, separated by `step`.
 - **Belongs in vk:** prose eligibility, speech-specific text cleanup, and the main-only default. **Must survive normalization:** thread, role, turn, step, reply id, block index, run id, and the `incomplete` flag.
 - **Smallest vk change.** None to the `Source` trait. A soze `Source` maps a turn's committed text blocks to `Event::Turn` with `finished` set by a stated rule (derived, see Lifecycle); `Newest` maps to the newest closed turn.
 
@@ -80,7 +84,7 @@ Walks: *join after answer* takes a snapshot then follows from its cursor; *updat
 
 1. Codex reply id as `message_id` on `reply_end` (from the turn boundaries doc).
 2. A thread `role`, from positive evidence only, with a live check of Claude request classes.
-3. A run id, a line sequence number and a schema version on the stream.
+3. A run id and writer-order line sequence number (implemented on every tap envelope), plus a schema version.
 4. A wrapper child-exit signal.
 
 Each is a separate change; none is started by this document.

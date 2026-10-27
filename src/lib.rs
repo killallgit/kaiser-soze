@@ -13,6 +13,7 @@ pub mod graph;
 pub mod label;
 pub mod line;
 pub mod live;
+pub mod logging;
 pub mod message;
 pub mod note;
 pub mod project;

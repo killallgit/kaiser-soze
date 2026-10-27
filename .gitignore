@@ -4,6 +4,9 @@
 *.jsonl
 !/tests/golden/*.jsonl
 
+# Local task state, included in new worktrees through .worktreeinclude.
+/.beads/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db

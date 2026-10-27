@@ -37,6 +37,16 @@ tasks:
       - scripts/wrappers.sh uninstall {{.CLI_ARGS}}
 
   dev:
-    desc: Start the proxy with a scratch tap file and CA under target/dev; stops after DEV_TIMEOUT seconds (default 300, max 600)
+    desc: Run the shared proxy until stopped; pass -- --stream for real-time metadata
     cmds:
-      - scripts/dev.sh
+      - scripts/dev.sh {{.CLI_ARGS}}
+
+  dev:stream:
+    desc: Run the shared proxy with compact real-time terminal metadata
+    cmds:
+      - scripts/dev.sh --stream --log-format human {{.CLI_ARGS}}
+
+  dev:stream:json:
+    desc: Run the shared proxy with real-time metadata as JSON logs
+    cmds:
+      - scripts/dev.sh --stream --log-format json {{.CLI_ARGS}}

@@ -42,8 +42,8 @@ struct Fixture {
 async fn blocked_tap() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
-    let sink = Sink::open(&tap_file).await.unwrap();
-    let recorder = Recorder::new(sink, 1, "test");
+    let sink = Sink::open_with(&tap_file, None).await.unwrap();
+    let recorder = Recorder::new(TapOutput::new(sink).unwrap(), 1, "test");
     let (release, receiver) = std::sync::mpsc::channel();
     let messages_seen = Arc::new(AtomicUsize::new(0));
     let parser = BlocksUntilReleased {
@@ -116,8 +116,8 @@ async fn exchange_end_reports_records_the_sink_had_to_drop() {
     // It reports a non-zero sink_dropped when the sink queue overflowed
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
-    let sink = Sink::open(&tap_file).await.unwrap();
-    let recorder = Recorder::new(sink, 1, "test");
+    let sink = Sink::open_with(&tap_file, None).await.unwrap();
+    let recorder = Recorder::new(TapOutput::new(sink).unwrap(), 1, "test");
     let (_release, receiver) = std::sync::mpsc::channel();
     let parser = BlocksUntilReleased {
         release: receiver,
@@ -197,7 +197,11 @@ async fn run_to_the_end(events: Vec<TapEvent>) -> Vec<Value> {
 async fn run_recorded(events: Vec<TapEvent>, configure: impl FnOnce(Recorder) -> Recorder) -> Vec<Value> {
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
-    let recorder = configure(Recorder::new(Sink::open(&tap_file).await.unwrap(), 1, "test"));
+    let recorder = configure(Recorder::new(
+        TapOutput::new(Sink::open_with(&tap_file, None).await.unwrap()).unwrap(),
+        1,
+        "test",
+    ));
     let tap = ExchangeTap::spawn(recorder, Clock::start(), Box::new(Emits { events, release: None }));
 
     tap.send(TapInput::ResponseEnd);
@@ -565,7 +569,8 @@ fn written_edges(lines: &[Value]) -> Vec<Edge> {
 async fn race_one_thread(replies: Vec<Vec<TapEvent>>, late: Option<usize>) -> Vec<Edge> {
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
-    let sink = Sink::open(&tap_file).await.unwrap();
+    let sink = Sink::open_with(&tap_file, None).await.unwrap();
+    let output = TapOutput::new(sink).unwrap();
     let threads = Arc::new(Mutex::new(Threads::default()));
     let known = Identity {
         thread: Some("t1".into()),
@@ -574,7 +579,7 @@ async fn race_one_thread(replies: Vec<Vec<TapEvent>>, late: Option<usize>) -> Ve
     let count = replies.len();
     let mut taps = Vec::new();
     for (index, events) in replies.into_iter().enumerate() {
-        let mut recorder = Recorder::new(sink.clone(), index as u64 + 1, "test")
+        let mut recorder = Recorder::new(output.clone(), index as u64 + 1, "test")
             .knowing(known.clone())
             .tracking(threads.clone());
         if late == Some(index) {
@@ -749,7 +754,7 @@ async fn a_lookup_that_finds_nothing_lets_the_record_go_without_waiting() {
 async fn a_reliable_write_waits_for_room_in_a_full_queue() {
     // It delivers the line once the queue drains, where a plain write would drop it
     let (sink, mut drained) = Sink::detached(1);
-    let recorder = Recorder::new(sink, 1, "test");
+    let recorder = Recorder::new(TapOutput::new(sink).unwrap(), 1, "test");
     recorder.write(Clock::start().stamp(), filler(), (0, 0));
     let writer = recorder.clone();
     let edge = Entry::Edge(graph::Edge::new(EdgeKind::InThread, "exchange:1", "thread:t1"));
@@ -794,7 +799,7 @@ async fn closing_before_the_reply_ends_writes_one_incomplete_record() {
 async fn a_record_is_written_when_the_sink_refuses_live_lines_and_counts_them() {
     // It waits for room, so the record is not lost, and reports the refused live lines
     let (sink, mut drained) = Sink::detached(3);
-    let recorder = Recorder::new(sink, 1, "test");
+    let recorder = Recorder::new(TapOutput::new(sink).unwrap(), 1, "test");
     let tap = ExchangeTap::spawn(
         recorder,
         Clock::start(),
@@ -822,6 +827,21 @@ async fn a_record_is_written_when_the_sink_refuses_live_lines_and_counts_them() 
     };
     assert!(record.dropped > 0);
     assert!(record.incomplete);
+
+    // These accepted lines have incomplete capture even though their emitted cursors are contiguous.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tap.jsonl");
+    let sink = Sink::open_with(&path, None).await.unwrap();
+    let count = written.len();
+    for line in written {
+        assert!(sink.write_reliable(line).await);
+    }
+    wait_for_exchange_end(&path).await;
+    let emitted = lines(&path);
+    assert_eq!(emitted.len(), count);
+    for (index, line) in emitted.iter().enumerate() {
+        assert_eq!(line["sequence"].as_u64(), Some(index as u64 + 1));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -829,7 +849,11 @@ async fn a_stalled_parser_gives_an_incomplete_record_that_counts_the_dropped_inp
     // It adds the inputs the full queue refused to the record's dropped count
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
-    let recorder = Recorder::new(Sink::open(&tap_file).await.unwrap(), 1, "test");
+    let recorder = Recorder::new(
+        TapOutput::new(Sink::open_with(&tap_file, None).await.unwrap()).unwrap(),
+        1,
+        "test",
+    );
     let (release, receiver) = std::sync::mpsc::channel();
     let tap = ExchangeTap::spawn(
         recorder,
@@ -912,8 +936,8 @@ fn begin(exchanges: &Exchanges, adapter: &dyn Adapter, label: Option<&Label>) ->
 }
 
 async fn exchanges_writing_to(dir: &tempfile::TempDir, projects: ProjectLookups) -> Exchanges {
-    let sink = Sink::open(&dir.path().join("tap.jsonl")).await.unwrap();
-    Exchanges::new(sink, None, projects)
+    let sink = Sink::open_with(&dir.path().join("tap.jsonl"), None).await.unwrap();
+    Exchanges::new(TapOutput::new(sink).unwrap(), None, projects)
 }
 
 async fn written_lines(dir: &tempfile::TempDir, count: usize) -> Vec<Value> {
@@ -1051,7 +1075,11 @@ struct NotedHead {
 async fn note_response_head(response: hyper::Response<()>) -> NotedHead {
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
-    let recorder = Recorder::new(Sink::open(&tap_file).await.unwrap(), 1, "test");
+    let recorder = Recorder::new(
+        TapOutput::new(Sink::open_with(&tap_file, None).await.unwrap()).unwrap(),
+        1,
+        "test",
+    );
     let heard = Arc::default();
     let tap = ExchangeTap::spawn(
         recorder,

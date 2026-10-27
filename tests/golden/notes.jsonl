@@ -1,4 +1,4 @@
-{"adapter":"claude","end":0,"event":"unsupported","exchange":1,"mono_us":0,"payload":{"host":"other.test","label":{"command":"claude","dir":"/golden/repo"},"path":"/v1/other"},"start":0,"wall_ms":0}
-{"adapter":"claude","end":0,"event":"unsupported","exchange":2,"mono_us":0,"payload":{"host":"other.test","path":"/v1/other"},"start":0,"wall_ms":0}
-{"adapter":"none","end":0,"event":"tunnel","exchange":3,"mono_us":0,"payload":{"host":"tunnel.test","label":{"command":"claude","dir":"/golden/repo"},"port":443},"start":0,"wall_ms":0}
-{"adapter":"none","end":0,"event":"tunnel","exchange":4,"mono_us":0,"payload":{"host":"tunnel.test","port":443},"start":0,"wall_ms":0}
+{"adapter":"claude","end":0,"event":"unsupported","exchange":1,"mono_us":0,"payload":{"host":"other.test","label":{"command":"claude","dir":"/golden/repo"},"path":"/v1/other"},"run_id":"run-synthetic","sequence":1,"start":0,"wall_ms":0}
+{"adapter":"claude","end":0,"event":"unsupported","exchange":2,"mono_us":0,"payload":{"host":"other.test","path":"/v1/other"},"run_id":"run-synthetic","sequence":2,"start":0,"wall_ms":0}
+{"adapter":"none","end":0,"event":"tunnel","exchange":3,"mono_us":0,"payload":{"host":"tunnel.test","label":{"command":"claude","dir":"/golden/repo"},"port":443},"run_id":"run-synthetic","sequence":3,"start":0,"wall_ms":0}
+{"adapter":"none","end":0,"event":"tunnel","exchange":4,"mono_us":0,"payload":{"host":"tunnel.test","port":443},"run_id":"run-synthetic","sequence":4,"start":0,"wall_ms":0}

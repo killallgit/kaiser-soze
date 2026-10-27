@@ -2,6 +2,28 @@
 
 Consumer: any application that reads the JSONL tap file. One JSON object per line. Every line has the envelope in [data-model.md](../data-model.md). Only `event` and `payload` differ.
 
+## Envelope
+
+Every tap line carries a nonempty string `run_id`, including `tunnel`, `unsupported`, `edge`, `record` and `exchange_end`. It is an opaque random capture identity generated once before a Proxy instance can emit a line and shared by all its exchanges and cloned recorders. The writer uses 128 random bits encoded as hexadecimal; consumers treat the string as opaque. A new Proxy instance gets a fresh identity even when it appends to the same tap file and starts again at exchange 1. Generation uses the existing crypto provider at startup, never the forwarding path.
+
+Identity scopes remain separate:
+
+- Native conversation: `(adapter, thread)`. Session and thread ids are unchanged across capture epochs when the harness sends the same ids.
+- Capture attempt: `(run_id, exchange, step)` when the step is known; `(run_id, exchange)` identifies the exchange even for anonymous or unread traffic.
+- Graph nodes named `exchange:<n>` and `step:<exchange>.<n>` are scoped to the enclosing line's `run_id`; their bare names are not globally unique.
+
+The capture identity is independent of native harness sessions and wrapper run attribution. Diagnostic `--shape-file` output has its own format and carries neither `run_id` nor `sequence`.
+
+## Delivery cursor
+
+Every emitted tap envelope carries a `sequence`: a strictly increasing, 1-based integer scoped to its `run_id`. The single tap writer assigns it after dequeue, before encoding, so `(run_id, sequence)` describes emission/file order across all exchanges, including reliable writes that waited for queue space. A new proxy run starts at sequence 1 with a fresh `run_id`, even when appending to the same file. No sequence allocation, locks or waits are added to forwarding.
+
+- Sequence describes delivery order, not model causality, producer timestamp order, an observed-event count or speech playback progress.
+- Refused inputs before the writer consume no sequence numbers. Capture loss is described by `tap_dropped`, `sink_dropped`, record `dropped` and `incomplete`. Contiguous emitted cursors can coexist with incomplete capture.
+- A gap between consecutive cursors of the same run on an unfiltered feed indicates missed emitted output for that consumer. Report the gap; a snapshot API does not yet exist.
+- Filtering by adapter, thread or event may legitimately skip global sequence values. A future filtered delivery interface must advance a watermark or signal gaps separately; skipped values in a filtered view alone do not prove loss.
+- A cursor supplies ordering metadata, not a replay buffer, snapshot, retention, restart recovery, durable acknowledgement or exactly-once delivery. Queueing and flushing do not imply fsync durability. Future replay must preserve stored cursors rather than re-stamp lines, and unavailable history must be explicit. Another emit target would need the same ordered publication source.
+
 ## Live events (`event` value → `payload`)
 
 | `event` | `payload` | When |
@@ -28,7 +50,7 @@ Consumer: any application that reads the JSONL tap file. One JSON object per lin
 
 ## Guarantees
 
-- Within an exchange, lines appear in the order the events occurred.
+- Within an exchange identified by `(run_id, exchange)`, lines appear in the order the events occurred.
 - A `record` line is written once per reply, when the reply ends. If an exchange ends while a reply is open (a cut-off stream), one more `record` is written for it. A Claude Code exchange has one reply; a Codex WebSocket can have many.
 - A `record` line (and the closing `exchange_end` line) is not lost because the output queue is busy. Live lines may be dropped there and counted; the `record` waits for room. The one live line that is refused while its own `record` is being built is not in that record's `dropped` count.
 - A `record` equals the fold of its reply's live events, plus the `project`, `session` and `thread` ids of its exchange when known. For an incomplete record it equals the fold of the events that were written.
@@ -36,4 +58,4 @@ Consumer: any application that reads the JSONL tap file. One JSON object per lin
 - A reply item that is not text, reasoning or a tool call is left out and does not set `incomplete`.
 - Image blocks never contain bytes.
 - Credential header values never appear in any line.
-- Lines of different exchanges may interleave. The `exchange` id separates them.
+- Lines of different exchanges may interleave. `(run_id, exchange)` separates them, including in a file appended across proxy runs.

@@ -1,7 +1,8 @@
 # Quickstart
 
-1. Tests: `task test:unit -- live::`, `task test:unit -- label::`, `task test:integration`, `task test:wrappers`, then `task check`.
-2. Live: `task wrappers:install`, new shell, `task dev` in one terminal (lines print there), then `SOZE_CA_DIR=$PWD/target/dev/ca claude` or `codex exec --skip-git-repo-check "say hi"` in another. A request line and a reply line appear per call, ending with the directory.
-3. Agent check (once per agent): run each of `claude`, `codex`, `agent` through the wrapper and note whether its lines show the command and directory. Record the result in the README.
-4. Quiet: `LIVE=0 task dev`; the old `connect host:port` line is back and no other lines print.
-5. Privacy: run a call whose prompt contains a distinctive word and grep the `task dev` output for it; it must not appear. Report counts only.
+1. Synthetic tests: `task test:unit -- logging::`, `task test:unit -- live::`, `task test:integration`, `task test:wrappers`, then `task check`. Tests verify metadata arrives before the reply finishes, safe failure categories and unchanged forwarding with a stalled terminal.
+2. Development: start the shared service with `task dev:stream`. Existing wrappers use port 48731 and the stable CA at `~/.config/soze/ca.pem`. The service remains running until explicitly stopped; do not restart an active shared service just to run tests.
+3. Observe only run/exchange ids, adapter, event kinds, byte counts, indexes, usage and flags. No payload preview is printed. Rapid details are suppressed and counted to keep output bounded.
+4. Structured output: `task dev:stream:json`. Every logger line is a standalone JSON record; Task/Cargo build diagnostics are separate. A supervisor should run the built `soze` binary directly with `--log-format json`. Log records contain metadata, not captured messages or the tap schema.
+5. Debug file: every dev task resets `target/dev/debug.jsonl` on service start. `tail -f target/dev/debug.jsonl` shows metadata independently of terminal verbosity/rate filtering. Its queue is bounded and it stops at 16 MiB per run, reporting a warning on stderr. It contains role counts, tool-definition counts, adapter decisions and allowlisted endpoint names, never content or query values. Use `--log-file <path>` with the binary to enable the same transport. This is disposable debugging output, not durable audit storage.
+6. Quiet: `LIVE=0 task dev` keeps operational diagnostics on stderr. `task dev -- --log-level warn` keeps terminal warnings and errors; `--log-level off` suppresses stderr logging. The debug file continues at debug level. Supplying an explicit level also controls terminal `--stream`.

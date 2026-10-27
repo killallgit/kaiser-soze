@@ -7,7 +7,9 @@ The user-facing interface of this feature is the set of tasks. Callers: contribu
 | `task check` | none | Runs `fmt`, `clippy` (warnings are errors) and `test`. Runs all three even after a failure. Prints the names of failed checks. | 0 if all pass, else non-zero |
 | `task test:unit` | optional `-- <filter>`, e.g. `-- sse::` | Runs only the unit tests in `src/`. The filter limits the run to matching tests. | cargo's test status |
 | `task test:integration` | none | Runs only the tests in `tests/`. Needs no network or credentials. | cargo's test status |
-| `task dev` | env `DEV_TIMEOUT` seconds, default 300, maximum 600 | Starts `soze` with the tap file in `target/dev/tap.jsonl` and the CA dir in `target/dev/ca`. The binary prints the listening address and CA path. Stops after the timeout or on interrupt. | 0 on interrupt or timeout stop, non-zero if the proxy fails to start or `DEV_TIMEOUT` is above 600 |
+| `task dev` | env `SOZE_PORT` (default 48731), `LIVE=0` to disable live summaries; flags after `--`, including `--stream`, `--log-level`, `--log-format` and `--log-file` | Builds and starts the shared debug proxy through `cargo run`, with tap files under `target/dev/` and CA under `~/.config/soze/`. Resets metadata-only `target/dev/debug.jsonl` on startup (16 MiB per-run cap). Logs the listening port and CA path. Runs until explicitly stopped; no automatic timeout. | Cargo/proxy exit status, including startup failure or interruption |
+| `task dev:stream` | same environment as `dev`; optional flags after `--` | Runs the same shared dev script with `--stream --log-format human`. | Same as `dev` |
+| `task dev:stream:json` | same environment as `dev`; optional flags after `--` | Runs the same shared dev script with `--stream --log-format json`. | Same as `dev` |
 
 ## Guarantees
 

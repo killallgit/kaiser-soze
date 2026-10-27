@@ -29,6 +29,9 @@ pub struct ExchangeTap {
 }
 
 impl ExchangeTap {
+    pub fn exchange_id(&self) -> u64 {
+        self.recorder.exchange
+    }
     pub fn spawn(recorder: Recorder, clock: Clock, parser: Box<dyn ExchangeParser>) -> Self {
         let (tx, rx) = mpsc::channel(TAP_QUEUE);
         let stats = Arc::new(Stats::new());
@@ -132,6 +135,6 @@ async fn run_parser(
     if let Some(record) = assembler.finish(dropped()) {
         recorder.write_record(clock.stamp(), record).await;
     }
-    let end = Note::ExchangeEnd(stats.summary(recorder.sink.dropped()));
+    let end = Note::ExchangeEnd(stats.summary(recorder.output.sink.dropped()));
     recorder.write_reliable(clock.stamp(), Entry::Note(end)).await;
 }
