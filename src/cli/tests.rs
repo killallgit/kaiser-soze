@@ -1,0 +1,329 @@
+use super::*;
+use kaiser_soze::logging::{Format, Level};
+use std::path::Path;
+
+#[test]
+fn stream_selects_debug_without_an_explicit_level() {
+    let args = parse_args_from(
+        ["--tap-file", "synthetic.jsonl", "--stream"].map(String::from),
+        Sources::new(Format::Human),
+    )
+    .unwrap();
+    assert!(args.logging().stream);
+    assert_eq!(args.logging().level, Level::Debug);
+}
+
+#[test]
+fn explicit_logging_options_override_stream_defaults() {
+    let args = parse_args_from(
+        [
+            "--tap-file",
+            "synthetic.jsonl",
+            "--stream",
+            "--log-level",
+            "warn",
+            "--log-format",
+            "json",
+        ]
+        .map(String::from),
+        Sources::new(Format::Human),
+    )
+    .unwrap();
+    assert_eq!(args.logging().level, Level::Warn);
+    assert_eq!(args.logging().format, Format::Json);
+}
+
+#[test]
+fn invalid_logging_values_and_unknown_flags_are_rejected() {
+    for flags in [
+        ["--log-level", "verbose"],
+        ["--log-format", "xml"],
+        ["--unknown", "value"],
+    ] {
+        assert!(parse_args_from(
+            ["--tap-file", "synthetic.jsonl"]
+                .into_iter()
+                .chain(flags)
+                .map(String::from),
+            Sources::new(Format::Human)
+        )
+        .is_err());
+    }
+}
+
+#[test]
+fn debug_file_is_optional_and_can_be_named() {
+    let args = parse_args_from(
+        ["--tap-file", "synthetic.jsonl", "--log-file", "debug.jsonl"].map(String::from),
+        Sources::new(Format::Human),
+    )
+    .unwrap();
+    assert_eq!(args.log_file, Some(PathBuf::from("debug.jsonl")));
+    let args = parse_args_from(
+        ["--tap-file", "synthetic.jsonl"].map(String::from),
+        Sources::new(Format::Human),
+    )
+    .unwrap();
+    assert!(args.log_file.is_none());
+}
+
+#[test]
+fn a_debug_file_cannot_overwrite_capture_files_or_their_aliases() {
+    let dir = tempfile::tempdir().unwrap();
+    let tap = dir.path().join("tap.jsonl");
+    let alias = dir.path().join("alias.jsonl");
+    std::fs::write(&tap, b"synthetic capture\n").unwrap();
+    std::fs::hard_link(&tap, &alias).unwrap();
+    for log in [&tap, &alias] {
+        let args = parse_args_from(
+            [
+                "--tap-file".into(),
+                tap.display().to_string(),
+                "--log-file".into(),
+                log.display().to_string(),
+            ],
+            Sources::new(Format::Human),
+        );
+        assert!(args.is_err());
+    }
+    assert_eq!(std::fs::metadata(&tap).unwrap().len(), 18);
+}
+
+#[test]
+fn a_new_debug_file_cannot_share_a_relative_capture_path() {
+    let tap = format!("synthetic-absent-{}.jsonl", std::process::id());
+    assert!(!Path::new(&tap).exists());
+    let args = parse_args_from(
+        [
+            "--tap-file".into(),
+            tap.clone(),
+            "--log-file".into(),
+            format!("./{tap}"),
+        ],
+        Sources::new(Format::Human),
+    );
+    assert!(args.is_err());
+}
+
+#[test]
+fn dangling_symlinks_cannot_join_debug_and_capture_destinations() {
+    for capture_flag in ["--tap-file", "--shape-file"] {
+        for link_is_debug in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let capture = dir.path().join("capture.jsonl");
+            let debug = dir.path().join("debug.jsonl");
+            let (target, link) = if link_is_debug {
+                (&capture, &debug)
+            } else {
+                (&debug, &capture)
+            };
+            std::os::unix::fs::symlink(target.file_name().unwrap(), link).unwrap();
+            let args = parse_args_from(
+                [
+                    "--tap-file".into(),
+                    dir.path().join("tap.jsonl").display().to_string(),
+                    capture_flag.into(),
+                    capture.display().to_string(),
+                    "--log-file".into(),
+                    debug.display().to_string(),
+                ],
+                Sources::new(Format::Human),
+            );
+            assert!(args.is_err());
+            assert!(!target.exists());
+        }
+    }
+}
+
+#[test]
+fn clap_accepts_equals_syntax_and_preserves_the_last_repeated_value() {
+    let args = parse_args_from(
+        ["--tap-file=synthetic.jsonl", "--port=48731", "--port=5000"].map(String::from),
+        Sources::new(Format::Human),
+    )
+    .unwrap();
+    assert_eq!(args.port, 5000);
+    assert_eq!(args.tap_file, PathBuf::from("synthetic.jsonl"));
+}
+
+#[test]
+fn a_config_file_supplies_required_settings_and_flags_override_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        "tap_file = 'synthetic.jsonl'\nport = 48731\nstream = true\nlog_level = 'warn'\n",
+    )
+    .unwrap();
+    let args = parse_args_from(
+        [
+            "--config".to_string(),
+            path.display().to_string(),
+            "--port=5000".to_string(),
+        ],
+        Sources::new(Format::Human),
+    )
+    .unwrap();
+    assert_eq!(args.tap_file, PathBuf::from("synthetic.jsonl"));
+    assert_eq!(args.port, 5000);
+    assert!(args.logging().stream);
+    assert_eq!(args.logging().level, Level::Warn);
+}
+
+#[test]
+fn optional_files_layer_in_order_without_erasing_unspecified_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let system = dir.path().join("system.toml");
+    let user = dir.path().join("user.toml");
+    std::fs::write(&system, "tap_file = 'synthetic.jsonl'\nport = 3001\nlive = true\n").unwrap();
+    std::fs::write(&user, "port = 3002\nstream = true\n").unwrap();
+    let mut sources = Sources::new(Format::Json);
+    sources.files = vec![dir.path().join("absent.toml"), system, user];
+    let args = parse_args_from(Vec::<String>::new(), sources).unwrap();
+    assert_eq!(args.port, 3002);
+    assert_eq!(args.tap_file, PathBuf::from("synthetic.jsonl"));
+    assert!(args.logging().live);
+    assert!(args.logging().stream);
+    assert_eq!(args.logging().level, Level::Debug);
+    assert_eq!(args.logging().format, Format::Json);
+}
+
+#[test]
+fn flags_override_environment_and_environment_overrides_file_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("config.toml");
+    std::fs::write(
+        &file,
+        "tap_file = 'synthetic.jsonl'\nlog_level = 'warn'\nlog_format = 'human'\nlive = true\nstream = true\n",
+    )
+    .unwrap();
+    let mut sources = Sources::new(Format::Human);
+    sources.environment.extend([
+        ("SOZE_LOG".into(), "debug".into()),
+        ("SOZE_LOG_FORMAT".into(), "json".into()),
+    ]);
+    let args = parse_args_from(
+        [
+            "--config".to_string(),
+            file.display().to_string(),
+            "--log-level=error".into(),
+            "--stream=false".into(),
+        ],
+        sources,
+    )
+    .unwrap();
+    assert_eq!(args.logging().level, Level::Error);
+    assert_eq!(args.logging().format, Format::Json);
+    assert!(args.logging().live);
+    assert!(!args.logging().stream);
+}
+
+#[test]
+fn valid_flags_can_override_invalid_lower_priority_environment_values() {
+    let mut sources = Sources::new(Format::Human);
+    sources.environment.insert("SOZE_LOG".into(), "invalid".into());
+    let args = parse_args_from(["--tap-file=synthetic.jsonl", "--log-level=warn"], sources).unwrap();
+    assert_eq!(args.logging().level, Level::Warn);
+}
+
+#[test]
+fn undeclared_environment_variables_do_not_become_binary_settings() {
+    let mut sources = Sources::new(Format::Human);
+    sources.environment.insert("SOZE_PORT".into(), "invalid".into());
+    let args = parse_args_from(["--tap-file=synthetic.jsonl"], sources).unwrap();
+    assert_eq!(args.port, 0);
+}
+
+#[test]
+fn malformed_unknown_and_invalid_file_settings_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    for contents in [
+        "tap_file = [",
+        "tap_file = 'synthetic.jsonl'\nport = -1\n",
+        "tap_file = 'synthetic.jsonl'\nlog_level = 'trace'\n",
+        "tap_file = 'synthetic.jsonl'\ntap_flie = 'typo'\n",
+    ] {
+        std::fs::write(&path, contents).unwrap();
+        let result = parse_args_from(
+            ["--config".to_string(), path.display().to_string()],
+            Sources::new(Format::Human),
+        );
+        assert!(matches!(result, Err(Error::Configuration(config::Error::Load(_)))));
+    }
+}
+
+#[test]
+fn explicit_configuration_replaces_implicit_discovery_and_must_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    let implicit = dir.path().join("implicit.toml");
+    let explicit = dir.path().join("explicit.toml");
+    std::fs::write(&implicit, "malformed = [").unwrap();
+    std::fs::write(&explicit, "tap_file = 'synthetic.jsonl'\n").unwrap();
+    let mut sources = Sources::new(Format::Human);
+    sources.files.push(implicit);
+    let args = parse_args_from(["--config".to_string(), explicit.display().to_string()], sources).unwrap();
+    assert_eq!(args.tap_file, PathBuf::from("synthetic.jsonl"));
+    std::fs::remove_file(&explicit).unwrap();
+    let missing = parse_args_from(
+        ["--config".to_string(), explicit.display().to_string()],
+        Sources::new(Format::Human),
+    );
+    assert!(matches!(missing, Err(Error::Configuration(config::Error::Load(_)))));
+}
+
+#[test]
+fn output_alias_validation_uses_the_merged_configuration() {
+    let dir = tempfile::tempdir().unwrap();
+    let capture = dir.path().join("tap.jsonl");
+    let alias = dir.path().join("alias.jsonl");
+    let file = dir.path().join("config.toml");
+    std::fs::write(&capture, b"synthetic capture\n").unwrap();
+    std::fs::hard_link(&capture, &alias).unwrap();
+    std::fs::write(&file, format!("tap_file = {capture:?}\nlog_file = {alias:?}\n")).unwrap();
+    let result = parse_args_from(
+        ["--config".to_string(), file.display().to_string()],
+        Sources::new(Format::Human),
+    );
+    assert!(matches!(
+        result,
+        Err(Error::Configuration(config::Error::OutputOverlap))
+    ));
+    assert_eq!(std::fs::metadata(capture).unwrap().len(), 18);
+}
+
+#[test]
+fn missing_required_capture_path_is_a_configuration_error() {
+    let result = parse_args_from(Vec::<String>::new(), Sources::new(Format::Human));
+    assert!(matches!(result, Err(Error::Configuration(config::Error::Load(_)))));
+}
+
+#[test]
+fn configuration_files_cannot_be_used_as_output_destinations() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("config.toml");
+    let alias = dir.path().join("alias.toml");
+    std::fs::write(&file, "tap_file = 'synthetic.jsonl'\n").unwrap();
+    std::fs::hard_link(&file, &alias).unwrap();
+    for flag in ["--tap-file", "--shape-file", "--log-file"] {
+        let result = parse_args_from(
+            [
+                "--config".to_string(),
+                file.display().to_string(),
+                flag.to_string(),
+                alias.display().to_string(),
+            ],
+            Sources::new(Format::Human),
+        );
+        assert!(result.is_err());
+    }
+}
+
+#[test]
+fn optional_config_paths_report_io_errors_instead_of_ignoring_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut sources = Sources::new(Format::Human);
+    sources.files.push(dir.path().to_path_buf());
+    let result = parse_args_from(["--tap-file=synthetic.jsonl"], sources);
+    assert!(matches!(result, Err(Error::Configuration(config::Error::Load(_)))));
+}

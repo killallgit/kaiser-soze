@@ -4,7 +4,7 @@ mod writer;
 
 pub use fields::Fields;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,7 +19,7 @@ const MAX_COLUMNS: usize = 160;
 const MAX_RECORD_BYTES: usize = 1024;
 const DEBUG_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
     Off,
@@ -56,7 +56,8 @@ impl FromStr for Level {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Format {
     #[default]
     Human,
