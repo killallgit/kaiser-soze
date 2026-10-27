@@ -53,6 +53,32 @@ Open a new shell, start the proxy on the wrappers' port (`task dev` uses it, or 
 - **Known limit:** the proxy address is fixed when the agent starts. If soze stops mid-session, that session loses its connection; start a new one.
 - `agent` (Cursor) gets the proxy only: its host is tunnelled, so nothing is parsed from it.
 
+## Configuration
+
+`soze --help` lists the options, and `soze --version` prints the version. Arguments are parsed with clap; config-rs loads and merges TOML settings at startup.
+
+By default, soze reads `/etc/soze/config.toml`, then `~/.config/soze/config.toml`. Missing files are skipped; existing unreadable files or malformed TOML fail startup. `--config <FILE>` reads that file instead of the default locations and requires it to exist.
+
+Values resolve in this order, highest priority first: explicit flags, declared environment variables, user file, system file, built-in defaults. Only `SOZE_LOG` (for `log_level`) and `SOZE_LOG_FORMAT` (for `log_format`) are binary environment settings. `SOZE_PORT` remains a wrapper/dev-script setting. When using `--config`, its file occupies the file position in this order.
+
+```toml
+# ~/.config/soze/config.toml, or a file selected with --config
+port = 48731
+tap_file = "out.jsonl"
+# shape_file = "shapes.jsonl"
+# log_file = "debug.jsonl"
+log_level = "info"
+log_format = "human"
+live = true
+stream = false
+```
+
+`tap_file` must be supplied by a file or flag. Unknown keys and invalid winning values are rejected; a valid higher-priority flag may override an invalid lower-priority environment value. Relative paths use the process working directory. Capture and debug outputs cannot alias the configuration inputs; the existing debug-versus-capture alias protection also applies after merging.
+
+Bare `--live` and `--stream` enable their setting; `--live=false` and `--stream=false` disable a configured value. Repeating a valued option uses its last value, so flags forwarded by `task dev -- ...` still override the script's defaults. An explicit log level wins over the stream-dependent default (`debug` with streaming, `info` otherwise); the log-format default is human on a terminal and JSON otherwise. The dev script's explicit capture paths, port and live flag take precedence over config files.
+
+Configuration is loaded once at startup. Live reload and configuration-schema versioning are separate planned work.
+
 ## The live view
 
 `task dev` prints compact request/reply metadata. Add `--stream` to see events as the stream arrives, including block indexes, delta field names and byte counts. This observes capture before disk writes; a terminal line is not proof that its tap record was persisted.
