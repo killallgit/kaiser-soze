@@ -250,7 +250,29 @@ fn malformed_unknown_and_invalid_file_settings_are_rejected() {
             Sources::new(Format::Human),
         );
         assert!(matches!(result, Err(Error::Configuration(config::Error::Load(_)))));
+        assert_eq!(result.err().unwrap().kind(), "invalid_configuration");
     }
+}
+
+#[test]
+fn missing_explicit_configuration_has_the_missing_configuration_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing.toml");
+    let error = parse_args_from(
+        ["--config".to_string(), missing.display().to_string()],
+        Sources::new(Format::Human),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.kind(), "missing_configuration");
+}
+
+#[test]
+fn other_configuration_io_failures_remain_invalid_configuration() {
+    let error = Error::Configuration(config::Error::Load(::config::ConfigError::Foreign(Box::new(
+        std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+    ))));
+    assert_eq!(error.kind(), "invalid_configuration");
 }
 
 #[test]
@@ -296,6 +318,7 @@ fn output_alias_validation_uses_the_merged_configuration() {
 fn missing_required_capture_path_is_a_configuration_error() {
     let result = parse_args_from(Vec::<String>::new(), Sources::new(Format::Human));
     assert!(matches!(result, Err(Error::Configuration(config::Error::Load(_)))));
+    assert_eq!(result.err().unwrap().kind(), "missing_configuration");
 }
 
 #[test]

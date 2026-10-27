@@ -69,6 +69,13 @@ impl Error {
             Self::Configuration(config::Error::ConfigOverlap) => "output_overlaps_configuration",
             Self::Configuration(config::Error::Load(error)) => match error {
                 ::config::ConfigError::NotFound(_) => "missing_configuration",
+                ::config::ConfigError::Foreign(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+                {
+                    "missing_configuration"
+                }
                 _ => "invalid_configuration",
             },
         }
