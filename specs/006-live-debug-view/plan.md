@@ -5,7 +5,8 @@ Rust, no new dependency (base64 and percent decoding are small hand-written func
 ## Files
 
 - `src/live.rs` (new): `LiveState` and `fn line(&mut LiveState, &Value) -> Option<String>`, a pure function of one tap line; plus `Printer`, a bounded queue and a task that writes lines to standard error and counts drops.
-- `src/label.rs` (new): `Label { command, dir }` and `fn from_headers(&HeaderMap) -> Option<Label>`, which reads `Proxy-Authorization`, decodes it and validates it. Any doubt gives `None`.
+- `src/note.rs`: shared `Label { command, dir }` metadata.
+- `src/proxy/connect/label.rs`: private `fn from_headers(&HeaderMap) -> Option<Label>`, which reads `Proxy-Authorization`, decodes it and validates it. Any doubt gives `None`.
 - `src/sink.rs`: the writer task also offers each record to the `Printer` when one is set (`try_send`, never waits).
 - `src/proxy.rs`: read the label from the CONNECT request; keep it on `Tunnel`; add it to `exchange_start`, `unsupported` and a new `tunnel` event; write a `tunnel` event for unclaimed hosts; print the old `connect host:port` line only when `--live` is off.
 - `src/main.rs`: `--live` flag. `scripts/dev.sh`: pass `--live` unless `LIVE=0`.
@@ -22,7 +23,7 @@ Rust, no new dependency (base64 and percent decoding are small hand-written func
 
 ## Tests first
 
-Unit tests in `src/live.rs` and `src/label.rs` with synthetic tap lines. One integration test in `tests/proxy.rs`: a CONNECT with `Proxy-Authorization` puts `label` on `exchange_start`; a CONNECT with garbage credentials still forwards and has no label. Wrapper tests for the labelled address and the plain fallback.
+Unit tests in `src/live.rs` and `src/proxy/connect/label.rs` with synthetic tap lines. One integration test in `tests/proxy.rs`: a CONNECT with `Proxy-Authorization` puts `label` on `exchange_start`; a CONNECT with garbage credentials still forwards and has no label. Wrapper tests for the labelled address and the plain fallback.
 
 ## Constitution check
 
