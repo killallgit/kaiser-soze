@@ -31,6 +31,16 @@ fn start(label: Option<Label>) -> Note {
 }
 
 #[test]
+fn a_label_serialises_its_command_then_its_directory() {
+    let found = label();
+
+    assert_eq!(
+        serde_json::to_string(&found).unwrap(),
+        r#"{"command":"claude","dir":"/repo"}"#
+    );
+}
+
+#[test]
 fn an_exchange_start_writes_its_keys_sorted_and_its_headers_as_pairs() {
     // It nests the label between http_version and method
     assert_eq!(

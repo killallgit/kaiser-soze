@@ -15,13 +15,13 @@ const CERT_FILE: &str = "ca.pem";
 const KEY_FILE: &str = "ca-key.pem";
 const HOSTS_FILE: &str = "ca-hosts.txt";
 
-pub struct Ca {
+pub(super) struct Ca {
     issuer: Issuer<'static, KeyPair>,
     leaves: Mutex<HashMap<String, Arc<ServerConfig>>>,
 }
 
 impl Ca {
-    pub fn load_or_create(dir: &Path, permitted_hosts: &[String]) -> Result<Self, BoxError> {
+    pub(super) fn load_or_create(dir: &Path, permitted_hosts: &[String]) -> Result<Self, BoxError> {
         let cert_path = dir.join(CERT_FILE);
         let key_path = dir.join(KEY_FILE);
         let hosts_path = dir.join(HOSTS_FILE);
@@ -46,7 +46,7 @@ impl Ca {
         })
     }
 
-    pub fn server_config_for(&self, host: &str) -> Result<Arc<ServerConfig>, BoxError> {
+    pub(super) fn server_config_for(&self, host: &str) -> Result<Arc<ServerConfig>, BoxError> {
         if let Some(config) = self.leaves.lock().unwrap().get(host) {
             return Ok(config.clone());
         }
@@ -126,6 +126,19 @@ mod tests {
             .connect(ServerName::try_from(host.to_string()).unwrap(), near)
             .await
             .map(|_| ())
+    }
+
+    #[test]
+    fn reuses_each_hosts_leaf_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Ca::load_or_create(dir.path(), &hosts(&["a.test", "b.test"])).unwrap();
+
+        let first = ca.server_config_for("a.test").unwrap();
+        let repeated = ca.server_config_for("a.test").unwrap();
+        let other = ca.server_config_for("b.test").unwrap();
+
+        assert!(Arc::ptr_eq(&first, &repeated));
+        assert!(!Arc::ptr_eq(&first, &other));
     }
 
     #[test]

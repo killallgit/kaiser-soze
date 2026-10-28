@@ -1,19 +1,12 @@
+use crate::note::Label;
 use hyper::header::{HeaderMap, PROXY_AUTHORIZATION};
-use serde::Serialize;
 
 const MAX_COMMAND: usize = 32;
 const MAX_DIR: usize = 4096;
 
-/// Which agent command and directory started a connection, as the wrapper told the proxy.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Label {
-    pub command: String,
-    pub dir: String,
-}
-
 /// Reads the label from the `Proxy-Authorization: Basic` header of a CONNECT request.
 /// Anything wrong with it, in any way, gives `None`: a label never fails a connection.
-pub fn from_headers(headers: &HeaderMap) -> Option<Label> {
+pub(super) fn from_headers(headers: &HeaderMap) -> Option<Label> {
     let mut values = headers.get_all(PROXY_AUTHORIZATION).iter();
     let value = values.next()?.to_str().ok()?;
     if values.next().is_some() {
@@ -190,15 +183,5 @@ mod tests {
         let dir = format!("/{}", "b".repeat(MAX_DIR - 1));
 
         assert_eq!(from_headers(&basic(&format!("{command}:{dir}"))), label(&command, &dir));
-    }
-
-    #[test]
-    fn a_label_serialises_its_command_then_its_directory() {
-        let found = label("claude", "/tmp").unwrap();
-
-        assert_eq!(
-            serde_json::to_string(&found).unwrap(),
-            r#"{"command":"claude","dir":"/tmp"}"#
-        );
     }
 }

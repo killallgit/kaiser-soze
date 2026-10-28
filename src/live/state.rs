@@ -1,8 +1,7 @@
 use crate::event::{Conversation, Event};
-use crate::label::Label;
 use crate::line::{Entry, Line};
 use crate::message::Block;
-use crate::note::Note;
+use crate::note::{Label, Note};
 use crate::record::Record;
 use std::collections::HashMap;
 

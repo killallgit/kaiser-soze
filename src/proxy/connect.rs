@@ -1,11 +1,12 @@
 //! CONNECT validation, routing, and passthrough or intercepted tunnel startup.
 
+mod label;
+
 use super::http::Tunnel;
 use super::{empty_response, Out, Proxy};
 use crate::adapter::{claims_host, Adapter};
-use crate::label::{self, Label};
 use crate::logging::{Fields, Level};
-use crate::note::{self, Note};
+use crate::note::{self, Label, Note};
 use crate::BoxError;
 use hyper::body::Incoming;
 use hyper::service::service_fn;
