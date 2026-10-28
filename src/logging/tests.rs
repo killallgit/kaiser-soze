@@ -1,3 +1,4 @@
+use super::formatting::{MAX_COLUMNS, MAX_RECORD_BYTES};
 use super::*;
 use crate::event::{BlockDelta, Delta, Event};
 use crate::line::{Entry, Line};

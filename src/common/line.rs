@@ -1,7 +1,7 @@
-use crate::event::Event;
+use super::event::Event;
+use super::note::Note;
+use super::record::Record;
 use crate::graph::Edge;
-use crate::note::Note;
-use crate::record::Record;
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use std::sync::Arc;
 

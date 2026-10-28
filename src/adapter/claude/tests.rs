@@ -1,8 +1,9 @@
 use super::*;
+use crate::adapter::event::*;
 use crate::adapter::ResponseHead;
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
+use crate::common::message::{Block, Message, Output};
 use crate::common::*;
-use crate::message::{Block, Message, Output};
 use bytes::Bytes;
 use serde_json::{json, Value};
 

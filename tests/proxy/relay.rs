@@ -50,6 +50,11 @@ async fn relays_a_claimed_sse_stream_live_and_taps_it() {
     let raw = std::fs::read_to_string(dir.path().join("tap.jsonl")).unwrap();
     assert!(!raw.contains(SECRET));
     let end = events.iter().find(|e| e["event"] == "exchange_end").unwrap();
+    assert_eq!(end["payload"]["bytes"].as_u64(), Some(received.len() as u64));
+    assert!(end["payload"]["chunks"].as_u64().unwrap() > 0);
+    assert!(end["payload"]["response_head_us"].is_u64());
+    assert!(end["payload"]["first_byte_us"].is_u64());
+    assert_eq!(end["payload"]["tap_dropped"], 0);
     assert_eq!(end["payload"]["sink_dropped"], 0);
     let heads = upstream.heads.lock().unwrap();
     assert!(heads.iter().all(|head| !head.contains("accept-encoding")));

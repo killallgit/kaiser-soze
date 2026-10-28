@@ -1,9 +1,10 @@
 use super::request::conversation_event;
 use super::stream::{block_delta_of, block_start_of, usage_event};
+use crate::adapter::body::{is_encoded, RequestBuffer};
+use crate::adapter::event::{block_start, block_stop, error, reply_end_of_message, unparsed};
+use crate::adapter::sse::{SseEvent, SseSplitter};
 use crate::adapter::{ExchangeParser, RequestHead, TapEvent, TapInput};
-use crate::body::{is_encoded, RequestBuffer};
 use crate::common::*;
-use crate::sse::{SseEvent, SseSplitter};
 use serde_json::Value;
 
 pub struct ClaudeParser {

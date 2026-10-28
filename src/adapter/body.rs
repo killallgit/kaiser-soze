@@ -1,4 +1,4 @@
-pub const MAX_REQUEST_BODY: usize = 32 * 1024 * 1024;
+use crate::capture::MAX_BUFFER_BYTES;
 
 pub fn is_encoded(headers: &[(String, String)]) -> bool {
     headers
@@ -22,7 +22,7 @@ impl RequestBuffer {
     }
 
     pub fn push(&mut self, chunk: &[u8]) {
-        if self.bytes.len() + chunk.len() <= MAX_REQUEST_BODY {
+        if self.bytes.len() + chunk.len() <= MAX_BUFFER_BYTES {
             self.bytes.extend_from_slice(chunk);
         } else {
             self.truncated = true;

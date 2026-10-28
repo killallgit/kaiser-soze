@@ -43,18 +43,12 @@ impl<B: Body<Data = Bytes> + Unpin> Body for TeeBody<B> {
             return polled;
         };
         if let Some(received_at) = this.received_at.take() {
-            tap.stats.chunk_handed_on(received_at.elapsed());
+            tap.handed_on(received_at.elapsed());
         }
         if let Poll::Ready(Some(Ok(frame))) = &polled {
             if let Some(data) = frame.data_ref() {
                 this.received_at = Some(Instant::now());
-                tap.send(match this.side {
-                    Side::Request => TapInput::RequestBody(data.clone()),
-                    Side::Response => TapInput::ResponseBody(data.clone()),
-                });
-                if this.side == Side::Response {
-                    tap.stats.response_chunk_arrived(data.len());
-                }
+                tap.send_body(this.side, data.clone());
             }
         }
         // hyper stops polling once a body reports its end, so the end is noted here too

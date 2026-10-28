@@ -1,7 +1,7 @@
 use super::request::{input_item, read_request};
-use crate::body::MAX_REQUEST_BODY;
-use crate::event::Conversation;
-use crate::message::Message;
+use crate::capture::MAX_BUFFER_BYTES;
+use crate::common::event::Conversation;
+use crate::common::message::Message;
 use serde_json::{json, Value};
 
 /// The running conversation of one socket. Codex sends only the new items with
@@ -86,7 +86,7 @@ impl History {
     }
 
     fn bound(&mut self) {
-        if self.bytes > MAX_REQUEST_BODY {
+        if self.bytes > MAX_BUFFER_BYTES {
             self.broken = true;
         }
         if self.broken {

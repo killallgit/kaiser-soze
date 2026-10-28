@@ -1,0 +1,71 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+inheritance: false
+
+reviews:
+  profile: chill
+  high_level_summary: false
+  review_status: false
+  review_info: false
+  enable_prompt_for_ai_agents: false
+  changed_files_summary: false
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  assess_linked_issues: false
+  related_issues: false
+  related_prs: false
+  suggested_labels: false
+  suggested_reviewers: false
+  poem: false
+  in_progress_fortune: false
+  path_filters:
+    - "**/*.rs"
+  path_instructions:
+    - path: "**/*.rs"
+      instructions: |
+        This is a Rust crate implementing a local streaming HTTP/WebSocket proxy.
+        Review changed Rust code and tests for concrete correctness, security,
+        reliability, and performance defects. Explain the failure scenario for
+        each finding. Do not review documentation, PR metadata, task tracking,
+        manifests, workflows, shell scripts, or other non-Rust files.
+
+        Forwarding must never wait on capture, parsing, or diagnostics. Preserve
+        forwarded bytes, event ordering, serialization contracts, credential
+        redaction, and existing capture limits. Check Tokio blocking operations,
+        locks held across await points, cancellation, task lifetimes, channel
+        backpressure, and unbounded buffers. Tests must use synthetic fixtures
+        and assert observable behavior rather than log or error-message text.
+
+        Do not impose docstring coverage or request comments that restate code.
+        Avoid style preferences, speculative abstractions, and findings already
+        enforced by rustfmt or Clippy in CI. Keep findings within the changed code.
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: "off"
+    description:
+      mode: "off"
+    issue_assessment:
+      mode: "off"
+    custom_checks: []
+  tools:
+    clippy:
+      enabled: false

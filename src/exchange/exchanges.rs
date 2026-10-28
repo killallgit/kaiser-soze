@@ -1,4 +1,4 @@
-use super::recorder::ProjectSignal;
+use super::recorder::{ProjectSignal, Tracking};
 use super::{Clock, ExchangeTap, Recorder, TapOutput};
 use crate::adapter::{Adapter, ExchangeParser, RequestHead};
 use crate::graph::{self, Identity, Threads};
@@ -47,11 +47,15 @@ impl Exchanges {
         let start = exchange_start(&opening);
         let exchange = self.next_exchange();
         let identity = opening.adapter.identity(opening.head);
-        let recorder = Recorder::new(self.output.clone(), exchange, opening.adapter.name())
-            .knowing(identity.clone())
-            .awaiting_project()
-            .tracking(self.threads.clone());
-        let signal = recorder.project_signal();
+        let (recorder, signal) = Recorder::start(
+            self.output.clone(),
+            exchange,
+            opening.adapter.name(),
+            Tracking {
+                identity: identity.clone(),
+                threads: Some(self.threads.clone()),
+            },
+        );
         let parser: Box<dyn ExchangeParser> = match &self.shapes {
             Some(log) => Box::new(ShapedParser::new(log.clone(), opening.parser, exchange, opening.head)),
             None => opening.parser,

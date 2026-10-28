@@ -2,23 +2,16 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 pub mod adapter;
 pub mod assembler;
-pub mod body;
-pub mod claude;
-pub mod codex;
+mod capture;
 pub mod common;
-pub mod event;
 pub mod exchange;
 pub mod graph;
-pub mod line;
 pub mod live;
 pub mod logging;
-pub mod message;
-pub mod note;
 pub mod project;
 pub mod proxy;
-pub mod record;
-pub mod redact;
 pub mod shape;
 pub mod sink;
-pub mod sse;
-pub mod ws;
+
+pub use adapter::{claude, codex};
+pub use common::{event, line, message, note, record};

@@ -94,7 +94,9 @@ pub(super) fn load(overrides: &impl Serialize, explicit: Option<&Path>, sources:
         {
             continue;
         }
-        builder = builder.add_source(::config::File::from(path.as_path()).format(::config::FileFormat::Toml));
+        let contents = std::fs::read_to_string(path)
+            .map_err(|error| Error::Load(::config::ConfigError::Foreign(Box::new(error))))?;
+        builder = builder.add_source(::config::File::from_str(&contents, ::config::FileFormat::Toml));
     }
     let environment = sources
         .environment

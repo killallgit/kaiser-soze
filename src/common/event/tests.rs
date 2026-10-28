@@ -1,5 +1,5 @@
 use super::*;
-use crate::message::Block;
+use crate::common::message::{Block, Message};
 use serde_json::json;
 
 fn written(event: &impl Serialize) -> String {

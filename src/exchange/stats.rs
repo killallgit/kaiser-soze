@@ -4,7 +4,7 @@ use std::time::Instant;
 
 pub(super) const UNSET: u64 = u64::MAX;
 
-pub struct Stats {
+pub(super) struct Stats {
     pub(super) began: Instant,
     pub(super) chunks: AtomicU64,
     pub(super) bytes: AtomicU64,
@@ -31,19 +31,19 @@ impl Stats {
         }
     }
 
-    pub fn response_head_arrived(&self) {
+    pub(super) fn response_head_arrived(&self) {
         self.head_us
             .fetch_min(self.began.elapsed().as_micros() as u64, Ordering::Relaxed);
     }
 
-    pub fn response_chunk_arrived(&self, len: usize) {
+    pub(super) fn response_chunk_arrived(&self, len: usize) {
         self.first_byte_us
             .fetch_min(self.began.elapsed().as_micros() as u64, Ordering::Relaxed);
         self.chunks.fetch_add(1, Ordering::Relaxed);
         self.bytes.fetch_add(len as u64, Ordering::Relaxed);
     }
 
-    pub fn chunk_handed_on(&self, since_received: std::time::Duration) {
+    pub(super) fn chunk_handed_on(&self, since_received: std::time::Duration) {
         let us = since_received.as_micros() as u64;
         self.forward_sum_us.fetch_add(us, Ordering::Relaxed);
         self.forward_max_us.fetch_max(us, Ordering::Relaxed);

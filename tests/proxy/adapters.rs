@@ -2,6 +2,7 @@ use crate::support::*;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
+use kaiser_soze::adapter::event::*;
 use kaiser_soze::adapter::{Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
 use kaiser_soze::claude::ClaudeAdapter;
 use kaiser_soze::common::*;

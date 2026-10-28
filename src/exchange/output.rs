@@ -17,19 +17,38 @@ pub struct TapOutput {
 
 impl TapOutput {
     /// Generates the opaque capture identity once, before any tap line is emitted.
-    pub fn new(sink: Sink<Line>) -> io::Result<Self> {
-        Ok(Self {
+    /// Opens the tap file; each line written is also shown by `live`, after the file write and
+    /// without ever waiting for it. The writer assigns each tap line its 1-based sequence after dequeue.
+    pub async fn open(path: &Path, mut live: Option<Live>, logging: Logger) -> io::Result<Self> {
+        let run_id = run_id()?;
+        let logging = logging.for_run(run_id.clone());
+        let identity = run_id.clone();
+        let sink = Sink::open_showing(
+            path,
+            move |line: &mut Line, sequence| {
+                line.run_id = identity.clone();
+                line.sequence = sequence;
+            },
+            move |line| {
+                if let Some(live) = live.as_mut() {
+                    live.show(line);
+                }
+            },
+            logging.component("tap"),
+        )
+        .await?;
+        Ok(Self { sink, run_id, logging })
+    }
+
+    #[cfg(test)]
+    pub(super) fn detached(capacity: usize) -> io::Result<(Self, tokio::sync::mpsc::Receiver<Line>)> {
+        let (sink, receiver) = Sink::detached(capacity);
+        let output = Self {
             sink,
             run_id: run_id()?,
             logging: Logger::default(),
-        })
-    }
-
-    pub async fn open(path: &Path, live: Option<Live>, logging: Logger) -> io::Result<Self> {
-        let run_id = run_id()?;
-        let logging = logging.for_run(run_id.clone());
-        let sink = Sink::open_with_reporting(path, live, logging.component("tap")).await?;
-        Ok(Self { sink, run_id, logging })
+        };
+        Ok((output, receiver))
     }
 }
 
@@ -42,3 +61,6 @@ fn run_id() -> io::Result<Arc<str>> {
     let run_id: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
     Ok(run_id.into())
 }
+
+#[cfg(test)]
+mod tests;

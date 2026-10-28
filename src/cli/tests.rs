@@ -268,6 +268,47 @@ fn missing_explicit_configuration_has_the_missing_configuration_code() {
 }
 
 #[test]
+fn missing_explicit_configuration_does_not_load_a_suffixed_sibling() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("config.toml");
+    std::fs::write(dir.path().join("config.toml.toml"), "tap_file = 'synthetic.jsonl'\n").unwrap();
+
+    let result = parse_args_from(
+        ["--config".to_string(), missing.display().to_string()],
+        Sources::new(Format::Human),
+    );
+
+    assert!(matches!(
+        result,
+        Err(Error::Configuration(config::Error::Load(::config::ConfigError::Foreign(error))))
+            if error.downcast_ref::<std::io::Error>().is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    ));
+}
+
+#[test]
+fn explicit_configuration_preserves_non_file_io_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("file");
+    std::fs::write(&file, "synthetic").unwrap();
+
+    for (path, kind) in [
+        (dir.path().to_path_buf(), std::io::ErrorKind::IsADirectory),
+        (file.join("config.toml"), std::io::ErrorKind::NotADirectory),
+    ] {
+        let result = parse_args_from(
+            ["--config".to_string(), path.display().to_string()],
+            Sources::new(Format::Human),
+        );
+
+        assert!(matches!(
+            result,
+            Err(Error::Configuration(config::Error::Load(::config::ConfigError::Foreign(error))))
+                if error.downcast_ref::<std::io::Error>().is_some_and(|error| error.kind() == kind)
+        ));
+    }
+}
+
+#[test]
 fn other_configuration_io_failures_remain_invalid_configuration() {
     let error = Error::Configuration(config::Error::Load(::config::ConfigError::Foreign(Box::new(
         std::io::Error::from(std::io::ErrorKind::PermissionDenied),

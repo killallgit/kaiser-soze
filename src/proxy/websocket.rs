@@ -84,11 +84,8 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(mut from: R, mut to: 
             break;
         }
         if let Some(tap) = &context.tap {
-            tap.stats.chunk_handed_on(received_at.elapsed());
-            if !context.from_client {
-                tap.stats.response_chunk_arrived(n);
-            }
-            tap.send_ws_bytes(context.from_client, Bytes::copy_from_slice(&buf[..n]));
+            let handoff = received_at.elapsed();
+            tap.send_ws_bytes(context.from_client, Bytes::copy_from_slice(&buf[..n]), handoff);
         }
     }
     let _ = to.shutdown().await;

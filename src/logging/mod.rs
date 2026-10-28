@@ -1,4 +1,6 @@
 mod fields;
+mod formatting;
+mod policy;
 mod project;
 mod writer;
 
@@ -15,8 +17,6 @@ use tokio::sync::{mpsc, oneshot};
 
 const LOG_QUEUE: usize = 256;
 const STREAM_PER_SECOND: u64 = 20;
-const MAX_COLUMNS: usize = 160;
-const MAX_RECORD_BYTES: usize = 1024;
 const DEBUG_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -220,25 +220,6 @@ impl Logger {
             component,
             ..self.clone()
         }
-    }
-
-    fn enabled(out: &Output, level: Level) -> bool {
-        level != Level::Off && out.settings.level >= level
-    }
-
-    pub fn event(&self, level: Level, event: &'static str, fields: Fields) -> bool {
-        let mut sent = false;
-        for out in &self.outputs {
-            if !Self::enabled(out, level) {
-                continue;
-            }
-            if out.limited && level != Level::Error && !out.operation_rate.allow_at(out.origin.elapsed().as_secs()) {
-                out.counts.suppressed.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
-            sent |= self.send(out, level, event, fields.clone());
-        }
-        sent
     }
 
     fn send(&self, out: &Output, level: Level, event: &'static str, mut fields: Fields) -> bool {

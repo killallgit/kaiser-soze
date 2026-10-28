@@ -1,5 +1,9 @@
 use super::*;
+use crate::adapter::{ExchangeParser, RequestHead, ResponseHead, TapEvent, TapInput};
+use crate::sink::Sink;
 use bytes::Bytes;
+use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 
 struct Silent;
 
@@ -94,14 +98,15 @@ fn logs_header_names_without_values_and_the_query_free_path() {
 
 #[test]
 fn logs_a_request_body_shape_once_however_often_it_repeats() {
-    let (mut parser, rx) = parser();
+    let (sink, rx) = Sink::detached(64);
+    let log = ShapeLog::new(sink);
 
     for _ in 0..3 {
+        let mut parser = ShapedParser::new(log.clone(), Box::new(Silent), 7, &head());
         parser.feed(TapInput::RequestBody(Bytes::from_static(
             br#"{"model":"m","stream":true}"#,
         )));
         parser.feed(TapInput::RequestEnd);
-        parser.request = RequestBuffer::new(false);
     }
 
     let requests: Vec<Value> = lines(rx).into_iter().filter(|l| l["direction"] == "request").collect();

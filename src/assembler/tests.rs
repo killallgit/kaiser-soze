@@ -1,4 +1,5 @@
 use super::*;
+use crate::adapter::event::*;
 use crate::adapter::TapEvent;
 use crate::common::*;
 use crate::message::{Block, Message};

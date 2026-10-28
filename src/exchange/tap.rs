@@ -1,16 +1,17 @@
 use super::clock::{Clock, Stamp};
 use super::recorder::Recorder;
 use super::stats::Stats;
+use super::ws::WsDecoder;
 use crate::adapter::{ExchangeParser, ResponseHead, TapInput};
 use crate::assembler::Assembler;
+use crate::capture::headers::redact_headers;
 use crate::line::Entry;
 use crate::note::{self, Note, Transport};
-use crate::redact::redact_headers;
-use crate::ws::WsDecoder;
 use bytes::Bytes;
 use hyper::{Response, StatusCode};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 const TAP_QUEUE: usize = 256;
@@ -25,17 +26,26 @@ pub struct ExchangeTap {
     tx: mpsc::Sender<(Stamp, Msg)>,
     clock: Clock,
     recorder: Recorder,
-    pub stats: Arc<Stats>,
+    stats: Arc<Stats>,
 }
 
 impl ExchangeTap {
     pub fn exchange_id(&self) -> u64 {
         self.recorder.exchange
     }
-    pub fn spawn(recorder: Recorder, clock: Clock, parser: Box<dyn ExchangeParser>) -> Self {
+    pub(crate) fn spawn(recorder: Recorder, clock: Clock, parser: Box<dyn ExchangeParser>) -> Self {
         let (tx, rx) = mpsc::channel(TAP_QUEUE);
         let stats = Arc::new(Stats::new());
-        tokio::spawn(run_parser(rx, parser, recorder.clone(), clock, stats.clone()));
+        tokio::spawn(
+            TapTask {
+                rx,
+                parser,
+                recorder: recorder.clone(),
+                clock,
+                stats: stats.clone(),
+            }
+            .run(),
+        );
         Self {
             tx,
             clock,
@@ -80,8 +90,26 @@ impl ExchangeTap {
         self.offer(Msg::Input(input));
     }
 
-    pub fn send_ws_bytes(&self, from_client: bool, bytes: Bytes) {
+    pub(super) fn send_body(&self, side: super::Side, bytes: Bytes) {
+        if side == super::Side::Response {
+            self.stats.response_chunk_arrived(bytes.len());
+        }
+        self.send(match side {
+            super::Side::Request => TapInput::RequestBody(bytes),
+            super::Side::Response => TapInput::ResponseBody(bytes),
+        });
+    }
+
+    pub fn send_ws_bytes(&self, from_client: bool, bytes: Bytes, handoff: Duration) {
+        self.handed_on(handoff);
+        if !from_client {
+            self.stats.response_chunk_arrived(bytes.len());
+        }
         self.offer(Msg::WsBytes { from_client, bytes });
+    }
+
+    pub(super) fn handed_on(&self, elapsed: Duration) {
+        self.stats.chunk_handed_on(elapsed);
     }
 
     fn offer(&self, msg: Msg) {
@@ -94,47 +122,58 @@ impl ExchangeTap {
     }
 }
 
-async fn run_parser(
-    mut rx: mpsc::Receiver<(Stamp, Msg)>,
-    mut parser: Box<dyn ExchangeParser>,
+struct TapTask {
+    rx: mpsc::Receiver<(Stamp, Msg)>,
+    parser: Box<dyn ExchangeParser>,
     recorder: Recorder,
     clock: Clock,
     stats: Arc<Stats>,
-) {
-    let mut decoders = [WsDecoder::default(), WsDecoder::default()];
-    let mut assembler = Assembler::default();
-    let dropped = || stats.dropped.load(Ordering::Relaxed) + recorder.refused();
-    while let Some((stamp, msg)) = rx.recv().await {
-        let inputs = match msg {
-            Msg::Input(input) => vec![input],
-            Msg::WsBytes { from_client, bytes } => {
-                let decoder = &mut decoders[from_client as usize];
-                if stats.ws_desynced[from_client as usize].load(Ordering::Relaxed) {
-                    decoder.mark_broken();
+}
+
+impl TapTask {
+    async fn run(self) {
+        let Self {
+            mut rx,
+            mut parser,
+            recorder,
+            clock,
+            stats,
+        } = self;
+        let mut decoders = [WsDecoder::default(), WsDecoder::default()];
+        let mut assembler = Assembler::default();
+        let dropped = || stats.dropped.load(Ordering::Relaxed) + recorder.refused();
+        while let Some((stamp, msg)) = rx.recv().await {
+            let inputs = match msg {
+                Msg::Input(input) => vec![input],
+                Msg::WsBytes { from_client, bytes } => {
+                    let decoder = &mut decoders[from_client as usize];
+                    if stats.ws_desynced[from_client as usize].load(Ordering::Relaxed) {
+                        decoder.mark_broken();
+                    }
+                    decoder
+                        .push(&bytes)
+                        .into_iter()
+                        .map(|m| TapInput::WsMessage {
+                            from_client,
+                            text: m.text,
+                            start: m.start,
+                            end: m.end,
+                        })
+                        .collect()
                 }
-                decoder
-                    .push(&bytes)
-                    .into_iter()
-                    .map(|m| TapInput::WsMessage {
-                        from_client,
-                        text: m.text,
-                        start: m.start,
-                        end: m.end,
-                    })
-                    .collect()
-            }
-        };
-        for event in inputs.into_iter().flat_map(|input| parser.feed(input)) {
-            let records = assembler.push(&event.event, dropped());
-            recorder.write(stamp, Entry::Event(event.event), (event.start, event.end));
-            for record in records {
-                recorder.write_record(stamp, record).await;
+            };
+            for event in inputs.into_iter().flat_map(|input| parser.feed(input)) {
+                let records = assembler.push(&event.event, dropped());
+                recorder.write(stamp, Entry::Event(event.event), (event.start, event.end));
+                for record in records {
+                    recorder.write_record(stamp, record).await;
+                }
             }
         }
+        if let Some(record) = assembler.finish(dropped()) {
+            recorder.write_record(clock.stamp(), record).await;
+        }
+        let end = Note::ExchangeEnd(stats.summary(recorder.output.sink.dropped()));
+        recorder.write_reliable(clock.stamp(), Entry::Note(end)).await;
     }
-    if let Some(record) = assembler.finish(dropped()) {
-        recorder.write_record(clock.stamp(), record).await;
-    }
-    let end = Note::ExchangeEnd(stats.summary(recorder.output.sink.dropped()));
-    recorder.write_reliable(clock.stamp(), Entry::Note(end)).await;
 }

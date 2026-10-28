@@ -11,7 +11,7 @@ The **tap** is the one file `soze` writes (`tap.jsonl`), one JSON event per line
 
 `edge` lines in the same file link records into the graph. There is no second output.
 
-Codex has an internal helper, the **conversation rebuild** (`History` in `src/codex/history.rs`). Codex over WebSocket sends only new items plus a `previous_response_id`, so the parser joins them onto the running conversation to fill `record.conversation` in full. It is not an output. It keeps the last reply's id only to detect a request that does not chain, and it does not write that id to the tap.
+Codex has an internal helper, the **conversation rebuild** (`History` in `src/adapter/codex/history.rs`). Codex over WebSocket sends only new items plus a `previous_response_id`, so the parser joins them onto the running conversation to fill `record.conversation` in full. It is not an output. It keeps the last reply's id only to detect a request that does not chain, and it does not write that id to the tap.
 
 ## Three identities
 

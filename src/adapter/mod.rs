@@ -1,4 +1,11 @@
-use crate::event::Event;
+pub(crate) mod body;
+pub mod claude;
+pub mod codex;
+pub mod event;
+pub(crate) mod image;
+pub(crate) mod sse;
+
+use crate::common::event::Event;
 use crate::graph::Identity;
 use bytes::Bytes;
 
@@ -32,6 +39,14 @@ pub struct TapEvent {
     pub event: Event,
     pub start: u64,
     pub end: u64,
+}
+
+impl TapEvent {
+    pub fn at(mut self, start: u64, end: u64) -> Self {
+        self.start = start;
+        self.end = end;
+        self
+    }
 }
 
 impl From<Event> for TapEvent {
