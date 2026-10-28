@@ -5,10 +5,9 @@ use crate::event::{
     BlockDelta, BlockKind, BlockStart, BlockStop, Conversation, Delta, Error, Event, ReplyEnd, Side, Unparsed, Usage,
 };
 use crate::graph::{Edge, EdgeKind};
-use crate::label::Label;
 use crate::line::Entry;
 use crate::message::{Block, Message};
-use crate::note::{ExchangeEnd, ExchangeStart, Note, ResponseHead, Transport, Tunnel, Unsupported};
+use crate::note::{ExchangeEnd, ExchangeStart, Label, Note, ResponseHead, Transport, Tunnel, Unsupported};
 use crate::record::Record;
 use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;

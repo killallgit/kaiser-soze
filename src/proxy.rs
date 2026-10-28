@@ -1,10 +1,11 @@
+mod ca;
 mod connect;
 mod http;
 mod upstream;
 mod websocket;
 
+use self::ca::Ca;
 use crate::adapter::Adapter;
-use crate::ca::Ca;
 use crate::exchange::{Exchanges, TapOutput};
 use crate::live::Live;
 use crate::logging::{Fields, Level, Logger};

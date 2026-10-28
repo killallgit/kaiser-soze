@@ -1,9 +1,8 @@
 use super::*;
 use crate::adapter::{Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
 use crate::graph::{self, EdgeKind, Identity, Threads};
-use crate::label::Label;
 use crate::line::Entry;
-use crate::note::{self, Note};
+use crate::note::{self, Label, Note};
 use crate::project::{ProjectCache, ProjectLookups};
 use crate::sink::Sink;
 use bytes::Bytes;

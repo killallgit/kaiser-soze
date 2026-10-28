@@ -1,5 +1,11 @@
-use crate::label::Label;
 use serde::Serialize;
+
+/// Which agent command and directory started a connection, as the wrapper told the proxy.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Label {
+    pub command: String,
+    pub dir: String,
+}
 
 /// What the proxy says about an exchange, or about a connection that had none. The structs declare
 /// their fields in the key order the tap file writes, and a note serialises as its payload alone:
