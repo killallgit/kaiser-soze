@@ -23,7 +23,7 @@ Rust, no new dependency (base64 and percent decoding are small hand-written func
 
 ## Tests first
 
-Unit tests in `src/live.rs` and `src/proxy/connect/label.rs` with synthetic tap lines. One integration test in `tests/proxy.rs`: a CONNECT with `Proxy-Authorization` puts `label` on `exchange_start`; a CONNECT with garbage credentials still forwards and has no label. Wrapper tests for the labelled address and the plain fallback.
+Unit tests in `src/live.rs` and `src/proxy/connect/label.rs` with synthetic tap lines. One integration test in `tests/proxy/labels.rs`: a CONNECT with `Proxy-Authorization` puts `label` on `exchange_start`; a CONNECT with garbage credentials still forwards and has no label. Wrapper tests for the labelled address and the plain fallback.
 
 ## Constitution check
 
