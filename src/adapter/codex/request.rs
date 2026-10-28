@@ -1,6 +1,6 @@
 use super::history::append;
-use crate::common::base64_size;
-use crate::message::{Block, Message, Output};
+use crate::adapter::image::base64_size;
+use crate::common::message::{Block, Message, Output};
 use serde_json::{json, Value};
 
 pub(super) fn read_request(json: &Value) -> (Value, Value, Vec<Message>) {

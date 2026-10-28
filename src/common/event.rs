@@ -1,4 +1,5 @@
-use crate::message::Message;
+pub use super::conversation::Conversation;
+pub use super::usage::Usage;
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,44 +32,6 @@ impl Event {
             Self::ReplyEnd(_) => "reply_end",
             Self::Error(_) => "error",
             Self::Unparsed(_) => "unparsed",
-        }
-    }
-}
-
-/// A request: the messages it sent, with the system prompt and tools as sent. The optional fields
-/// are left out when missing, and the two flags when false.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Conversation {
-    pub messages: Vec<Message>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub partial: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous_message_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub step: Option<u64>,
-    pub system: Value,
-    pub tools: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn: Option<String>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub warmup: bool,
-}
-
-fn is_false(flag: &bool) -> bool {
-    !flag
-}
-
-impl Conversation {
-    pub fn new(system: Value, tools: Value, messages: Vec<Message>) -> Self {
-        Self {
-            messages,
-            partial: false,
-            previous_message_id: None,
-            step: None,
-            system,
-            tools,
-            turn: None,
-            warmup: false,
         }
     }
 }
@@ -148,27 +111,6 @@ impl Delta {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BlockStop {
     pub index: u64,
-}
-
-/// The token counts one event reports; a count the upstream did not send is `null`.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Usage {
-    pub cache_read: Option<u64>,
-    pub cache_write: Option<u64>,
-    pub input: Option<u64>,
-    pub output: Option<u64>,
-    pub reasoning: Option<u64>,
-}
-
-impl Usage {
-    /// Takes every count the later report has and keeps the rest.
-    pub fn merge(&mut self, later: Usage) {
-        self.cache_read = later.cache_read.or(self.cache_read);
-        self.cache_write = later.cache_write.or(self.cache_write);
-        self.input = later.input.or(self.input);
-        self.output = later.output.or(self.output);
-        self.reasoning = later.reasoning.or(self.reasoning);
-    }
 }
 
 /// The end of a reply. The stop reason passes through as sent; a missing message id is left out.

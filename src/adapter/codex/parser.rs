@@ -1,11 +1,12 @@
 use super::history::History;
 use super::stream::stream_event;
+use crate::adapter::body::{is_encoded, RequestBuffer};
+use crate::adapter::event::unparsed;
+use crate::adapter::sse::{SseEvent, SseSplitter};
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
-use crate::body::{is_encoded, RequestBuffer};
+use crate::common::event::{Conversation, Event};
 use crate::common::*;
-use crate::event::{Conversation, Event};
 use crate::graph::named_turn;
-use crate::sse::{SseEvent, SseSplitter};
 use serde_json::Value;
 
 pub struct CodexParser {

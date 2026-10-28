@@ -13,7 +13,7 @@ fn is_secret(name: &str) -> bool {
             .any(|marker| name.contains(marker))
 }
 
-pub fn redact_headers(headers: &HeaderMap) -> Vec<(String, String)> {
+pub(crate) fn redact_headers(headers: &HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()
         .map(|(name, value)| {

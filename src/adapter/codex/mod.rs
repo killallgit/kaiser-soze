@@ -1,5 +1,5 @@
+use crate::adapter::body::is_encoded;
 use crate::adapter::{header, Adapter, ExchangeParser, RequestHead};
-use crate::body::is_encoded;
 use crate::graph::{named_turn, Identity};
 use serde_json::Value;
 

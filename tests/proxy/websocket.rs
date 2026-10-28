@@ -57,6 +57,13 @@ async fn roundtrip(path: &str, captured: bool) {
         assert_eq!(head["payload"]["status"], 101);
         assert_eq!(head["payload"]["transport"], "websocket");
         assert_eq!(count(&lines, "exchange_end"), 1);
+        let end = lines.iter().find(|line| line["event"] == "exchange_end").unwrap();
+        assert_eq!(end["payload"]["bytes"], 14);
+        assert!(end["payload"]["chunks"].as_u64().unwrap() >= 3);
+        assert!(end["payload"]["first_byte_us"].is_u64());
+        assert!(end["payload"]["response_head_us"].is_u64());
+        assert_eq!(end["payload"]["tap_dropped"], 0);
+        assert_eq!(end["payload"]["sink_dropped"], 0);
     } else {
         wait_for_line(&tap_file, "unsupported").await;
         let lines = tap_lines(&tap_file);

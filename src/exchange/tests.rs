@@ -1,10 +1,11 @@
+use super::recorder::{ProjectSignal, Tracking};
 use super::*;
+use crate::adapter::event::*;
 use crate::adapter::{Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
 use crate::graph::{self, EdgeKind, Identity, Threads};
 use crate::line::Entry;
 use crate::note::{self, Label, Note};
 use crate::project::{ProjectCache, ProjectLookups};
-use crate::sink::Sink;
 use bytes::Bytes;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -41,8 +42,10 @@ struct Fixture {
 async fn blocked_tap() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
-    let sink = Sink::open_with(&tap_file, None).await.unwrap();
-    let recorder = Recorder::new(TapOutput::new(sink).unwrap(), 1, "test");
+    let output = TapOutput::open(&tap_file, None, crate::logging::Logger::default())
+        .await
+        .unwrap();
+    let recorder = Recorder::new(output, 1, "test");
     let (release, receiver) = std::sync::mpsc::channel();
     let messages_seen = Arc::new(AtomicUsize::new(0));
     let parser = BlocksUntilReleased {
@@ -84,8 +87,20 @@ async fn a_stalled_parser_drops_and_counts_instead_of_blocking_the_sender() {
         fixture.tap.send(TapInput::ResponseBody(Bytes::from_static(b"x")));
     }
 
-    assert!(fixture.tap.stats.dropped.load(Ordering::Relaxed) > 0);
-    fixture.release.send(()).unwrap();
+    let Fixture {
+        tap,
+        release,
+        tap_file,
+        _dir,
+        ..
+    } = fixture;
+    release.send(()).unwrap();
+    drop(tap);
+    wait_for_exchange_end(&tap_file).await;
+
+    let lines = lines(&tap_file);
+    let end = lines.iter().find(|line| line["event"] == "exchange_end").unwrap();
+    assert!(end["payload"]["tap_dropped"].as_u64().unwrap() > 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -101,7 +116,7 @@ async fn a_dropped_websocket_chunk_stops_that_direction_decoding() {
     let text_frame = Bytes::from_static(&[0x81, 0x01, b'a']);
 
     for _ in 0..1000 {
-        tap.send_ws_bytes(true, text_frame.clone());
+        tap.send_ws_bytes(true, text_frame.clone(), Duration::ZERO);
     }
     release.send(()).unwrap();
     drop(tap);
@@ -115,8 +130,10 @@ async fn exchange_end_reports_records_the_sink_had_to_drop() {
     // It reports a non-zero sink_dropped when the sink queue overflowed
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
-    let sink = Sink::open_with(&tap_file, None).await.unwrap();
-    let recorder = Recorder::new(TapOutput::new(sink).unwrap(), 1, "test");
+    let output = TapOutput::open(&tap_file, None, crate::logging::Logger::default())
+        .await
+        .unwrap();
+    let recorder = Recorder::new(output, 1, "test");
     let (_release, receiver) = std::sync::mpsc::channel();
     let parser = BlocksUntilReleased {
         release: receiver,
@@ -193,14 +210,44 @@ async fn run_to_the_end(events: Vec<TapEvent>) -> Vec<Value> {
     run_recorded(events, |recorder| recorder).await
 }
 
-async fn run_recorded(events: Vec<TapEvent>, configure: impl FnOnce(Recorder) -> Recorder) -> Vec<Value> {
+struct Recording {
+    exchange: u64,
+    identity: Identity,
+    threads: Option<Arc<Mutex<Threads>>>,
+    resolve_project: Option<Box<dyn FnOnce(ProjectSignal)>>,
+}
+
+impl Default for Recording {
+    fn default() -> Self {
+        Self {
+            exchange: 1,
+            identity: Identity::default(),
+            threads: None,
+            resolve_project: None,
+        }
+    }
+}
+
+async fn run_recorded(events: Vec<TapEvent>, configure: impl FnOnce(Recording) -> Recording) -> Vec<Value> {
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
-    let recorder = configure(Recorder::new(
-        TapOutput::new(Sink::open_with(&tap_file, None).await.unwrap()).unwrap(),
-        1,
+    let recording = configure(Recording::default());
+    let output = TapOutput::open(&tap_file, None, crate::logging::Logger::default())
+        .await
+        .unwrap();
+    let (recorder, signal) = Recorder::start(
+        output,
+        recording.exchange,
         "test",
-    ));
+        Tracking {
+            identity: recording.identity,
+            threads: recording.threads,
+        },
+    );
+    match recording.resolve_project {
+        Some(resolve) => resolve(signal),
+        None => drop(signal),
+    }
     let tap = ExchangeTap::spawn(recorder, Clock::start(), Box::new(Emits { events, release: None }));
 
     tap.send(TapInput::ResponseEnd);
@@ -208,6 +255,50 @@ async fn run_recorded(events: Vec<TapEvent>, configure: impl FnOnce(Recorder) ->
     wait_for_exchange_end(&tap_file).await;
 
     lines(&tap_file)
+}
+
+#[tokio::test]
+async fn starting_a_recorder_pairs_tracking_with_owned_project_release() {
+    let dir = tempfile::tempdir().unwrap();
+    let tap_file = dir.path().join("tap.jsonl");
+    let output = TapOutput::open(&tap_file, None, crate::logging::Logger::default())
+        .await
+        .unwrap();
+    let (recorder, signal) = Recorder::start(
+        output,
+        1,
+        "test",
+        Tracking {
+            identity: Identity {
+                session: Some("s1".into()),
+                thread: Some("t1".into()),
+                turn: Some("u1".into()),
+                ..Identity::default()
+            },
+            threads: Some(Arc::default()),
+        },
+    );
+    let tap = ExchangeTap::spawn(
+        recorder,
+        Clock::start(),
+        Box::new(Emits {
+            events: closed_reply(),
+            release: None,
+        }),
+    );
+
+    tap.send(TapInput::ResponseEnd);
+    drop(signal);
+    drop(tap);
+    wait_for_exchange_end(&tap_file).await;
+
+    let lines = lines(&tap_file);
+    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+    assert_eq!(record["payload"]["session"], "s1");
+    assert_eq!(record["payload"]["thread"], "t1");
+    assert_eq!(record["payload"]["turn"], "u1");
+    assert!(record["payload"].get("project").is_none());
+    assert_eq!(written_edges(&lines), [edge("turn", "step:1.1", "turn:u1")]);
 }
 
 #[tokio::test]
@@ -242,10 +333,10 @@ async fn a_record_carries_the_ids_the_recorder_knows() {
         ..Identity::default()
     };
 
-    let lines = run_recorded(closed_reply(), |recorder| {
-        let recorder = recorder.knowing(known).awaiting_project();
-        recorder.project_looked_up(Some("host/owner/repo".into()));
-        recorder
+    let lines = run_recorded(closed_reply(), |mut recording| {
+        recording.identity = known;
+        recording.resolve_project = Some(Box::new(|signal| signal.settle(Some("host/owner/repo".into()))));
+        recording
     })
     .await;
 
@@ -271,7 +362,11 @@ async fn a_record_carries_the_turn_its_exchange_belongs_to() {
         ..Identity::default()
     };
 
-    let lines = run_recorded(closed_reply(), |recorder| recorder.knowing(known)).await;
+    let lines = run_recorded(closed_reply(), |mut recording| {
+        recording.identity = known;
+        recording
+    })
+    .await;
 
     let record = lines.iter().find(|line| line["event"] == "record").unwrap();
     assert_eq!(record["payload"]["turn"], "p1");
@@ -292,8 +387,16 @@ async fn a_record_takes_its_step_and_turn_from_its_own_request() {
     later[0].event.conversation_mut().step = Some(2);
     later[0].event.conversation_mut().turn = Some("u2".into());
 
-    let stepped = run_recorded(later, |recorder| recorder.knowing(known.clone())).await;
-    let plain = run_recorded(closed_reply(), |recorder| recorder.knowing(known)).await;
+    let stepped = run_recorded(later, |mut recording| {
+        recording.identity = known.clone();
+        recording
+    })
+    .await;
+    let plain = run_recorded(closed_reply(), |mut recording| {
+        recording.identity = known;
+        recording
+    })
+    .await;
 
     let record = |lines: &[Value]| lines.iter().find(|line| line["event"] == "record").unwrap()["payload"].clone();
     assert_eq!(
@@ -326,10 +429,17 @@ async fn a_record_writes_the_turn_and_continues_edges_of_its_step() {
             .collect()
     };
 
-    let first = run_recorded(closed_reply(), |r| r.knowing(known("u1")).tracking(threads.clone())).await;
-    let second = run_recorded(closed_reply(), |mut r| {
-        r.exchange = 2;
-        r.knowing(known("u1")).tracking(threads.clone())
+    let first = run_recorded(closed_reply(), |mut recording| {
+        recording.identity = known("u1");
+        recording.threads = Some(threads.clone());
+        recording
+    })
+    .await;
+    let second = run_recorded(closed_reply(), |mut recording| {
+        recording.exchange = 2;
+        recording.identity = known("u1");
+        recording.threads = Some(threads.clone());
+        recording
     })
     .await;
 
@@ -353,10 +463,10 @@ async fn a_later_step_that_names_no_turn_does_not_take_the_header_turn() {
     let mut later = closed_reply();
     later[0].event.conversation_mut().step = Some(2);
 
-    let lines = run_recorded(later, |recorder| {
-        recorder
-            .knowing(known)
-            .tracking(Arc::new(Mutex::new(Threads::default())))
+    let lines = run_recorded(later, |mut recording| {
+        recording.identity = known;
+        recording.threads = Some(Arc::default());
+        recording
     })
     .await;
 
@@ -412,9 +522,11 @@ async fn a_result_in_a_later_request_writes_one_calls_edge_for_its_call() {
     };
     let run = |exchange: u64, events: Vec<TapEvent>| {
         let (known, threads) = (known.clone(), threads.clone());
-        run_recorded(events, move |mut r| {
-            r.exchange = exchange;
-            r.knowing(known).tracking(threads)
+        run_recorded(events, move |mut recording| {
+            recording.exchange = exchange;
+            recording.identity = known;
+            recording.threads = Some(threads);
+            recording
         })
     };
 
@@ -466,9 +578,11 @@ async fn a_claude_and_a_codex_exchange_write_these_exact_records_and_edges() {
     };
     let run = |exchange: u64, events: Vec<TapEvent>| {
         let (known, threads) = (known.clone(), threads.clone());
-        run_recorded(events, move |mut r| {
-            r.exchange = exchange;
-            r.knowing(known).tracking(threads)
+        run_recorded(events, move |mut recording| {
+            recording.exchange = exchange;
+            recording.identity = known;
+            recording.threads = Some(threads);
+            recording
         })
     };
     let payloads = |lines: &[Value], event: &str| -> Vec<Value> {
@@ -568,8 +682,9 @@ fn written_edges(lines: &[Value]) -> Vec<Edge> {
 async fn race_one_thread(replies: Vec<Vec<TapEvent>>, late: Option<usize>) -> Vec<Edge> {
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
-    let sink = Sink::open_with(&tap_file, None).await.unwrap();
-    let output = TapOutput::new(sink).unwrap();
+    let output = TapOutput::open(&tap_file, None, crate::logging::Logger::default())
+        .await
+        .unwrap();
     let threads = Arc::new(Mutex::new(Threads::default()));
     let known = Identity {
         thread: Some("t1".into()),
@@ -578,16 +693,22 @@ async fn race_one_thread(replies: Vec<Vec<TapEvent>>, late: Option<usize>) -> Ve
     let count = replies.len();
     let mut taps = Vec::new();
     for (index, events) in replies.into_iter().enumerate() {
-        let mut recorder = Recorder::new(output.clone(), index as u64 + 1, "test")
-            .knowing(known.clone())
-            .tracking(threads.clone());
+        let (recorder, signal) = Recorder::start(
+            output.clone(),
+            index as u64 + 1,
+            "test",
+            Tracking {
+                identity: known.clone(),
+                threads: Some(threads.clone()),
+            },
+        );
         if late == Some(index) {
-            recorder = recorder.awaiting_project();
-            let signal = recorder.project_signal();
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(2)).await;
                 signal.settle(None);
             });
+        } else {
+            drop(signal);
         }
         let tap = ExchangeTap::spawn(recorder, Clock::start(), Box::new(Emits { events, release: None }));
         tap.send(TapInput::ResponseEnd);
@@ -671,14 +792,14 @@ async fn an_exchange_that_ends_without_a_record_does_not_hold_back_its_threads_l
 #[tokio::test]
 async fn a_record_waits_for_a_lookup_that_finishes_after_the_reply() {
     // It carries the project found while the record was already due
-    let lines = run_recorded(closed_reply(), |recorder| {
-        let recorder = recorder.awaiting_project();
-        let lookup = recorder.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            lookup.project_looked_up(Some("host/owner/repo".into()));
-        });
-        recorder
+    let lines = run_recorded(closed_reply(), |mut recording| {
+        recording.resolve_project = Some(Box::new(|signal| {
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                signal.settle(Some("host/owner/repo".into()));
+            });
+        }));
+        recording
     })
     .await;
 
@@ -689,14 +810,14 @@ async fn a_record_waits_for_a_lookup_that_finishes_after_the_reply() {
 #[tokio::test]
 async fn a_record_waits_for_as_long_as_its_lookup_takes() {
     // It carries a project that was settled long after the reply, as the lookup's own wait is the only bound
-    let lines = run_recorded(closed_reply(), |recorder| {
-        let recorder = recorder.awaiting_project();
-        let signal = recorder.project_signal();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            signal.settle(Some("host/owner/repo".into()));
-        });
-        recorder
+    let lines = run_recorded(closed_reply(), |mut recording| {
+        recording.resolve_project = Some(Box::new(|signal| {
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                signal.settle(Some("host/owner/repo".into()));
+            });
+        }));
+        recording
     })
     .await;
 
@@ -707,10 +828,9 @@ async fn a_record_waits_for_as_long_as_its_lookup_takes() {
 #[tokio::test]
 async fn a_record_is_written_without_a_project_when_its_signal_is_dropped_unanswered() {
     // It does not wait for a lookup that can no longer answer
-    let lines = run_recorded(closed_reply(), |recorder| {
-        let recorder = recorder.awaiting_project();
-        drop(recorder.project_signal());
-        recorder
+    let lines = run_recorded(closed_reply(), |mut recording| {
+        recording.resolve_project = Some(Box::new(drop));
+        recording
     })
     .await;
 
@@ -721,10 +841,9 @@ async fn a_record_is_written_without_a_project_when_its_signal_is_dropped_unansw
 #[tokio::test]
 async fn dropping_a_settled_signal_keeps_the_project() {
     // It leaves the answer alone once the lookup gave one
-    let lines = run_recorded(closed_reply(), |recorder| {
-        let recorder = recorder.awaiting_project();
-        recorder.project_signal().settle(Some("host/owner/repo".into()));
-        recorder
+    let lines = run_recorded(closed_reply(), |mut recording| {
+        recording.resolve_project = Some(Box::new(|signal| signal.settle(Some("host/owner/repo".into()))));
+        recording
     })
     .await;
 
@@ -737,10 +856,9 @@ async fn a_lookup_that_finds_nothing_lets_the_record_go_without_waiting() {
     // It does not wait out the bound once the lookup has answered
     let started = Instant::now();
 
-    let lines = run_recorded(closed_reply(), |recorder| {
-        let recorder = recorder.awaiting_project();
-        recorder.project_looked_up(None);
-        recorder
+    let lines = run_recorded(closed_reply(), |mut recording| {
+        recording.resolve_project = Some(Box::new(|signal| signal.settle(None)));
+        recording
     })
     .await;
 
@@ -752,8 +870,8 @@ async fn a_lookup_that_finds_nothing_lets_the_record_go_without_waiting() {
 #[tokio::test]
 async fn a_reliable_write_waits_for_room_in_a_full_queue() {
     // It delivers the line once the queue drains, where a plain write would drop it
-    let (sink, mut drained) = Sink::detached(1);
-    let recorder = Recorder::new(TapOutput::new(sink).unwrap(), 1, "test");
+    let (output, mut drained) = TapOutput::detached(1).unwrap();
+    let recorder = Recorder::new(output, 1, "test");
     recorder.write(Clock::start().stamp(), filler(), (0, 0));
     let writer = recorder.clone();
     let edge = Entry::Edge(graph::Edge::new(EdgeKind::InThread, "exchange:1", "thread:t1"));
@@ -797,8 +915,8 @@ async fn closing_before_the_reply_ends_writes_one_incomplete_record() {
 #[tokio::test]
 async fn a_record_is_written_when_the_sink_refuses_live_lines_and_counts_them() {
     // It waits for room, so the record is not lost, and reports the refused live lines
-    let (sink, mut drained) = Sink::detached(3);
-    let recorder = Recorder::new(TapOutput::new(sink).unwrap(), 1, "test");
+    let (output, mut drained) = TapOutput::detached(3).unwrap();
+    let recorder = Recorder::new(output, 1, "test");
     let tap = ExchangeTap::spawn(
         recorder,
         Clock::start(),
@@ -830,7 +948,10 @@ async fn a_record_is_written_when_the_sink_refuses_live_lines_and_counts_them() 
     // These accepted lines have incomplete capture even though their emitted cursors are contiguous.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("tap.jsonl");
-    let sink = Sink::open_with(&path, None).await.unwrap();
+    let sink = TapOutput::open(&path, None, crate::logging::Logger::default())
+        .await
+        .unwrap()
+        .sink;
     let count = written.len();
     for line in written {
         assert!(sink.write_reliable(line).await);
@@ -849,7 +970,9 @@ async fn a_stalled_parser_gives_an_incomplete_record_that_counts_the_dropped_inp
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
     let recorder = Recorder::new(
-        TapOutput::new(Sink::open_with(&tap_file, None).await.unwrap()).unwrap(),
+        TapOutput::open(&tap_file, None, crate::logging::Logger::default())
+            .await
+            .unwrap(),
         1,
         "test",
     );
@@ -878,7 +1001,7 @@ async fn a_stalled_parser_gives_an_incomplete_record_that_counts_the_dropped_inp
     assert_eq!(record["payload"]["incomplete"], true);
 }
 
-struct Identifying(Identity);
+pub(super) struct Identifying(Identity);
 
 impl Adapter for Identifying {
     fn name(&self) -> &'static str {
@@ -903,7 +1026,7 @@ fn in_session_and_thread() -> Identifying {
     })
 }
 
-fn nobody() -> Identifying {
+pub(super) fn nobody() -> Identifying {
     Identifying(Identity::default())
 }
 
@@ -914,7 +1037,7 @@ fn labelled(dir: &str) -> Label {
     }
 }
 
-fn begin(exchanges: &Exchanges, adapter: &dyn Adapter, label: Option<&Label>) -> ExchangeTap {
+pub(super) fn begin(exchanges: &Exchanges, adapter: &dyn Adapter, label: Option<&Label>) -> ExchangeTap {
     let head = RequestHead {
         method: "POST".into(),
         host: "example.com".into(),
@@ -935,8 +1058,10 @@ fn begin(exchanges: &Exchanges, adapter: &dyn Adapter, label: Option<&Label>) ->
 }
 
 async fn exchanges_writing_to(dir: &tempfile::TempDir, projects: ProjectLookups) -> Exchanges {
-    let sink = Sink::open_with(&dir.path().join("tap.jsonl"), None).await.unwrap();
-    Exchanges::new(TapOutput::new(sink).unwrap(), None, projects)
+    let output = TapOutput::open(&dir.path().join("tap.jsonl"), None, crate::logging::Logger::default())
+        .await
+        .unwrap();
+    Exchanges::new(output, None, projects)
 }
 
 async fn written_lines(dir: &tempfile::TempDir, count: usize) -> Vec<Value> {
@@ -1075,7 +1200,9 @@ async fn note_response_head(response: hyper::Response<()>) -> NotedHead {
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
     let recorder = Recorder::new(
-        TapOutput::new(Sink::open_with(&tap_file, None).await.unwrap()).unwrap(),
+        TapOutput::open(&tap_file, None, crate::logging::Logger::default())
+            .await
+            .unwrap(),
         1,
         "test",
     );
@@ -1085,13 +1212,14 @@ async fn note_response_head(response: hyper::Response<()>) -> NotedHead {
         Clock::start(),
         Box::new(ReadsResponseHeads(Arc::clone(&heard))),
     );
-    let stats = tap.stats.clone();
-
     tap.note_response_head(&response);
     drop(tap);
     wait_for_exchange_end(&tap_file).await;
 
-    let line = lines(&tap_file)
+    let captured = lines(&tap_file);
+    let head_marked_arrived =
+        captured.iter().find(|line| line["event"] == "exchange_end").unwrap()["payload"]["response_head_us"].is_u64();
+    let line = captured
         .into_iter()
         .find(|line| line["event"] == "response_head")
         .unwrap();
@@ -1099,7 +1227,7 @@ async fn note_response_head(response: hyper::Response<()>) -> NotedHead {
     NotedHead {
         line,
         heard_by_parser,
-        head_marked_arrived: stats.head_us.load(Ordering::Relaxed) != stats::UNSET,
+        head_marked_arrived,
     }
 }
 

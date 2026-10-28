@@ -1,5 +1,3 @@
-use crate::line::Line;
-use crate::live::Live;
 use crate::logging::{Fields, Level, Logger};
 use serde::Serialize;
 use std::path::Path;
@@ -35,7 +33,7 @@ impl<T: Serialize + Send + 'static> Sink<T> {
 
     /// Opens the file; each item written is one JSON line, then handed to `shown` without waiting for anything.
     /// An item that cannot be serialised is dropped and counted, and the next one is written.
-    async fn open_showing(
+    pub(crate) async fn open_showing(
         path: &Path,
         prepare: impl FnMut(&mut T, u64) + Send + 'static,
         shown: impl FnMut(&T) + Send + 'static,
@@ -92,28 +90,6 @@ impl<T: Serialize + Send + 'static> Sink<T> {
     }
 }
 
-impl Sink<Line> {
-    /// Opens the tap file; each line written is also shown by `live`, after the file write and
-    /// without ever waiting for it. The writer assigns each tap line its 1-based sequence after dequeue.
-    pub async fn open_with(path: &Path, mut live: Option<Live>) -> std::io::Result<Self> {
-        Self::open_with_reporting(path, live.take(), Logger::default()).await
-    }
-
-    pub async fn open_with_reporting(path: &Path, mut live: Option<Live>, log: Logger) -> std::io::Result<Self> {
-        Self::open_showing(
-            path,
-            |line, sequence| line.sequence = sequence,
-            move |line| {
-                if let Some(live) = live.as_mut() {
-                    live.show(line);
-                }
-            },
-            log,
-        )
-        .await
-    }
-}
-
 impl<T> Sink<T> {
     /// Queues a line, or drops and counts it when the queue is full. Returns whether it was queued.
     pub fn write(&self, record: T) -> bool {
@@ -149,9 +125,6 @@ impl<T> Sink<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exchange::{Clock, Recorder, TapOutput};
-    use crate::line::Entry;
-    use crate::note::{Note, Tunnel};
     use serde::ser::Error;
     use serde::Serializer;
     use serde_json::{json, Value};
@@ -194,66 +167,6 @@ mod tests {
         assert!(accepted.contains(&false));
         assert!(written);
         wait_for_text(&path, "reliable").await;
-    }
-
-    #[tokio::test]
-    async fn tap_sequences_follow_file_order_with_a_reliable_producer_waiting_on_a_full_queue() {
-        // It counts emissions after dequeue, sharing one sequence across producers and skipping refused inputs.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tap.jsonl");
-        let sink = Sink::open_with(&path, None).await.unwrap();
-        let output = TapOutput::new(sink.clone()).unwrap();
-        let first = Recorder::new(output.clone(), 1, "test");
-        let stamp = Clock::start().stamp();
-        let entry = Entry::Note(Note::Tunnel(Tunnel {
-            host: "synthetic.test".into(),
-            label: None,
-            port: 443,
-        }));
-        for _ in 0..SINK_QUEUE {
-            first.write(stamp, entry.clone(), (0, 0));
-        }
-        assert_eq!(first.refused(), 0);
-        first.write(stamp, entry.clone(), (0, 0));
-        assert_eq!(first.refused(), 1);
-        assert_eq!(sink.dropped(), 1);
-
-        let second = Recorder::new(output.clone(), 2, "test");
-        let mut waiting = std::pin::pin!(second.write_reliable(stamp, entry.clone()));
-        let pending = std::future::poll_fn(|cx| {
-            std::task::Poll::Ready(std::future::Future::poll(waiting.as_mut(), cx).is_pending())
-        })
-        .await;
-        assert!(pending);
-
-        let mut producers = Vec::new();
-        for exchange in 3..11 {
-            let recorder = Recorder::new(output.clone(), exchange, "test");
-            let entry = entry.clone();
-            producers.push(tokio::spawn(async move {
-                recorder.write_reliable(stamp, entry).await;
-            }));
-        }
-        waiting.await;
-        for producer in producers {
-            producer.await.unwrap();
-        }
-        Recorder::new(output, 100, "test").write_reliable(stamp, entry).await;
-        wait_for_text(&path, "\"exchange\":100,").await;
-
-        let text = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<Value> = text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
-        assert_eq!(lines.len(), SINK_QUEUE + 10);
-        assert!(lines.iter().position(|line| line["exchange"] == 2).unwrap() >= SINK_QUEUE);
-        for exchange in 2..11 {
-            assert_eq!(lines.iter().filter(|line| line["exchange"] == exchange).count(), 1);
-        }
-        assert_eq!(lines.last().unwrap()["exchange"], 100);
-        for (index, line) in lines.iter().enumerate() {
-            assert_eq!(line["sequence"].as_u64(), Some(index as u64 + 1));
-            assert_eq!(line["run_id"], lines[0]["run_id"]);
-        }
-        assert_eq!(sink.dropped(), 1);
     }
 
     enum Item {

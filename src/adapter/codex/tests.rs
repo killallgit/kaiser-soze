@@ -1,9 +1,10 @@
 use super::*;
+use crate::adapter::event::*;
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
-use crate::body::MAX_REQUEST_BODY;
+use crate::capture::MAX_BUFFER_BYTES;
+use crate::common::message::{Block, Message, Output};
 use crate::common::*;
 use crate::graph::Identity;
-use crate::message::{Block, Message, Output};
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -479,7 +480,7 @@ fn reports_a_failure_by_code_only() {
 fn flags_a_request_body_over_the_cap_as_unparsed() {
     // It reports the request as unparsed rather than reading a partial body
     let mut parser = parser();
-    parser.feed(TapInput::RequestBody(Bytes::from(vec![b' '; MAX_REQUEST_BODY])));
+    parser.feed(TapInput::RequestBody(Bytes::from(vec![b' '; MAX_BUFFER_BYTES])));
     parser.feed(TapInput::RequestBody(Bytes::from_static(b"{}")));
 
     let events = parser.feed(TapInput::RequestEnd);
@@ -681,7 +682,7 @@ fn a_reply_with_fewer_items_than_its_output_breaks_the_chain() {
 fn history_past_the_bound_makes_later_records_partial() {
     let mut parser = parser();
     first_request(&mut parser);
-    server(&mut parser, &reply_frames("r1", &"a".repeat(MAX_REQUEST_BODY)));
+    server(&mut parser, &reply_frames("r1", &"a".repeat(MAX_BUFFER_BYTES)));
 
     let event = client(
         &mut parser,
@@ -697,7 +698,7 @@ fn a_request_body_that_cannot_be_read_makes_the_next_request_partial() {
     let mut parser = parser();
     first_request(&mut parser);
     server(&mut parser, &reply_frames("r1", "answer"));
-    parser.feed(TapInput::RequestBody(Bytes::from(vec![b' '; MAX_REQUEST_BODY])));
+    parser.feed(TapInput::RequestBody(Bytes::from(vec![b' '; MAX_BUFFER_BYTES])));
     parser.feed(TapInput::RequestBody(Bytes::from_static(b"{}")));
     parser.feed(TapInput::RequestEnd);
 

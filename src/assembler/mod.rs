@@ -1,4 +1,4 @@
-use crate::body::MAX_REQUEST_BODY;
+use crate::capture::MAX_BUFFER_BYTES;
 use crate::event::{BlockDelta, BlockKind, BlockStart, Conversation, Delta, Event, Usage};
 use crate::graph::claimed;
 use crate::message::{Block, Message};
@@ -63,7 +63,7 @@ pub struct Assembler {
 
 impl Default for Assembler {
     fn default() -> Self {
-        Self::with_bound(MAX_REQUEST_BODY)
+        Self::with_bound(MAX_BUFFER_BYTES)
     }
 }
 

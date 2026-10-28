@@ -3,13 +3,13 @@ use flate2::{Decompress, FlushDecompress, Status};
 const MAX_FRAME: u64 = 64 * 1024 * 1024;
 const DEFLATE_TAIL: [u8; 4] = [0, 0, 0xff, 0xff];
 
-pub struct WsText {
-    pub text: String,
-    pub start: u64,
-    pub end: u64,
+pub(super) struct WsText {
+    pub(super) text: String,
+    pub(super) start: u64,
+    pub(super) end: u64,
 }
 
-pub struct WsDecoder {
+pub(super) struct WsDecoder {
     buf: Vec<u8>,
     consumed: u64,
     message: Vec<u8>,
@@ -44,7 +44,7 @@ struct Frame {
 }
 
 impl WsDecoder {
-    pub fn push(&mut self, chunk: &[u8]) -> Vec<WsText> {
+    pub(super) fn push(&mut self, chunk: &[u8]) -> Vec<WsText> {
         if self.broken {
             return Vec::new();
         }
@@ -148,7 +148,7 @@ impl WsDecoder {
         }
     }
 
-    pub fn mark_broken(&mut self) {
+    pub(super) fn mark_broken(&mut self) {
         self.broken = true;
     }
 }

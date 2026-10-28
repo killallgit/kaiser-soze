@@ -1,7 +1,7 @@
+use crate::adapter::image::base64_size;
 use crate::adapter::TapEvent;
-use crate::common::*;
-use crate::event::{Conversation, Event};
-use crate::message::{Block, Message, Output, Role};
+use crate::common::event::{Conversation, Event};
+use crate::common::message::{Block, Message, Output, Role};
 use serde_json::Value;
 
 pub(super) fn conversation_event(json: &Value) -> TapEvent {

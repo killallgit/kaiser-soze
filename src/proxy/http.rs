@@ -3,10 +3,10 @@
 use super::upstream::Connection;
 use super::{empty_response, Out, Proxy};
 use crate::adapter::{Adapter, RequestHead};
+use crate::capture::headers::redact_headers;
 use crate::exchange::{ExchangeTap, Opening, Side, TeeBody};
 use crate::logging::{Fields, Level};
 use crate::note::{self, Label, Note};
-use crate::redact::redact_headers;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::header::{ACCEPT_ENCODING, UPGRADE};

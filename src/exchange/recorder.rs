@@ -15,19 +15,24 @@ const TURN_WAIT: Duration = Duration::from_secs(2);
 type ProjectLookup = Option<Option<String>>;
 
 #[derive(Clone)]
-pub struct Recorder {
+pub(crate) struct Recorder {
     pub(super) output: TapOutput,
-    pub exchange: u64,
-    pub adapter: &'static str,
-    pub(super) refused: Arc<AtomicU64>,
-    pub(super) identity: Identity,
+    pub(super) exchange: u64,
+    adapter: &'static str,
+    refused: Arc<AtomicU64>,
+    identity: Identity,
     project: Arc<watch::Sender<ProjectLookup>>,
     threads: Option<Arc<Mutex<Threads>>>,
     place: Option<Arc<Place>>,
 }
 
+pub(super) struct Tracking {
+    pub identity: Identity,
+    pub threads: Option<Arc<Mutex<Threads>>>,
+}
+
 impl Recorder {
-    pub fn new(output: TapOutput, exchange: u64, adapter: &'static str) -> Self {
+    pub(super) fn new(output: TapOutput, exchange: u64, adapter: &'static str) -> Self {
         Self {
             output,
             exchange,
@@ -40,42 +45,29 @@ impl Recorder {
         }
     }
 
-    /// Makes this recorder's records carry the session and thread of its exchange.
-    pub fn knowing(mut self, identity: Identity) -> Self {
-        self.identity = identity;
-        self
-    }
-
-    /// Makes this recorder's records add their `turn` and `continues` edges to `threads`, after the records
-    /// of the earlier exchanges of its thread. Call it after `knowing`, as the thread is read here.
-    pub fn tracking(mut self, threads: Arc<Mutex<Threads>>) -> Self {
-        if let Some(thread) = &self.identity.thread {
+    /// Starts a tracked recorder with the signal that settles or releases its project wait.
+    pub(super) fn start(
+        output: TapOutput,
+        exchange: u64,
+        adapter: &'static str,
+        tracking: Tracking,
+    ) -> (Self, ProjectSignal) {
+        let mut recorder = Self::new(output, exchange, adapter);
+        recorder.identity = tracking.identity;
+        if let (Some(thread), Some(threads)) = (&recorder.identity.thread, &tracking.threads) {
             let joined = threads
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .join(thread, self.exchange);
-            self.place = Some(Arc::new(joined));
+                .join(thread, exchange);
+            recorder.place = Some(Arc::new(joined));
         }
-        self.threads = Some(threads);
-        self
+        recorder.threads = tracking.threads;
+        recorder.project.send_replace(None);
+        let signal = ProjectSignal(recorder.clone());
+        (recorder, signal)
     }
 
-    /// Makes this recorder's records wait for the project signal, which ends when it is settled or dropped.
-    /// Take `project_signal` too: a waiting recorder whose signal is never taken writes no record.
-    pub fn awaiting_project(self) -> Self {
-        self.project.send_replace(None);
-        self
-    }
-
-    pub fn project_signal(&self) -> ProjectSignal {
-        ProjectSignal(self.clone())
-    }
-
-    pub(super) fn project_looked_up(&self, project: Option<String>) {
-        self.project.send_replace(Some(project));
-    }
-
-    pub(super) async fn settled_project(&self) -> Option<String> {
+    async fn settled_project(&self) -> Option<String> {
         let mut lookup = self.project.subscribe();
         let found = lookup.wait_for(Option::is_some).await.ok()?.clone();
         found.flatten()
@@ -92,7 +84,7 @@ impl Recorder {
     }
 
     /// Live lines of this exchange the sink refused.
-    pub fn refused(&self) -> u64 {
+    pub(super) fn refused(&self) -> u64 {
         self.refused.load(Ordering::Relaxed)
     }
 
@@ -111,7 +103,7 @@ impl Recorder {
     }
 
     /// Writes a line the sink may refuse; a refused line is counted.
-    pub fn write(&self, stamp: Stamp, entry: Entry, offsets: (u64, u64)) {
+    pub(super) fn write(&self, stamp: Stamp, entry: Entry, offsets: (u64, u64)) {
         let line = self.line(stamp, entry, offsets);
         self.output.logging.tap(&line);
         if !self.output.sink.write(line) {
@@ -120,7 +112,7 @@ impl Recorder {
     }
 
     /// Writes a line that waits for room in the sink rather than being refused.
-    pub async fn write_reliable(&self, stamp: Stamp, entry: Entry) {
+    pub(super) async fn write_reliable(&self, stamp: Stamp, entry: Entry) {
         let line = self.line(stamp, entry, (0, 0));
         self.output.logging.tap(&line);
         self.output.sink.write_reliable(line).await;
@@ -157,11 +149,11 @@ impl Recorder {
 
 /// Ends a recorder's wait for its project: later records carry the project when `settle` gave one.
 /// Dropped unanswered, it settles with no project, so a record never waits for a lookup that cannot come.
-pub struct ProjectSignal(Recorder);
+pub(super) struct ProjectSignal(Recorder);
 
 impl ProjectSignal {
-    pub fn settle(self, project: Option<String>) {
-        self.0.project_looked_up(project);
+    pub(super) fn settle(self, project: Option<String>) {
+        self.0.project.send_replace(Some(project));
     }
 }
 

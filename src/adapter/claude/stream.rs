@@ -1,3 +1,4 @@
+use crate::adapter::event::{block_delta, usage};
 use crate::adapter::TapEvent;
 use crate::common::*;
 use serde_json::Value;

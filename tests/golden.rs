@@ -8,9 +8,9 @@ use kaiser_soze::adapter::{Adapter, RequestHead, TapInput};
 use kaiser_soze::claude::ClaudeAdapter;
 use kaiser_soze::codex::CodexAdapter;
 use kaiser_soze::exchange::{ExchangeTap, Exchanges, Opening, TapOutput};
+use kaiser_soze::logging::Logger;
 use kaiser_soze::note::{self, Label, Note};
 use kaiser_soze::project::{ProjectCache, ProjectLookups};
-use kaiser_soze::sink::Sink;
 use serde_json::{json, Value};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -72,12 +72,10 @@ impl Recording {
             "[remote \"origin\"]\n\turl = https://example.com/owner/repo.git\n",
         )
         .unwrap();
-        let sink = Sink::open_with(&dir.path().join("tap.jsonl"), None).await.unwrap();
-        let exchanges = Exchanges::new(
-            TapOutput::new(sink).unwrap(),
-            None,
-            ProjectLookups::new(ProjectCache::default()),
-        );
+        let output = TapOutput::open(&dir.path().join("tap.jsonl"), None, Logger::default())
+            .await
+            .unwrap();
+        let exchanges = Exchanges::new(output, None, ProjectLookups::new(ProjectCache::default()));
         Self {
             dir,
             repo,
