@@ -18,3 +18,5 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - if: ${{ !cancelled() }}
         run: cargo test
+      - if: ${{ !cancelled() }}
+        run: tests/wrappers/run.sh
