@@ -10,7 +10,7 @@ use serde_json::Value;
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Event {
-    Conversation(Conversation),
+    Conversation(#[serde(serialize_with = "announce")] Conversation),
     BlockStart(BlockStart),
     BlockDelta(BlockDelta),
     BlockStop(BlockStop),
@@ -18,6 +18,35 @@ pub enum Event {
     ReplyEnd(ReplyEnd),
     Error(Error),
     Unparsed(Unparsed),
+}
+
+/// The live line announces a request by counts and ids. The finished `record` carries the whole conversation.
+fn announce<S: Serializer>(conversation: &Conversation, serializer: S) -> Result<S::Ok, S::Error> {
+    #[derive(Serialize)]
+    struct Announced<'a> {
+        message_count: usize,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        partial: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        previous_message_id: &'a Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        step: Option<u64>,
+        tool_count: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn: &'a Option<String>,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        warmup: bool,
+    }
+    Announced {
+        message_count: conversation.messages.len(),
+        partial: conversation.partial,
+        previous_message_id: &conversation.previous_message_id,
+        step: conversation.step,
+        tool_count: conversation.tools.as_array().map_or(0, Vec::len),
+        turn: &conversation.turn,
+        warmup: conversation.warmup,
+    }
+    .serialize(serializer)
 }
 
 impl Event {

@@ -296,6 +296,8 @@ pub async fn wait_for_line(tap_file: &Path, kind: &str) {
     panic!("no {kind} line within 1 s");
 }
 
+/// Folds an exchange's live reply events into records. A live `conversation` line only announces the request, so each
+/// record's conversation, step and turn come from the record the tap wrote.
 pub fn fold(lines: &[Value], exchange: u64) -> Vec<Value> {
     let mut assembler = Assembler::default();
     let mut records: Vec<Record> = lines
@@ -305,16 +307,28 @@ pub fn fold(lines: &[Value], exchange: u64) -> Vec<Value> {
         .flat_map(|event| assembler.push(&event, 0))
         .collect();
     records.extend(assembler.finish(0));
+    let written = records_of(lines, exchange);
     records
         .iter()
-        .map(|record| serde_json::to_value(record).unwrap())
+        .zip(&written)
+        .map(|(record, written)| {
+            let mut folded = serde_json::to_value(record).unwrap();
+            for key in ["conversation", "step", "turn"] {
+                match written.get(key) {
+                    Some(value) => folded[key] = value.clone(),
+                    None => {
+                        folded.as_object_mut().unwrap().remove(key);
+                    }
+                }
+            }
+            folded
+        })
         .collect()
 }
 
 fn stream_event(line: &Value) -> Option<Event> {
     let payload = line["payload"].clone();
     Some(match line["event"].as_str()? {
-        "conversation" => Event::Conversation(serde_json::from_value(payload).unwrap()),
         "block_start" => Event::BlockStart(serde_json::from_value(payload).unwrap()),
         "block_delta" => Event::BlockDelta(serde_json::from_value(payload).unwrap()),
         "block_stop" => Event::BlockStop(serde_json::from_value(payload).unwrap()),
