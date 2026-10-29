@@ -1,6 +1,8 @@
 use crate::logging::{Fields, Level, Logger};
 use serde::Serialize;
+use std::fs::Permissions;
 use std::io::SeekFrom;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -53,7 +55,7 @@ impl<T: Serialize + Send + 'static> Sink<T> {
             .inspect_err(|error| {
                 log.event(Level::Error, "sink_open_failed", Fields::io(error));
             })?;
-        let last = last_byte(&mut file).await.inspect_err(|error| {
+        let last = secure_and_last_byte(&mut file).await.inspect_err(|error| {
             log.event(Level::Error, "sink_open_failed", Fields::io(error));
         })?;
         Ok(Self::writing(file, last, prepare, log))
@@ -104,8 +106,13 @@ impl<T: Serialize + Send + 'static> Sink<T> {
     }
 }
 
-async fn last_byte(file: &mut tokio::fs::File) -> std::io::Result<Option<u8>> {
-    let len = file.metadata().await?.len();
+/// Makes the file owner-only (the open mode applies only to a new file), then returns its final byte.
+async fn secure_and_last_byte(file: &mut tokio::fs::File) -> std::io::Result<Option<u8>> {
+    let metadata = file.metadata().await?;
+    if metadata.permissions().mode() & 0o077 != 0 {
+        file.set_permissions(Permissions::from_mode(0o600)).await?;
+    }
+    let len = metadata.len();
     if len == 0 {
         return Ok(None);
     }
@@ -196,6 +203,20 @@ mod tests {
         // It creates a new tap file with mode 0600
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tap.jsonl");
+
+        Sink::<Value>::open(&path).await.unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[tokio::test]
+    async fn opening_an_existing_tap_file_makes_it_readable_only_by_its_owner() {
+        // It tightens a file that was created earlier with looser permissions
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tap.jsonl");
+        std::fs::write(&path, "").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
         Sink::<Value>::open(&path).await.unwrap();
 
