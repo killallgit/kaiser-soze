@@ -2,6 +2,9 @@
 /.beads/
 # killall-agents:start
 /.claude/agents/builder.md
+/.claude/agents/comment-janitor.md
+/.claude/agents/git-janitor-investigator.md
+/.claude/agents/git-janitor.md
 /.claude/agents/grunt.md
 /.claude/agents/hall-monitor.md
 /.claude/agents/planner.md
