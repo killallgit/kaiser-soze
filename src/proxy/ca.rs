@@ -9,11 +9,11 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 const CERT_FILE: &str = "ca.pem";
 const KEY_FILE: &str = "ca-key.pem";
-const HOSTS_FILE: &str = "ca-hosts.txt";
 
 pub(super) struct Ca {
     issuer: Issuer<'static, KeyPair>,
@@ -24,22 +24,16 @@ impl Ca {
     pub(super) fn load_or_create(dir: &Path, permitted_hosts: &[String]) -> Result<Self, BoxError> {
         let cert_path = dir.join(CERT_FILE);
         let key_path = dir.join(KEY_FILE);
-        let hosts_path = dir.join(HOSTS_FILE);
         std::fs::create_dir_all(dir)?;
         let key = if key_path.exists() {
             KeyPair::from_pem(&std::fs::read_to_string(&key_path)?)?
         } else {
-            let key = KeyPair::generate()?;
-            write_private(&key_path, &key.serialize_pem())?;
-            key
+            create_key(&key_path)?
         };
         let params = ca_params(permitted_hosts)?;
-        let hosts = permitted_hosts.join("\n");
-        let stored_hosts = std::fs::read_to_string(&hosts_path).ok();
-        if !cert_path.exists() || stored_hosts.as_deref() != Some(hosts.as_str()) {
-            std::fs::write(&cert_path, params.self_signed(&key)?.pem())?;
-            std::fs::write(&hosts_path, hosts)?;
-        }
+        // Issued at every start: the key and subject stay the same, so certs already trusted keep verifying,
+        // and a cert left by another key cannot outlive a start.
+        write_atomic(&cert_path, &params.self_signed(&key)?.pem())?;
         Ok(Self {
             issuer: Issuer::new(params, key),
             leaves: Mutex::default(),
@@ -85,6 +79,34 @@ fn ca_params(permitted_hosts: &[String]) -> Result<CertificateParams, BoxError> 
         excluded_subtrees: Vec::new(),
     });
     Ok(params)
+}
+
+/// A name no other start or thread is writing to, beside `path` so a rename or link stays on one filesystem.
+fn pending_path(path: &Path) -> std::path::PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let call = NEXT.fetch_add(1, Ordering::Relaxed);
+    path.with_extension(format!("{}.{call}.tmp", std::process::id()))
+}
+
+/// Creates the key file complete or not at all. A start that loses a race to create it uses the winner's key.
+fn create_key(path: &Path) -> Result<KeyPair, BoxError> {
+    let key = KeyPair::generate()?;
+    let pending = pending_path(path);
+    let linked = write_private(&pending, &key.serialize_pem()).and_then(|()| std::fs::hard_link(&pending, path));
+    let _ = std::fs::remove_file(&pending);
+    match linked {
+        Ok(()) => Ok(key),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Ok(KeyPair::from_pem(&std::fs::read_to_string(path)?)?)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    let pending = pending_path(path);
+    std::fs::write(&pending, contents)?;
+    std::fs::rename(&pending, path)
 }
 
 fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
@@ -155,21 +177,38 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
     }
 
-    #[test]
-    fn reuses_the_key_and_reissues_the_cert_only_when_hosts_change() {
-        // It keeps one key for good, and a new cert exactly when the permitted hosts differ
+    #[tokio::test]
+    async fn keeps_one_key_for_good_and_a_cert_that_always_matches_it() {
+        // It never replaces the key, and a cert left by another key is replaced at the next start
         let dir = tempfile::tempdir().unwrap();
-        let read = |file: &str| std::fs::read(dir.path().join(file)).unwrap();
+        let other = tempfile::tempdir().unwrap();
         Ca::load_or_create(dir.path(), &hosts(&["a.test"])).unwrap();
-        let (key, cert) = (read(KEY_FILE), read(CERT_FILE));
+        let key = std::fs::read(dir.path().join(KEY_FILE)).unwrap();
+        Ca::load_or_create(other.path(), &hosts(&["a.test"])).unwrap();
+        std::fs::copy(other.path().join(CERT_FILE), dir.path().join(CERT_FILE)).unwrap();
 
-        Ca::load_or_create(dir.path(), &hosts(&["a.test"])).unwrap();
-        let unchanged = read(CERT_FILE) == cert;
-        Ca::load_or_create(dir.path(), &hosts(&["a.test", "b.test"])).unwrap();
+        let ca = Ca::load_or_create(dir.path(), &hosts(&["a.test"])).unwrap();
 
-        assert!(unchanged);
-        assert_eq!(read(KEY_FILE), key);
-        assert_ne!(read(CERT_FILE), cert);
+        assert_eq!(std::fs::read(dir.path().join(KEY_FILE)).unwrap(), key);
+        assert!(handshake(dir.path(), &ca, "a.test").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn first_starts_at_the_same_moment_agree_on_one_key() {
+        // It lets the loser of the race use the winner's key, so both sign what the cert on disk trusts
+        for _ in 0..20 {
+            let dir = tempfile::tempdir().unwrap();
+            let names = hosts(&["a.test"]);
+
+            let (first, second) = std::thread::scope(|scope| {
+                let first = scope.spawn(|| Ca::load_or_create(dir.path(), &names).unwrap());
+                let second = scope.spawn(|| Ca::load_or_create(dir.path(), &names).unwrap());
+                (first.join().unwrap(), second.join().unwrap())
+            });
+
+            assert!(handshake(dir.path(), &first, "a.test").await.is_ok());
+            assert!(handshake(dir.path(), &second, "a.test").await.is_ok());
+        }
     }
 
     #[tokio::test]
