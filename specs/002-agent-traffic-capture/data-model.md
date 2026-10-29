@@ -57,5 +57,5 @@ A reply holds only text, reasoning and tool_call blocks. tool_result and image b
 ## Relationships
 
 - One exchange has one or more replies. Each reply has one Conversation (the request that started it), many live events, and one finished record.
-- A finished record equals the fold of the live events of its reply.
+- A finished record equals the fold of the live events of its reply, plus its conversation, which only the record carries.
 - Assembly of one reply is bounded by the same size as the request-body cap (32 MiB, `MAX_REQUEST_BODY`).

@@ -43,6 +43,33 @@ fn a_conversation_writes_each_field_it_has_in_key_order() {
 }
 
 #[test]
+fn a_conversation_event_writes_counts_and_ids_instead_of_the_conversation() {
+    // The record carries the conversation; the live line only announces it, so a request is not written twice
+    let conversation = Conversation {
+        partial: true,
+        previous_message_id: Some("m1".into()),
+        step: Some(3),
+        turn: Some("u2".into()),
+        warmup: true,
+        system: json!("sys"),
+        tools: json!([{"name": "shell"}]),
+        ..bare_conversation()
+    };
+
+    assert_eq!(
+        written(&Event::Conversation(conversation)),
+        concat!(
+            r#"{"message_count":1,"partial":true,"previous_message_id":"m1","step":3,"#,
+            r#""tool_count":1,"turn":"u2","warmup":true}"#
+        )
+    );
+    assert_eq!(
+        written(&Event::Conversation(bare_conversation())),
+        r#"{"message_count":1,"tool_count":0}"#
+    );
+}
+
+#[test]
 fn a_block_start_leaves_out_a_null_id_and_name() {
     // A text block names neither; a tool call names both
     let text = BlockStart {

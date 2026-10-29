@@ -37,9 +37,12 @@ async fn taps_an_anthropic_stream_through_the_claude_adapter() {
     assert_eq!(count(&tapped, "reply_end"), 1);
     let conversation = tapped.iter().find(|e| e["event"] == "conversation").unwrap();
     assert_eq!(conversation["adapter"], "claude");
-    assert_eq!(conversation["payload"]["tools"][0]["name"], "Bash");
+    assert_eq!(conversation["payload"]["message_count"], 1);
+    assert_eq!(conversation["payload"]["tool_count"], 1);
+    assert!(conversation["payload"].get("tools").is_none());
     let records = records_of(&tapped, 1);
     assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["conversation"]["tools"][0]["name"], "Bash");
     assert_eq!(records[0]["reply"]["message"]["blocks"][0]["text"], "abc");
     assert_eq!(records[0]["reply"]["usage"]["input"], 5);
     assert_eq!(records[0]["reply"]["usage"]["output"], 3);
@@ -251,9 +254,9 @@ async fn credentials_and_image_bytes_never_reach_the_tap_file() {
     let raw = std::fs::read_to_string(&tap_file).unwrap();
     assert_eq!(raw.matches(SECRET).count(), 0);
     assert_eq!(raw.matches("SU1HQllURVNNQVJLRVI").count(), 0);
-    let conversation = lines.iter().find(|line| line["event"] == "conversation").unwrap();
+    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
     assert_eq!(
-        conversation["payload"]["messages"][0]["blocks"][0],
+        record["payload"]["conversation"]["messages"][0]["blocks"][0],
         json!(Block::Image {
             content_type: "image/png".into(),
             reference: "0:0".into(),

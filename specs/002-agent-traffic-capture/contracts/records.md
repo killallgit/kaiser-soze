@@ -28,7 +28,7 @@ Every emitted tap envelope carries a `sequence`: a strictly increasing, 1-based 
 
 | `event` | `payload` | When |
 |---------|-----------|------|
-| `conversation` | `{system, tools, messages}`, plus `partial: true` and `warmup: true` when they apply (Codex), `previous_message_id` when the request body has `diagnostics.previous_message_id` (Claude Code), and `step` (Codex: 1-based request count on the socket) and `turn` (Codex: `client_metadata.turn_id` when the request has one) | The request body is complete |
+| `conversation` | `{message_count, tool_count}`, plus `partial: true` and `warmup: true` when they apply (Codex), `previous_message_id` when the request body has `diagnostics.previous_message_id` (Claude Code), and `step` (Codex: 1-based request count on the socket) and `turn` (Codex: `client_metadata.turn_id` when the request has one). The line announces the request by counts and ids; the whole conversation (`system`, `tools`, `messages`) is written once, in the exchange's `record`, so a request is never stored twice | The request body is complete |
 | `block_start` | `{index, kind, id?, name?}` where kind is `text`, `reasoning`, `tool_call` or `other` (any block type the adapter does not read) | A reply block begins |
 | `block_delta` | `{index, text?, input_json?, signature?, encrypted?}` | A chunk of a reply block arrives |
 | `block_stop` | `{index}` | A reply block ends |
@@ -53,7 +53,7 @@ Every emitted tap envelope carries a `sequence`: a strictly increasing, 1-based 
 - Within an exchange identified by `(run_id, exchange)`, lines appear in the order the events occurred.
 - A `record` line is written once per reply, when the reply ends. If an exchange ends while a reply is open (a cut-off stream), one more `record` is written for it. A Claude Code exchange has one reply; a Codex WebSocket can have many.
 - A `record` line (and the closing `exchange_end` line) is not lost because the output queue is busy. Live lines may be dropped there and counted; the `record` waits for room. The one live line that is refused while its own `record` is being built is not in that record's `dropped` count.
-- A `record` equals the fold of its reply's live events, plus the `project`, `session` and `thread` ids of its exchange when known. For an incomplete record it equals the fold of the events that were written.
+- A `record` equals the fold of its reply's live events, plus its conversation (carried by the record alone, not by the live `conversation` line) and the `project`, `session` and `thread` ids of its exchange when known. For an incomplete record it equals the fold of the events that were written.
 - `incomplete` is true when `dropped` is above 0 (counting live lines lost on the output side), the stream was cut off, the request or reply was unparsed, or assembly stopped at the 32 MiB bound.
 - A reply item that is not text, reasoning or a tool call is left out and does not set `incomplete`.
 - Image blocks never contain bytes.
