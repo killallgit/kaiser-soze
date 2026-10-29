@@ -92,8 +92,7 @@ fn pending_path(path: &Path) -> std::path::PathBuf {
 fn create_key(path: &Path) -> Result<KeyPair, BoxError> {
     let key = KeyPair::generate()?;
     let pending = pending_path(path);
-    write_private(&pending, &key.serialize_pem())?;
-    let linked = std::fs::hard_link(&pending, path);
+    let linked = write_private(&pending, &key.serialize_pem()).and_then(|()| std::fs::hard_link(&pending, path));
     let _ = std::fs::remove_file(&pending);
     match linked {
         Ok(()) => Ok(key),
