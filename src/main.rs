@@ -6,6 +6,8 @@ use kaiser_soze::claude::ClaudeAdapter;
 use kaiser_soze::codex::CodexAdapter;
 use kaiser_soze::logging::{Fields, Format, Level, Logger, Settings};
 use kaiser_soze::proxy::{Proxy, ProxyConfig};
+use rustls::pki_types::CertificateDer;
+use rustls::RootCertStore;
 use std::io::IsTerminal;
 use std::os::fd::AsFd;
 use std::path::PathBuf;
@@ -14,6 +16,25 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
+
+/// The system store (and `SSL_CERT_FILE`) joins the bundled roots, so a network that re-signs TLS with its own CA still connects.
+fn system_certs(log: &Logger) -> Vec<CertificateDer<'static>> {
+    let loaded = rustls_native_certs::load_native_certs();
+    if !loaded.errors.is_empty() {
+        log.event(Level::Warn, "system_certs_partial", Fields::default());
+    }
+    loaded.certs
+}
+
+fn upstream_roots(system: Vec<CertificateDer<'static>>) -> RootCertStore {
+    let mut roots = RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    for cert in system {
+        let _ = roots.add(cert);
+    }
+    roots
+}
 
 async fn run(args: AppSettings, log: &mut Logger) -> Result<(), &'static str> {
     // Bind before resetting the debug file: a duplicate dev launch must not erase a live run's log.
@@ -35,9 +56,7 @@ async fn run(args: AppSettings, log: &mut Logger) -> Result<(), &'static str> {
         ca_dir: ca_dir.clone(),
         tap_file: args.tap_file,
         shape_file: args.shape_file,
-        upstream_roots: rustls::RootCertStore {
-            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-        },
+        upstream_roots: upstream_roots(system_certs(log)),
         upstream_addr: None,
         logging: log.clone(),
     })
@@ -133,6 +152,20 @@ async fn service() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_certs_join_the_bundled_roots_and_unreadable_ones_are_skipped() {
+        // It trusts a private CA the system store holds, keeps the bundled roots, and ignores bytes that are no cert
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let private_ca = params.self_signed(&key).unwrap().der().clone();
+        let bundled = webpki_roots::TLS_SERVER_ROOTS.len();
+
+        let roots = upstream_roots(vec![private_ca, rustls::pki_types::CertificateDer::from(vec![1, 2, 3])]);
+
+        assert_eq!(roots.roots.len(), bundled + 1);
+    }
 
     #[tokio::test]
     async fn a_duplicate_service_launch_does_not_reset_the_active_debug_file() {

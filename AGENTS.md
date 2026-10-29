@@ -32,8 +32,8 @@ names every check that failed. To test a single module, run `task test:unit -- <
   - Never install the CA into a trust store. Agents get it through their own environment
     variables (`CODEX_CA_CERTIFICATE`, `NODE_EXTRA_CA_CERTS`).
 - **Small code.** Functions with more than 3-4 arguments take a context struct. Delete dead code.
-- **Pinned dependencies.** Every version is exact (`=x.y.z`) and at least two weeks old. Adding a
-  dependency needs the user's approval.
+- **Pinned dependencies.** Every version is exact (`=x.y.z`) and at least two weeks old. Prefer
+  libraries that are actively maintained and have verifiable production users.
 - **Bounded runs.** Wrap long commands in `timeout` (default 300 s, never above 600 s). A real
   agent run through the proxy uses a harmless prompt, at most 4 calls per task, and `</dev/null`.
   On a timeout, stop and report; do not retry bigger.
