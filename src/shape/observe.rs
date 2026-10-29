@@ -2,6 +2,7 @@ use super::{shape, ShapeLog};
 use crate::adapter::body::{is_encoded, RequestBuffer};
 use crate::adapter::sse::SseSplitter;
 use crate::adapter::{ExchangeParser, RequestHead, ResponseHead, TapEvent, TapInput};
+use crate::capture::MAX_BUFFER_BYTES;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -13,7 +14,7 @@ pub struct ShapedParser {
     host: String,
     path: String,
     request: RequestBuffer,
-    response: Vec<u8>,
+    response: Option<Vec<u8>>,
     splitter: SseSplitter,
     transport: &'static str,
 }
@@ -27,7 +28,7 @@ impl ShapedParser {
             host: head.host.clone(),
             path: head.path.split('?').next().unwrap_or_default().to_string(),
             request: RequestBuffer::new(is_encoded(&head.headers)),
-            response: Vec::new(),
+            response: Some(Vec::new()),
             splitter: SseSplitter::default(),
             transport: "json",
         };
@@ -76,15 +77,17 @@ impl ShapedParser {
                     self.note_text("response", "sse", &event.data);
                 }
             }
-            TapInput::ResponseBody(chunk) => self.response.extend_from_slice(chunk),
+            TapInput::ResponseBody(chunk) => self.observe_response_body(chunk),
             TapInput::ResponseEnd if self.transport == "sse" => {
                 for event in self.splitter.finish() {
                     self.note_text("response", "sse", &event.data);
                 }
             }
             TapInput::ResponseEnd => {
-                if let Ok(body) = serde_json::from_slice(&self.response) {
-                    self.note("response", "json", body, json!({}));
+                if let Some(response) = self.response.take() {
+                    if let Ok(body) = serde_json::from_slice(&response) {
+                        self.note("response", "json", body, json!({}));
+                    }
                 }
             }
             TapInput::WsMessage { from_client, text, .. } => {
@@ -93,6 +96,21 @@ impl ShapedParser {
             }
             _ => {}
         }
+    }
+
+    fn observe_response_body(&mut self, chunk: &[u8]) {
+        let Some(response) = self.response.as_mut() else { return };
+        if chunk.len() > MAX_BUFFER_BYTES - response.len() {
+            self.response = None;
+            self.log.drop_response(self.exchange);
+            return;
+        }
+        let needed = response.len() + chunk.len();
+        if needed > response.capacity() {
+            let capacity = response.capacity().saturating_mul(2).max(needed).min(MAX_BUFFER_BYTES);
+            response.reserve_exact(capacity - response.len());
+        }
+        response.extend_from_slice(chunk);
     }
 
     fn observe_response_head(&mut self, head: &ResponseHead) {

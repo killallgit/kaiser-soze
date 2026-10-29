@@ -189,3 +189,119 @@ fn hands_every_input_on_to_the_real_parser() {
 
     assert_eq!(*count.lock().unwrap(), 3);
 }
+
+#[test]
+fn oversized_json_response_observation_is_discarded_but_every_chunk_reaches_the_parser() {
+    struct Receives(Arc<Mutex<Vec<Bytes>>>);
+    impl ExchangeParser for Receives {
+        fn feed(&mut self, input: TapInput) -> Vec<TapEvent> {
+            if let TapInput::ResponseBody(chunk) = input {
+                self.0.lock().unwrap().push(chunk);
+            }
+            Vec::new()
+        }
+    }
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let (sink, rx) = Sink::detached(64);
+    let mut parser = ShapedParser::new(ShapeLog::new(sink), Box::new(Receives(received.clone())), 7, &head());
+    let chunk = Bytes::from(vec![b' '; crate::capture::MAX_BUFFER_BYTES]);
+
+    parser.feed(TapInput::ResponseBody(Bytes::from_static(b"{}")));
+    parser.feed(TapInput::ResponseBody(chunk));
+    for _ in 0..64 {
+        parser.feed(TapInput::ResponseBody(Bytes::from_static(b" ")));
+    }
+    parser.feed(TapInput::ResponseEnd);
+
+    let responses: Vec<_> = lines(rx)
+        .into_iter()
+        .filter(|line| line["direction"] == "response")
+        .collect();
+    assert!(responses.is_empty());
+    let received = received.lock().unwrap();
+    assert_eq!(received.len(), 66);
+    assert!(received[0].as_ref() == b"{}");
+    assert_eq!(received[1].len(), crate::capture::MAX_BUFFER_BYTES);
+    assert!(received[1].iter().all(|byte| *byte == b' '));
+    assert!(received[2..].iter().all(|chunk| chunk.as_ref() == b" "));
+}
+
+#[tokio::test]
+async fn counts_each_oversized_response_once_using_metadata_only() {
+    use crate::logging::{Format, Logger, Settings};
+    use tokio::io::AsyncReadExt;
+
+    let (writer, mut reader) = tokio::io::duplex(4096);
+    let logging = Logger::new(
+        writer,
+        Settings {
+            format: Format::Json,
+            ..Settings::default()
+        },
+    );
+    let (sink, rx) = Sink::detached(64);
+    let log = ShapeLog::with_logging(sink, logging.clone());
+    let chunk = Bytes::from(vec![b' '; crate::capture::MAX_BUFFER_BYTES + 1]);
+
+    for exchange in 1..=2 {
+        let mut parser = ShapedParser::new(log.clone(), Box::new(Silent), exchange, &head());
+        parser.feed(TapInput::ResponseBody(chunk.clone()));
+        parser.feed(TapInput::ResponseBody(chunk.clone()));
+        parser.feed(TapInput::ResponseEnd);
+    }
+    let mut parser = ShapedParser::new(log.clone(), Box::new(Silent), 3, &head());
+    parser.feed(TapInput::ResponseBody(Bytes::from_static(b"{}")));
+    parser.feed(TapInput::ResponseEnd);
+    drop(parser);
+    assert!(logging.flush().await);
+    drop(log);
+    drop(logging);
+
+    let mut output = String::new();
+    tokio::time::timeout(std::time::Duration::from_secs(2), reader.read_to_string(&mut output))
+        .await
+        .unwrap()
+        .unwrap();
+    let records: Vec<Value> = output.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(records.len(), 2);
+    for (index, record) in records.iter().enumerate() {
+        assert_eq!(record["exchange"].as_u64(), Some(index as u64 + 1));
+        assert_eq!(record["dropped"].as_u64(), Some(index as u64 + 1));
+        assert!(record.as_object().unwrap().keys().all(|key| [
+            "timestamp_ms",
+            "level",
+            "event",
+            "component",
+            "exchange",
+            "dropped"
+        ]
+        .contains(&key.as_str())));
+    }
+    let responses: Vec<_> = lines(rx)
+        .into_iter()
+        .filter(|line| line["direction"] == "response")
+        .collect();
+    assert_eq!(responses.len(), 1);
+    assert_eq!(responses[0]["exchange"], 3);
+    assert_eq!(responses[0]["shape"], json!({}));
+}
+
+#[test]
+fn json_response_at_the_capture_limit_is_still_observed() {
+    let (mut parser, rx) = parser();
+    let mut body = vec![b' '; crate::capture::MAX_BUFFER_BYTES];
+    body[..2].copy_from_slice(b"{}");
+    let body = Bytes::from(body);
+    let split = crate::capture::MAX_BUFFER_BYTES * 3 / 5;
+
+    parser.feed(TapInput::ResponseBody(body.slice(..split)));
+    parser.feed(TapInput::ResponseBody(body.slice(split..)));
+    parser.feed(TapInput::ResponseEnd);
+
+    let responses: Vec<_> = lines(rx)
+        .into_iter()
+        .filter(|line| line["direction"] == "response")
+        .collect();
+    assert_eq!(responses.len(), 1);
+    assert_eq!(responses[0]["shape"], json!({}));
+}

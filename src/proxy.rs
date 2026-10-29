@@ -67,8 +67,9 @@ impl Proxy {
         let output = TapOutput::open(&config.tap_file, config.live, config.logging).await?;
         let logging = output.logging.component("proxy");
         let shapes = match &config.shape_file {
-            Some(path) => Some(ShapeLog::new(
+            Some(path) => Some(ShapeLog::with_logging(
                 Sink::open_reporting(path, logging.component("shape")).await?,
+                logging.component("shape"),
             )),
             None => None,
         };

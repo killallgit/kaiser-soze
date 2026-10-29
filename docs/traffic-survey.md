@@ -69,6 +69,8 @@ Scenarios: plain text, one tool call, a second turn, a longer reply. Shapes of t
 
 `soze --shape-file <path>` (and `task dev`, which writes `target/dev/shapes.jsonl`) writes the shape of each distinct request, reply event and header set, once per run. Keys and types only: no values, no header values. Tags (`type`, `role`, `object`) keep their value because they name the schema, and user-defined schemas (`input_schema`, `parameters`, `metadata`, an object-valued `input`) collapse to `opaque`.
 
+Non-streaming JSON replies retain at most 32 MiB of raw response bytes for shape observation. If a reply exceeds that limit, its buffered copy is freed and its shape is skipped. Operational metadata reports `shape_response_limit_exceeded` with the exchange id and cumulative dropped-response count. Every input still reaches the wrapped parser; this diagnostic loss does not make the main tap record incomplete. The limit bounds the retained raw reply, not parsing allocations or process-wide memory; SSE framing and WebSocket message bounds are separate.
+
 A Codex request shape, abbreviated:
 
 ```json
