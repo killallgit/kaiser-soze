@@ -72,7 +72,7 @@ impl Recording {
             "[remote \"origin\"]\n\turl = https://example.com/owner/repo.git\n",
         )
         .unwrap();
-        let output = TapOutput::open(&dir.path().join("tap.jsonl"), None, Logger::default())
+        let output = TapOutput::open(&dir.path().join("tap.jsonl"), Logger::default())
             .await
             .unwrap();
         let exchanges = Exchanges::new(output, None, ProjectLookups::new(ProjectCache::default()));

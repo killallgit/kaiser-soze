@@ -39,7 +39,7 @@ async fn emitted(path: &Path, count: usize) -> Vec<Value> {
 async fn the_writer_owns_capture_identity_and_delivery_sequence() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("tap.jsonl");
-    let output = TapOutput::open(&path, None, Logger::default()).await.unwrap();
+    let output = TapOutput::open(&path, Logger::default()).await.unwrap();
 
     assert!(output.sink.write(line(1)));
     assert!(output.sink.write(line(2)));
@@ -56,7 +56,7 @@ async fn tap_sequences_follow_file_order_with_a_reliable_producer_waiting_on_a_f
     // It counts emissions after dequeue, sharing one sequence across producers and skipping refused inputs.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("tap.jsonl");
-    let output = TapOutput::open(&path, None, Logger::default()).await.unwrap();
+    let output = TapOutput::open(&path, Logger::default()).await.unwrap();
     let mut accepted = 0;
     while output.sink.write(line(1)) {
         accepted += 1;

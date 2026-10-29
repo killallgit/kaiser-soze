@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::time::Duration;
 
 async fn tap(dir: &tempfile::TempDir) -> ExchangeTap {
-    let output = TapOutput::open(&dir.path().join("tap.jsonl"), None, Default::default())
+    let output = TapOutput::open(&dir.path().join("tap.jsonl"), Default::default())
         .await
         .unwrap();
     let exchanges = Exchanges::new(output, None, crate::project::ProjectLookups::new(Default::default()));

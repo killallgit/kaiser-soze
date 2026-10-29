@@ -8,7 +8,6 @@ use kaiser_soze::assembler::Assembler;
 use kaiser_soze::claude::ClaudeAdapter;
 use kaiser_soze::codex::CodexAdapter;
 use kaiser_soze::event::Event;
-use kaiser_soze::live::Live;
 use kaiser_soze::project::ProjectCache;
 use kaiser_soze::proxy::{Proxy, ProxyConfig};
 use kaiser_soze::record::Record;
@@ -173,29 +172,18 @@ pub async fn start_proxy_with(
     dir: &Path,
     adapters: Vec<Arc<dyn Adapter>>,
 ) -> (SocketAddr, RootCertStore) {
-    start_proxy_live(upstream, dir, adapters, None).await
-}
-
-pub async fn start_proxy_live(
-    upstream: &FakeUpstream,
-    dir: &Path,
-    adapters: Vec<Arc<dyn Adapter>>,
-    live: Option<Live>,
-) -> (SocketAddr, RootCertStore) {
-    start_proxy_finding_projects(upstream, dir, adapters, live, ProjectCache::default()).await
+    start_proxy_finding_projects(upstream, dir, adapters, ProjectCache::default()).await
 }
 
 pub async fn start_proxy_finding_projects(
     upstream: &FakeUpstream,
     dir: &Path,
     adapters: Vec<Arc<dyn Adapter>>,
-    live: Option<Live>,
     projects: ProjectCache,
 ) -> (SocketAddr, RootCertStore) {
     let proxy = Proxy::with_projects(
         ProxyConfig {
             logging: Default::default(),
-            live,
             adapters,
             ca_dir: dir.join("ca"),
             tap_file: dir.join("tap.jsonl"),

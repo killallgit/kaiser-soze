@@ -125,7 +125,7 @@ async fn a_stalled_project_lookup_does_not_hold_the_exchange_open() {
         let _ = stalled.lock().unwrap().recv();
         None
     });
-    let (proxy, roots) = start_proxy_finding_projects(&upstream, dir.path(), vec![claude()], None, projects).await;
+    let (proxy, roots) = start_proxy_finding_projects(&upstream, dir.path(), vec![claude()], projects).await;
     let label = basic_label("claude", dir.path());
     let (_, tunnel) = connect_tunnel_as(proxy, CLAUDE_HOST, Some(&label)).await;
     let mut client = http_client(tunnel, CLAUDE_HOST, roots).await;
@@ -177,7 +177,7 @@ impl StalledLookups {
             }
         })
         .with_negative_ttl(Duration::ZERO);
-        let (proxy, roots) = start_proxy_finding_projects(&upstream, dir.path(), vec![claude()], None, projects).await;
+        let (proxy, roots) = start_proxy_finding_projects(&upstream, dir.path(), vec![claude()], projects).await;
         let label = basic_label("claude", dir.path());
         let (_, tunnel) = connect_tunnel_as(proxy, CLAUDE_HOST, Some(&label)).await;
         Self {
