@@ -23,23 +23,23 @@ impl<T> Clone for Sink<T> {
 }
 
 impl<T: Serialize + Send + 'static> Sink<T> {
+    #[cfg(test)]
     pub async fn open(path: &Path) -> std::io::Result<Self> {
         Self::open_reporting(path, Logger::default()).await
     }
 
     pub async fn open_reporting(path: &Path, log: Logger) -> std::io::Result<Self> {
-        Self::open_showing(path, |_, _| {}, |_| {}, log).await
+        Self::open_preparing(path, |_, _| {}, log).await
     }
 
-    /// Opens the file; each item written is one JSON line, then handed to `shown` without waiting for anything.
+    /// Opens the file; each item written is one JSON line.
     /// An item that cannot be serialised is dropped and counted, and the next one is written.
-    pub(crate) async fn open_showing(
+    pub(crate) async fn open_preparing(
         path: &Path,
         prepare: impl FnMut(&mut T, u64) + Send + 'static,
-        shown: impl FnMut(&T) + Send + 'static,
         log: Logger,
     ) -> std::io::Result<Self> {
-        let file = tokio::fs::OpenOptions::new()
+        let mut file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
@@ -48,13 +48,16 @@ impl<T: Serialize + Send + 'static> Sink<T> {
             .inspect_err(|error| {
                 log.event(Level::Error, "sink_open_failed", Fields::io(error));
             })?;
-        Ok(Self::writing(file, prepare, shown, log))
+        // A run that died mid-line left no newline; this run's first line must not join it.
+        if ends_mid_line(path) {
+            file.write_all(b"\n").await?;
+        }
+        Ok(Self::writing(file, prepare, log))
     }
 
     fn writing<W: AsyncWrite + Unpin + Send + 'static>(
         mut file: W,
         mut prepare: impl FnMut(&mut T, u64) + Send + 'static,
-        mut shown: impl FnMut(&T) + Send + 'static,
         log: Logger,
     ) -> Self {
         let (tx, mut rx) = mpsc::channel::<T>(SINK_QUEUE);
@@ -62,6 +65,7 @@ impl<T: Serialize + Send + 'static> Sink<T> {
         let unwritable = dropped.clone();
         tokio::spawn(async move {
             let mut emitted = 0u64;
+            let mut torn = false;
             while let Some(mut record) = rx.recv().await {
                 let Some(sequence) = emitted.checked_add(1) else {
                     log.event(Level::Error, "sequence_exhausted", Fields::default());
@@ -75,19 +79,37 @@ impl<T: Serialize + Send + 'static> Sink<T> {
                 };
                 emitted = sequence;
                 line.push('\n');
-                if let Err(error) = file.write_all(line.as_bytes()).await {
-                    log.event(Level::Error, "sink_write_failed", Fields::io(&error));
-                    break;
+                if torn {
+                    line.insert(0, '\n');
                 }
-                if let Err(error) = file.flush().await {
-                    log.event(Level::Error, "sink_flush_failed", Fields::io(&error));
-                    break;
+                // The writer stays up after an I/O error: a full disk can clear, and a torn line is ended by the next one.
+                let failure = match file.write_all(line.as_bytes()).await {
+                    Err(error) => Some(("sink_write_failed", error)),
+                    Ok(()) => file.flush().await.err().map(|error| ("sink_flush_failed", error)),
+                };
+                if let Some((event, error)) = failure {
+                    torn = true;
+                    unwritable.fetch_add(1, Ordering::Relaxed);
+                    log.event(Level::Error, event, Fields::io(&error));
+                    continue;
                 }
-                shown(&record);
+                torn = false;
             }
         });
         Self { tx, dropped }
     }
+}
+
+fn ends_mid_line(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut last = *b"\n";
+    file.seek(SeekFrom::End(-1))
+        .and_then(|_| file.read_exact(&mut last))
+        .is_ok()
+        && last != *b"\n"
 }
 
 impl<T> Sink<T> {
@@ -102,7 +124,11 @@ impl<T> Sink<T> {
 
     /// Waits for room instead of dropping. Only the tap task calls this, never the forwarding path.
     pub async fn write_reliable(&self, record: T) -> bool {
-        self.tx.send(record).await.is_ok()
+        let queued = self.tx.send(record).await.is_ok();
+        if !queued {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+        queued
     }
 
     #[cfg(test)]
@@ -233,6 +259,94 @@ mod tests {
         }
     }
 
+    /// Takes one byte of its first write, fails the next, then stores everything.
+    struct FlakyWriter {
+        stored: Arc<std::sync::Mutex<Vec<u8>>>,
+        calls: u32,
+    }
+
+    impl tokio::io::AsyncWrite for FlakyWriter {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.calls += 1;
+            let taken = match self.calls {
+                1 => 1,
+                2 => return std::task::Poll::Ready(Err(std::io::ErrorKind::StorageFull.into())),
+                _ => bytes.len(),
+            };
+            self.stored.lock().unwrap().extend_from_slice(&bytes[..taken]);
+            std::task::Poll::Ready(Ok(taken))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_is_counted_and_the_lines_after_it_still_get_written_on_their_own_lines() {
+        // It ends the torn line, keeps writing, and counts the lost line
+        let stored = Arc::<std::sync::Mutex<Vec<u8>>>::default();
+        let writer = FlakyWriter {
+            stored: stored.clone(),
+            calls: 0,
+        };
+        let sink = Sink::writing(writer, |_: &mut Value, _| {}, Logger::default());
+
+        for number in [10, 2, 3] {
+            sink.write_reliable(json!(number)).await;
+        }
+        for _ in 0..50 {
+            if stored.lock().unwrap().ends_with(b"3\n") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let text = String::from_utf8(stored.lock().unwrap().clone()).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[1..], ["2", "3"]);
+        assert_eq!(sink.dropped(), 1);
+    }
+
+    #[tokio::test]
+    async fn opening_a_file_that_ends_mid_line_starts_the_next_line_on_its_own() {
+        // It keeps the earlier run's torn line apart from this run's first line
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tap.jsonl");
+        std::fs::write(&path, "torn").unwrap();
+        let sink = Sink::open(&path).await.unwrap();
+
+        sink.write_reliable(json!({"first": true})).await;
+
+        wait_for_text(&path, "first").await;
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().collect::<Vec<_>>(), ["torn", r#"{"first":true}"#]);
+    }
+
+    #[tokio::test]
+    async fn a_reliable_write_the_writer_can_no_longer_take_is_counted() {
+        // It reports the refusal and counts the line as dropped
+        let (sink, receiver) = Sink::detached(1);
+        drop(receiver);
+
+        let written = sink.write_reliable(json!({"late": true})).await;
+
+        assert!(!written);
+        assert_eq!(sink.dropped(), 1);
+    }
+
     #[tokio::test]
     async fn disk_write_and_flush_failures_are_reported_through_an_independent_log() {
         use crate::logging::{Format, Logger, Settings};
@@ -249,7 +363,7 @@ mod tests {
                     ..Settings::default()
                 },
             );
-            let sink = Sink::writing(FailingWriter { flush }, |_: &mut Value, _| {}, |_| {}, log.clone());
+            let sink = Sink::writing(FailingWriter { flush }, |_: &mut Value, _| {}, log.clone());
             assert!(sink.write_reliable(json!({"body": "synthetic private capture"})).await);
             drop(sink);
             drop(log);

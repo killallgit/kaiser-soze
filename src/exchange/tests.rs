@@ -42,7 +42,7 @@ struct Fixture {
 async fn blocked_tap() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
-    let output = TapOutput::open(&tap_file, None, crate::logging::Logger::default())
+    let output = TapOutput::open(&tap_file, crate::logging::Logger::default())
         .await
         .unwrap();
     let recorder = Recorder::new(output, 1, "test");
@@ -130,7 +130,7 @@ async fn exchange_end_reports_records_the_sink_had_to_drop() {
     // It reports a non-zero sink_dropped when the sink queue overflowed
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
-    let output = TapOutput::open(&tap_file, None, crate::logging::Logger::default())
+    let output = TapOutput::open(&tap_file, crate::logging::Logger::default())
         .await
         .unwrap();
     let recorder = Recorder::new(output, 1, "test");
@@ -232,7 +232,7 @@ async fn run_recorded(events: Vec<TapEvent>, configure: impl FnOnce(Recording) -
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
     let recording = configure(Recording::default());
-    let output = TapOutput::open(&tap_file, None, crate::logging::Logger::default())
+    let output = TapOutput::open(&tap_file, crate::logging::Logger::default())
         .await
         .unwrap();
     let (recorder, signal) = Recorder::start(
@@ -261,7 +261,7 @@ async fn run_recorded(events: Vec<TapEvent>, configure: impl FnOnce(Recording) -
 async fn starting_a_recorder_pairs_tracking_with_owned_project_release() {
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
-    let output = TapOutput::open(&tap_file, None, crate::logging::Logger::default())
+    let output = TapOutput::open(&tap_file, crate::logging::Logger::default())
         .await
         .unwrap();
     let (recorder, signal) = Recorder::start(
@@ -682,7 +682,7 @@ fn written_edges(lines: &[Value]) -> Vec<Edge> {
 async fn race_one_thread(replies: Vec<Vec<TapEvent>>, late: Option<usize>) -> Vec<Edge> {
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
-    let output = TapOutput::open(&tap_file, None, crate::logging::Logger::default())
+    let output = TapOutput::open(&tap_file, crate::logging::Logger::default())
         .await
         .unwrap();
     let threads = Arc::new(Mutex::new(Threads::default()));
@@ -948,7 +948,7 @@ async fn a_record_is_written_when_the_sink_refuses_live_lines_and_counts_them() 
     // These accepted lines have incomplete capture even though their emitted cursors are contiguous.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("tap.jsonl");
-    let sink = TapOutput::open(&path, None, crate::logging::Logger::default())
+    let sink = TapOutput::open(&path, crate::logging::Logger::default())
         .await
         .unwrap()
         .sink;
@@ -970,7 +970,7 @@ async fn a_stalled_parser_gives_an_incomplete_record_that_counts_the_dropped_inp
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
     let recorder = Recorder::new(
-        TapOutput::open(&tap_file, None, crate::logging::Logger::default())
+        TapOutput::open(&tap_file, crate::logging::Logger::default())
             .await
             .unwrap(),
         1,
@@ -1058,7 +1058,7 @@ pub(super) fn begin(exchanges: &Exchanges, adapter: &dyn Adapter, label: Option<
 }
 
 async fn exchanges_writing_to(dir: &tempfile::TempDir, projects: ProjectLookups) -> Exchanges {
-    let output = TapOutput::open(&dir.path().join("tap.jsonl"), None, crate::logging::Logger::default())
+    let output = TapOutput::open(&dir.path().join("tap.jsonl"), crate::logging::Logger::default())
         .await
         .unwrap();
     Exchanges::new(output, None, projects)
@@ -1200,7 +1200,7 @@ async fn note_response_head(response: hyper::Response<()>) -> NotedHead {
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
     let recorder = Recorder::new(
-        TapOutput::open(&tap_file, None, crate::logging::Logger::default())
+        TapOutput::open(&tap_file, crate::logging::Logger::default())
             .await
             .unwrap(),
         1,

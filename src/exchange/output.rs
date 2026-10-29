@@ -1,5 +1,4 @@
 use crate::line::Line;
-use crate::live::Live;
 use crate::logging::Logger;
 use crate::sink::Sink;
 use rustls::crypto::ring;
@@ -17,22 +16,16 @@ pub struct TapOutput {
 
 impl TapOutput {
     /// Generates the opaque capture identity once, before any tap line is emitted.
-    /// Opens the tap file; each line written is also shown by `live`, after the file write and
-    /// without ever waiting for it. The writer assigns each tap line its 1-based sequence after dequeue.
-    pub async fn open(path: &Path, mut live: Option<Live>, logging: Logger) -> io::Result<Self> {
+    /// Opens the tap file. The writer assigns each tap line its 1-based sequence after dequeue.
+    pub async fn open(path: &Path, logging: Logger) -> io::Result<Self> {
         let run_id = run_id()?;
         let logging = logging.for_run(run_id.clone());
         let identity = run_id.clone();
-        let sink = Sink::open_showing(
+        let sink = Sink::open_preparing(
             path,
             move |line: &mut Line, sequence| {
                 line.run_id = identity.clone();
                 line.sequence = sequence;
-            },
-            move |line| {
-                if let Some(live) = live.as_mut() {
-                    live.show(line);
-                }
             },
             logging.component("tap"),
         )

@@ -7,7 +7,6 @@ mod websocket;
 use self::ca::Ca;
 use crate::adapter::Adapter;
 use crate::exchange::{Exchanges, TapOutput};
-use crate::live::Live;
 use crate::logging::{Fields, Level, Logger};
 use crate::project::{ProjectCache, ProjectLookups};
 use crate::shape::ShapeLog;
@@ -38,8 +37,6 @@ pub struct ProxyConfig {
     pub shape_file: Option<PathBuf>,
     pub upstream_roots: RootCertStore,
     pub upstream_addr: Option<SocketAddr>,
-    /// Shows a short line per event on a terminal, or none.
-    pub live: Option<Live>,
     pub logging: Logger,
 }
 
@@ -64,7 +61,7 @@ impl Proxy {
             .flat_map(|adapter| adapter.hosts().to_vec())
             .collect();
         let upstream = upstream::Upstream::new(config.upstream_roots, config.upstream_addr)?;
-        let output = TapOutput::open(&config.tap_file, config.live, config.logging).await?;
+        let output = TapOutput::open(&config.tap_file, config.logging).await?;
         let logging = output.logging.component("proxy");
         let shapes = match &config.shape_file {
             Some(path) => Some(ShapeLog::with_logging(

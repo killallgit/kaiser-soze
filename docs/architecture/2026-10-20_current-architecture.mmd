@@ -28,7 +28,6 @@ flowchart TB
     SINK["sink.rs Sink<br/>bounded queue, file write first"]
     TAPF[("tap.jsonl")]
     SHAPEF[("shapes.jsonl")]
-    LIVE["live.rs Live<br/>LiveState.line then Printer<br/>content-free lines, stderr"]
 
     AG -->|CONNECT| CONN
     CONN -->|unclaimed host| BLIND
@@ -53,4 +52,3 @@ flowchart TB
     PARSE --> REC
     REC --> SINK
     SINK --> TAPF
-    SINK --> LIVE

@@ -39,7 +39,6 @@ async fn run(args: AppSettings, log: &mut Logger) -> Result<(), &'static str> {
             roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
         },
         upstream_addr: None,
-        live: None,
         logging: log.clone(),
     })
     .await
