@@ -71,7 +71,7 @@ A Codex WebSocket is one exchange but carries many requests, each with its own r
 ## Assumptions
 
 - A subagent's session id equals its parent's in both harnesses (observed once each).
-- Claude Code's parent for a subagent is the main agent. Observed with one level only.
+- Claude Code's parent for a subagent is the main agent. Observed with one level only, then two levels in a live run per lane.
 - The wrapper label is the only source of a directory. Neither harness's headers carry one (checked), so a run started without the wrapper has no project. Claude Code's body `metadata` was not readable (the shape file marks it opaque) and is the one place left unchecked.
 - The parent's `Agent` tool result holds the child's agent id (seen in two parent-side records; the field is not identified). It is not needed for `spawned`, which the child's headers give.
 - Cached project ids refresh: a directory found to be in no repository is looked up again after 60 s.
