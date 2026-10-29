@@ -1,9 +1,12 @@
 use crate::logging::{Fields, Level, Logger};
 use serde::Serialize;
+use std::io::SeekFrom;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use std::task::{Context, Poll};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 const SINK_QUEUE: usize = 4096;
@@ -39,8 +42,10 @@ impl<T: Serialize + Send + 'static> Sink<T> {
         prepare: impl FnMut(&mut T, u64) + Send + 'static,
         log: Logger,
     ) -> std::io::Result<Self> {
+        // Read access lets the open inspect the file's end; a file it cannot inspect is an error, not a clean boundary.
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .mode(0o600)
             .open(path)
@@ -48,15 +53,16 @@ impl<T: Serialize + Send + 'static> Sink<T> {
             .inspect_err(|error| {
                 log.event(Level::Error, "sink_open_failed", Fields::io(error));
             })?;
-        // A run that died mid-line left no newline; this run's first line must not join it.
-        if ends_mid_line(path) {
-            file.write_all(b"\n").await?;
-        }
-        Ok(Self::writing(file, prepare, log))
+        let last = last_byte(&mut file).await.inspect_err(|error| {
+            log.event(Level::Error, "sink_open_failed", Fields::io(error));
+        })?;
+        Ok(Self::writing(file, last, prepare, log))
     }
 
+    /// `last` is the final byte already in the file; a line that follows a non-newline byte starts on its own line.
     fn writing<W: AsyncWrite + Unpin + Send + 'static>(
-        mut file: W,
+        file: W,
+        last: Option<u8>,
         mut prepare: impl FnMut(&mut T, u64) + Send + 'static,
         log: Logger,
     ) -> Self {
@@ -65,7 +71,7 @@ impl<T: Serialize + Send + 'static> Sink<T> {
         let unwritable = dropped.clone();
         tokio::spawn(async move {
             let mut emitted = 0u64;
-            let mut torn = false;
+            let mut file = Tail { inner: file, last };
             while let Some(mut record) = rx.recv().await {
                 let Some(sequence) = emitted.checked_add(1) else {
                     log.event(Level::Error, "sequence_exhausted", Fields::default());
@@ -79,7 +85,7 @@ impl<T: Serialize + Send + 'static> Sink<T> {
                 };
                 emitted = sequence;
                 line.push('\n');
-                if torn {
+                if file.last.is_some_and(|byte| byte != b'\n') {
                     line.insert(0, '\n');
                 }
                 // The writer stays up after an I/O error: a full disk can clear, and a torn line is ended by the next one.
@@ -88,28 +94,47 @@ impl<T: Serialize + Send + 'static> Sink<T> {
                     Ok(()) => file.flush().await.err().map(|error| ("sink_flush_failed", error)),
                 };
                 if let Some((event, error)) = failure {
-                    torn = true;
                     unwritable.fetch_add(1, Ordering::Relaxed);
                     log.event(Level::Error, event, Fields::io(&error));
                     continue;
                 }
-                torn = false;
             }
         });
         Self { tx, dropped }
     }
 }
 
-fn ends_mid_line(path: &Path) -> bool {
-    use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut last = *b"\n";
-    file.seek(SeekFrom::End(-1))
-        .and_then(|_| file.read_exact(&mut last))
-        .is_ok()
-        && last != *b"\n"
+async fn last_byte(file: &mut tokio::fs::File) -> std::io::Result<Option<u8>> {
+    let len = file.metadata().await?.len();
+    if len == 0 {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(len - 1)).await?;
+    Ok(Some(file.read_u8().await?))
+}
+
+/// Remembers the last byte the inner writer accepted, so a failed write that took part of a line is told apart from one that took none.
+struct Tail<W> {
+    inner: W,
+    last: Option<u8>,
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for Tail<W> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, bytes: &[u8]) -> Poll<std::io::Result<usize>> {
+        let polled = Pin::new(&mut self.inner).poll_write(cx, bytes);
+        if let Poll::Ready(Ok(taken @ 1..)) = polled {
+            self.last = Some(bytes[taken - 1]);
+        }
+        polled
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 impl<T> Sink<T> {
@@ -259,10 +284,11 @@ mod tests {
         }
     }
 
-    /// Takes one byte of its first write, fails the next, then stores everything.
+    /// Takes `partial` bytes of its first write (or fails it outright when 0), fails the next, then stores everything.
     struct FlakyWriter {
         stored: Arc<std::sync::Mutex<Vec<u8>>>,
         calls: u32,
+        partial: usize,
     }
 
     impl tokio::io::AsyncWrite for FlakyWriter {
@@ -272,9 +298,9 @@ mod tests {
             bytes: &[u8],
         ) -> std::task::Poll<std::io::Result<usize>> {
             self.calls += 1;
-            let taken = match self.calls {
-                1 => 1,
-                2 => return std::task::Poll::Ready(Err(std::io::ErrorKind::StorageFull.into())),
+            let taken = match (self.calls, self.partial) {
+                (1, 0) | (2, 1..) => return std::task::Poll::Ready(Err(std::io::ErrorKind::StorageFull.into())),
+                (1, partial) => partial,
                 _ => bytes.len(),
             };
             self.stored.lock().unwrap().extend_from_slice(&bytes[..taken]);
@@ -301,8 +327,9 @@ mod tests {
         let writer = FlakyWriter {
             stored: stored.clone(),
             calls: 0,
+            partial: 1,
         };
-        let sink = Sink::writing(writer, |_: &mut Value, _| {}, Logger::default());
+        let sink = Sink::writing(writer, None, |_: &mut Value, _| {}, Logger::default());
 
         for number in [10, 2, 3] {
             sink.write_reliable(json!(number)).await;
@@ -318,6 +345,44 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[1..], ["2", "3"]);
         assert_eq!(sink.dropped(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_write_that_took_nothing_does_not_add_a_blank_line() {
+        // It keeps the file one record per line when the failed write left no partial line
+        let stored = Arc::<std::sync::Mutex<Vec<u8>>>::default();
+        let writer = FlakyWriter {
+            stored: stored.clone(),
+            calls: 0,
+            partial: 0,
+        };
+        let sink = Sink::writing(writer, Some(b'\n'), |_: &mut Value, _| {}, Logger::default());
+
+        for number in [1, 2, 3] {
+            sink.write_reliable(json!(number)).await;
+        }
+        for _ in 0..50 {
+            if stored.lock().unwrap().ends_with(b"3\n") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(*stored.lock().unwrap(), b"2\n3\n");
+        assert_eq!(sink.dropped(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_file_whose_end_cannot_be_inspected_is_not_opened() {
+        // It refuses an append-only file instead of guessing that it ends on a line boundary
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tap.jsonl");
+        std::fs::write(&path, "torn").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o200)).unwrap();
+
+        let opened = Sink::<Value>::open(&path).await;
+
+        assert!(opened.is_err());
     }
 
     #[tokio::test]
@@ -363,7 +428,7 @@ mod tests {
                     ..Settings::default()
                 },
             );
-            let sink = Sink::writing(FailingWriter { flush }, |_: &mut Value, _| {}, log.clone());
+            let sink = Sink::writing(FailingWriter { flush }, None, |_: &mut Value, _| {}, log.clone());
             assert!(sink.write_reliable(json!({"body": "synthetic private capture"})).await);
             drop(sink);
             drop(log);
