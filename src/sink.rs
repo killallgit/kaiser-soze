@@ -106,10 +106,10 @@ impl<T: Serialize + Send + 'static> Sink<T> {
     }
 }
 
-/// Makes the file owner-only (the open mode applies only to a new file), then returns its final byte.
+/// Makes a regular file owner-only (the open mode applies only to a new file; a device is left as it is), then returns its final byte.
 async fn secure_and_last_byte(file: &mut tokio::fs::File) -> std::io::Result<Option<u8>> {
     let metadata = file.metadata().await?;
-    if metadata.permissions().mode() & 0o077 != 0 {
+    if metadata.is_file() && metadata.permissions().mode() & 0o077 != 0 {
         file.set_permissions(Permissions::from_mode(0o600)).await?;
     }
     let len = metadata.len();
@@ -222,6 +222,14 @@ mod tests {
 
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[tokio::test]
+    async fn a_device_is_opened_as_it_is_instead_of_being_given_a_new_mode() {
+        // It discards the capture to /dev/null as before, without trying to change a device's mode
+        let opened = Sink::<Value>::open(Path::new("/dev/null")).await;
+
+        assert!(opened.is_ok());
     }
 
     #[tokio::test]
