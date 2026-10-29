@@ -59,7 +59,7 @@ The single tap writer assigns every emitted line a 1-based `sequence` in file or
 
 ## The graph
 
-Status is per row below. Observed on Claude Code 2.1.302 and Codex 0.163.0 with one subagent run each. The ids below are header names and body key names only; no values are stored here.
+Status is per row below. Observed on Claude Code 2.1.302 and Codex 0.163.0 with one subagent run each. A live run per lane through the wrappers (a plain run and a nested-subagent run) wrote every kind in the table except `follows` and `contains`, with a two-level `spawned` chain in both harnesses and no message text in any edge. The ids below are header names and body key names only; no values are stored here.
 
 Topology nodes are `project` (a git repository, the root), `session` (one run of a harness), `thread` (one agent's conversation inside a session: the main agent or a subagent) and `exchange` (one model request and its reply). An exchange holds one or more `step`s (`step:<exchange>.<n>`: one request and its reply; Claude Code is always step 1, a Codex socket numbers its requests), and a `turn` groups the steps that answer one user prompt. `call` and `result` nodes (`call:<id>`, `result:<id>`) are the two ends of a tool call. Content nodes are the message blocks above.
 
