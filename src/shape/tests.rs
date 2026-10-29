@@ -267,6 +267,8 @@ async fn counts_each_oversized_response_once_using_metadata_only() {
     for (index, record) in records.iter().enumerate() {
         assert_eq!(record["exchange"].as_u64(), Some(index as u64 + 1));
         assert_eq!(record["dropped"].as_u64(), Some(index as u64 + 1));
+        assert_eq!(record["event"], "shape_response_limit_exceeded");
+        assert_eq!(record["level"], "warn");
         assert!(record.as_object().unwrap().keys().all(|key| [
             "timestamp_ms",
             "level",

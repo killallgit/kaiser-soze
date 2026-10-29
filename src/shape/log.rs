@@ -16,6 +16,7 @@ pub struct ShapeLog {
 }
 
 impl ShapeLog {
+    #[cfg(test)]
     pub fn new(sink: Sink<Value>) -> Arc<Self> {
         Self::with_logging(sink, Logger::default())
     }
