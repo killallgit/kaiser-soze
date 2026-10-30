@@ -42,7 +42,7 @@ fn reload_failed(log: &Logger, error_kind: &'static str) {
         error_kind: Some(error_kind),
         ..Fields::default()
     };
-    log.event(Level::Warn, "config_reload_failed", fields);
+    log.event(Level::Error, "config_reload_failed", fields);
 }
 
 /// A `SIGHUP` re-reads the files under the flags and environment the run started with. A bad file
@@ -237,5 +237,29 @@ mod tests {
         assert!(run(args, reload, &mut Logger::default()).await.is_err());
         assert_eq!(std::fs::metadata(debug).unwrap().len(), 21);
         assert!(!dir.path().join("tap.jsonl").exists());
+    }
+
+    #[tokio::test]
+    async fn a_failed_reload_is_reported_even_at_the_quietest_level() {
+        let (writer, mut reader) = tokio::io::duplex(8192);
+        let log = Logger::new(
+            writer,
+            Settings {
+                level: Level::Error,
+                format: Format::Json,
+                ..Settings::default()
+            },
+        );
+
+        reload_failed(&log, "invalid_configuration");
+        drop(log);
+
+        let mut text = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut reader, &mut text)
+            .await
+            .unwrap();
+        let record: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(record["event"], "config_reload_failed");
+        assert_eq!(record["error_kind"], "invalid_configuration");
     }
 }
