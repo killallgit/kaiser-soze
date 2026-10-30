@@ -5,6 +5,8 @@ use super::ws::WsDecoder;
 use crate::adapter::{ExchangeParser, ResponseHead, TapInput};
 use crate::assembler::Assembler;
 use crate::capture::headers::redact_headers;
+use crate::event::Event;
+use crate::graph::claimed;
 use crate::line::Entry;
 use crate::note::{self, Note, Transport};
 use bytes::Bytes;
@@ -55,7 +57,7 @@ impl ExchangeTap {
     }
 
     pub(super) fn note(&self, note: Note) {
-        self.recorder.write(self.clock.stamp(), Entry::Note(note), (0, 0));
+        self.recorder.write(self.clock.stamp(), Entry::Note(note), (0, 0), None);
     }
 
     /// Writes the `response_head` line and hands the head to the parser.
@@ -163,8 +165,12 @@ impl TapTask {
                 }
             };
             for event in inputs.into_iter().flat_map(|input| parser.feed(input)) {
+                let step = match &event.event {
+                    Event::Conversation(conversation) => Some(claimed(conversation).step),
+                    _ => assembler.step(),
+                };
                 let records = assembler.push(&event.event, dropped());
-                recorder.write(stamp, Entry::Event(event.event), (event.start, event.end));
+                recorder.write(stamp, Entry::Event(event.event), (event.start, event.end), step);
                 for record in records {
                     recorder.write_record(stamp, record).await;
                 }

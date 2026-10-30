@@ -38,6 +38,9 @@ fn delta() -> Line {
         wall_ms: 10,
         start: 0,
         end: 99,
+        session: None,
+        thread: None,
+        step: None,
         entry: Entry::Event(Event::BlockDelta(BlockDelta {
             index: 3,
             delta: Delta::Text("synthetic private body".repeat(100)),

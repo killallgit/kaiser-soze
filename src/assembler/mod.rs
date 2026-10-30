@@ -103,6 +103,13 @@ impl Assembler {
         records
     }
 
+    /// The step of the record the open reply is folded into; none while no conversation opened it.
+    pub fn step(&self) -> Option<u64> {
+        self.conversation
+            .as_ref()
+            .map(|conversation| claimed(conversation).step)
+    }
+
     /// Returns the open reply as an incomplete record, if any event was seen since the last record.
     pub fn finish(&mut self, dropped: u64) -> Option<Record> {
         self.seen.then(|| self.take_record(dropped, true))

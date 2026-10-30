@@ -53,13 +53,17 @@ pub struct Line {
     pub wall_ms: u64,
     pub start: u64,
     pub end: u64,
+    pub session: Option<Arc<str>>,
+    pub thread: Option<Arc<str>>,
+    /// The step of the record this line is folded into.
+    pub step: Option<u64>,
     pub entry: Entry,
 }
 
-/// The tap file has its keys sorted, so the fields are written in key order.
+/// The tap file has its keys sorted, so the fields are written in key order. Unknown ids and step leave their keys out.
 impl Serialize for Line {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut line = serializer.serialize_struct("Line", 11)?;
+        let mut line = serializer.serialize_struct("Line", 14)?;
         line.serialize_field("adapter", self.adapter)?;
         line.serialize_field("end", &self.end)?;
         line.serialize_field("event", self.entry.event())?;
@@ -69,7 +73,16 @@ impl Serialize for Line {
         line.serialize_field("run_id", self.run_id.as_ref())?;
         line.serialize_field("schema_version", &SCHEMA_VERSION)?;
         line.serialize_field("sequence", &self.sequence)?;
+        if let Some(session) = &self.session {
+            line.serialize_field("session", session.as_ref())?;
+        }
         line.serialize_field("start", &self.start)?;
+        if let Some(step) = &self.step {
+            line.serialize_field("step", step)?;
+        }
+        if let Some(thread) = &self.thread {
+            line.serialize_field("thread", thread.as_ref())?;
+        }
         line.serialize_field("wall_ms", &self.wall_ms)?;
         line.end()
     }
@@ -93,6 +106,9 @@ mod tests {
             wall_ms: 1_700_000_000_000,
             start: 4,
             end: 9,
+            session: None,
+            thread: None,
+            step: None,
             entry,
         }
     }
@@ -154,6 +170,21 @@ mod tests {
             serde_json::to_string(&line).unwrap(),
             r#"{"adapter":"claude","end":9,"event":"record","exchange":7,"mono_us":1500,"payload":{"conversation":null,"dropped":0,"incomplete":false,"reply":{"message":{"blocks":[],"role":"assistant"},"stop_reason":null,"usage":{"cache_read":null,"cache_write":null,"input":null,"output":null,"reasoning":null}}},"run_id":"run-synthetic","schema_version":1,"sequence":5,"start":4,"wall_ms":1700000000000}"#
         );
+    }
+
+    #[test]
+    fn a_line_with_ids_and_a_step_writes_them_at_the_top_in_key_order() {
+        // It writes session, step and thread among the sorted keys
+        let line = Line {
+            session: Some("s1".into()),
+            thread: Some("t1".into()),
+            step: Some(2),
+            ..line(Entry::Record(Box::new(Record::empty())))
+        };
+
+        assert!(serde_json::to_string(&line)
+            .unwrap()
+            .contains(r#""sequence":5,"session":"s1","start":4,"step":2,"thread":"t1","wall_ms":"#));
     }
 
     #[test]

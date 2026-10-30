@@ -13,6 +13,9 @@ fn line(exchange: u64) -> Line {
         wall_ms: 0,
         start: 0,
         end: 0,
+        session: None,
+        thread: None,
+        step: None,
         entry: Entry::Note(Note::Tunnel(Tunnel {
             host: "synthetic.test".into(),
             label: None,
