@@ -71,7 +71,7 @@ A person edits the config file while `soze` is capturing, then asks for a reload
 **Independent test**: send `SIGHUP` three times in quick succession during a reload. One further reload runs afterwards; none runs concurrently; forwarding is unaffected throughout.
 
 **Acceptance**
-1. The trigger is `SIGHUP`, handled by one task. It is installed only when stderr is not a terminal: closing the terminal a foreground `soze` runs in must still stop it. `systemctl reload` and `launchctl kill HUP` (the service work in roadmap item 6) reach it with no extra code.
+1. The trigger is `SIGHUP`, handled by one task. It is installed only when neither stdin nor stderr is a terminal: closing the terminal `soze` was started from, even with stderr redirected, must still stop it. A service manager starts it with neither. `systemctl reload` and `launchctl kill HUP` (the service work in roadmap item 6) reach it with no extra code.
 2. There is no file watcher in the first version. Editors save by rename and in several steps, a watcher needs a new dependency, and an explicit trigger makes "I changed the file" and "apply it" the same moment.
 3. Signals that arrive during a reload coalesce into one more reload afterwards.
 4. The reload task reads and validates in `spawn_blocking`; the validation does filesystem calls and must not run on a forwarding thread.

@@ -80,8 +80,9 @@ async fn reload_on_hangup(mut hangup: Signal, reload: Arc<cli::Reload>, mut runn
 
 async fn run(args: AppSettings, reload: cli::Reload, log: &mut Logger) -> Result<(), &'static str> {
     // Installed before anything is announced, so a reload sent at once is never the default SIGHUP.
-    // On a terminal the default stays: closing the terminal must still stop `soze`.
-    let hangup = (!std::io::stderr().is_terminal()).then(|| signal(SignalKind::hangup()));
+    // With a terminal on stdin or stderr the default stays: closing it must still stop `soze`.
+    let at_terminal = std::io::stdin().is_terminal() || std::io::stderr().is_terminal();
+    let hangup = (!at_terminal).then(|| signal(SignalKind::hangup()));
     let running = args.clone();
     // Bind before resetting the debug file: a duplicate dev launch must not erase a live run's log.
     let listener = TcpListener::bind(("127.0.0.1", args.port)).await.map_err(|error| {

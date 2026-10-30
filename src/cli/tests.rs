@@ -487,3 +487,28 @@ fn flags_keep_their_precedence_over_an_edited_file() {
 
     assert_eq!(running.logging().level, Level::Error);
 }
+
+#[test]
+fn each_restart_only_key_is_named_when_a_reload_changes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    for (key, value) in [
+        ("port", "2000"),
+        ("tap_file", "'other.jsonl'"),
+        ("shape_file", "'shape.jsonl'"),
+        ("log_file", "'debug.jsonl'"),
+        ("log_format", "'json'"),
+    ] {
+        std::fs::write(&path, "tap_file = 'synthetic.jsonl'\n").unwrap();
+        let (mut running, reload) = started(&path, &[]);
+
+        let tap = if key == "tap_file" {
+            String::new()
+        } else {
+            "tap_file = 'synthetic.jsonl'\n".into()
+        };
+        std::fs::write(&path, format!("{tap}{key} = {value}\n")).unwrap();
+
+        assert_eq!(running.reload_into(reload.run().ok().unwrap()), [key]);
+    }
+}
