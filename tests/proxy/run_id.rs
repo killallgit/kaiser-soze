@@ -101,8 +101,8 @@ async fn every_tap_envelope_shares_one_run_id_including_anonymous_notes() {
 }
 
 #[tokio::test]
-async fn appending_another_proxy_run_separates_exchange_one_without_changing_native_identity() {
-    // It attributes every complete line after a restart, even when exchange and native ids repeat.
+async fn restarting_the_proxy_closes_the_first_run_into_its_own_segment_without_changing_native_identity() {
+    // It keeps one run per file after a restart, even when exchange and native ids repeat.
     let upstream = start_upstream(sse_events()).await;
     let dir = tempfile::tempdir().unwrap();
     let tap_file = dir.path().join("tap.jsonl");
@@ -113,12 +113,13 @@ async fn appending_another_proxy_run_separates_exchange_one_without_changing_nat
 
     let (second, roots) = start_proxy(&upstream, dir.path(), codex()).await;
     send_through(second, roots, CLAIMED, identified_request()).await;
-    wait_until(|| count(&tap_lines(&tap_file), "exchange_end") == 2).await;
-    let all = complete_lines(&tap_file);
-    let (before, after) = all.split_at(first_lines.len());
-    assert_eq!(run_id(before), first_id);
-    assert_ne!(run_id(after), first_id);
-    for lines in [before, after] {
+    wait_until(|| count(&tap_lines(&tap_file), "exchange_end") == 1).await;
+    let before = complete_lines(&dir.path().join("tap.000001.jsonl"));
+    let after = complete_lines(&tap_file);
+    assert_eq!(before.len(), first_lines.len());
+    assert_eq!(run_id(&before), first_id);
+    assert_ne!(run_id(&after), first_id);
+    for lines in [&before[..], &after[..]] {
         assert!(lines.iter().all(|line| line["exchange"] == 1));
         assert_eq!(count(lines, "record"), 1);
         let record = &records_of(lines, 1)[0];

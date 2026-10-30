@@ -1,6 +1,6 @@
 use crate::line::Line;
 use crate::logging::Logger;
-use crate::sink::Sink;
+use crate::sink::{Retention, Sink};
 use rustls::crypto::ring;
 use std::io;
 use std::path::Path;
@@ -18,11 +18,17 @@ impl TapOutput {
     /// Generates the opaque capture identity once, before any tap line is emitted.
     /// Opens the tap file. The writer assigns each tap line its 1-based sequence after dequeue.
     pub async fn open(path: &Path, logging: Logger) -> io::Result<Self> {
+        Self::open_retaining(path, Retention::TAP, logging).await
+    }
+
+    /// Like `open`, closing the tap file into segments of `retention.segment_bytes`.
+    pub async fn open_retaining(path: &Path, retention: Retention, logging: Logger) -> io::Result<Self> {
         let run_id = run_id()?;
         let logging = logging.for_run(run_id.clone());
         let identity = run_id.clone();
         let sink = Sink::open_preparing(
             path,
+            retention,
             move |line: &mut Line, sequence| {
                 line.run_id = identity.clone();
                 line.sequence = sequence;

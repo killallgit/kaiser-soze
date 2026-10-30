@@ -11,6 +11,7 @@ use kaiser_soze::event::Event;
 use kaiser_soze::project::ProjectCache;
 use kaiser_soze::proxy::{Proxy, ProxyConfig};
 use kaiser_soze::record::Record;
+use kaiser_soze::sink::Retention;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
@@ -187,6 +188,7 @@ pub async fn start_proxy_finding_projects(
             adapters,
             ca_dir: dir.join("ca"),
             tap_file: dir.join("tap.jsonl"),
+            tap_retention: Retention::TAP,
             shape_file: Some(dir.join("shapes.jsonl")),
             upstream_roots: upstream.roots.clone(),
             upstream_addr: Some(upstream.addr),

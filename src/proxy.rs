@@ -10,7 +10,7 @@ use crate::exchange::{Exchanges, TapOutput};
 use crate::logging::{Fields, Level, Logger};
 use crate::project::{ProjectCache, ProjectLookups};
 use crate::shape::ShapeLog;
-use crate::sink::Sink;
+use crate::sink::{Retention, Sink};
 use crate::BoxError;
 use bytes::Bytes;
 use http_body_util::combinators::UnsyncBoxBody;
@@ -33,6 +33,7 @@ pub struct ProxyConfig {
     pub adapters: Vec<Arc<dyn Adapter>>,
     pub ca_dir: PathBuf,
     pub tap_file: PathBuf,
+    pub tap_retention: Retention,
     /// Where to write the shape of each distinct request and reply, or none.
     pub shape_file: Option<PathBuf>,
     pub upstream_roots: RootCertStore,
@@ -61,11 +62,11 @@ impl Proxy {
             .flat_map(|adapter| adapter.hosts().to_vec())
             .collect();
         let upstream = upstream::Upstream::new(config.upstream_roots, config.upstream_addr)?;
-        let output = TapOutput::open(&config.tap_file, config.logging).await?;
+        let output = TapOutput::open_retaining(&config.tap_file, config.tap_retention, config.logging).await?;
         let logging = output.logging.component("proxy");
         let shapes = match &config.shape_file {
             Some(path) => Some(ShapeLog::with_logging(
-                Sink::open_reporting(path, logging.component("shape")).await?,
+                Sink::open_reporting(path, Retention::SHAPES, logging.component("shape")).await?,
                 logging.component("shape"),
             )),
             None => None,
