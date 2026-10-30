@@ -56,21 +56,21 @@ Required behaviors, independent of transport:
 | Behavior | Requirement | Gap today |
 |---|---|---|
 | Identity across restarts | native conversation keyed by `(adapter, thread)`; capture attempts by `(run_id, exchange, step)` when the step is known | `run_id` implemented on every tap envelope; native identity is unchanged |
-| Ordering | emission/file order across exchanges, separate from model causality and producer timestamps; pre-writer drops use loss counters | writer-assigned 1-based `sequence` implemented on every tap envelope; it restarts with a new `run_id` |
+| Ordering | emission/file order across exchanges, separate from model causality and producer timestamps; pre-writer drops use loss counters | writer-assigned 1-based `sequence` implemented on every tap envelope; it restarts with a new `run_id`; each closed tap segment holds one `run_id`, and `sequence` restarts at 1 in a new active file |
 | Schema compatibility | every tap envelope carries a schema version | `schema_version` (currently 1) implemented on every tap envelope; lines from older builds have none; consumer version-gating is not implemented |
 | Snapshot to live | a snapshot carries the cursor it was taken at; live resumes from that cursor | cursor metadata exists; no snapshot/subscription API or atomic handoff |
 | Resume | a future consumer resumes from `(run_id, sequence)` with explicit history-unavailable / resync-required when recovery is unavailable | cursor metadata exists; no replay buffer, resume protocol or restart recovery |
 | Duplicates and gaps | delivery duplicates identified by cursor; an unfiltered same-run sequence gap reports missed emitted output | no recovery API; semantic reply deduplication uses the provider reply id (`message_id`), which a truncated reply lacks |
 | Filtered feeds | advance a watermark or signal gaps separately; skipped global values alone do not prove loss | no filtered delivery interface |
 | Durability | state the persistence and acknowledgement guarantees explicitly | queued or flushed lines do not imply fsync durability or durable acknowledgement |
-| Retention | bounded history; a consumer asking for dropped history gets a snapshot and a marker | rotation and retention are roadmap item 6 |
+| Retention | bounded history; a consumer asking for dropped history gets a snapshot and a marker | rotation and retention are implemented for the tap and shape files (README, "The tap file"); expired history has no in-band marker, so a reader sees a gap in `run_id` or `sequence`; the resync marker waits for the planned local stream |
 | Resource use | bounded queues; a slow consumer is dropped or lagged, never waited on | already true for the tap |
 
 Plausible emit options, none approved: (1) tail the tap file with a cursor; (2) a local socket stream with replay; (3) a local HTTP stream; (4) a library the consumer embeds. Against the table: (1) is simplest but pushes rotation, cursors and snapshots onto every consumer; (2) and (3) can own cursors and handoff in the service; (4) couples consumer and proxy lifetimes. All must keep "never in the way".
 
 The implemented cursor `(run_id, sequence)` describes emitted output only. Pre-writer rejections consume no sequence numbers; `tap_dropped`, `sink_dropped`, record `dropped` and `incomplete` describe capture loss. A contiguous sequence does not prove complete capture. Sequence is not an observed-event count, native conversation identity or speech bookmark. Future replay must preserve stored cursors, and another emit target must share the ordered publication source. Today a consumer can report a gap; it cannot request a fresh snapshot.
 
-Target recovery walks, still requiring a delivery API: *join after answer* takes a snapshot then follows from its cursor; *update during handoff* is covered by that cursor; *slow consumer* is lagged and told to resync; *reconnect* resumes from its cursor if history is available; *service restart* changes the run id and starts sequence 1, requiring an explicit recovery decision; *partial record* (`incomplete: true`) is delivered flagged, never as finished; *unavailable history* returns history-unavailable / resync-required, with a snapshot only if a future API provides one.
+Target recovery walks, still requiring a delivery API: *join after answer* takes a snapshot then follows from its cursor; *update during handoff* is covered by that cursor; *slow consumer* is lagged and told to resync; *reconnect* resumes from its cursor if history is available; *service restart* changes the run id, closes the active tap file as a segment and starts sequence 1 in a new active file, requiring an explicit recovery decision; *partial record* (`incomplete: true`) is delivered flagged, never as finished; *unavailable history* returns history-unavailable / resync-required, with a snapshot only if a future API provides one.
 
 ## Assistant text (168.5)
 
