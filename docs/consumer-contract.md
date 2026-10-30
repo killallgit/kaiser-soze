@@ -60,7 +60,7 @@ Required behaviors, independent of transport:
 | Schema compatibility | every tap envelope carries a schema version | `schema_version` (currently 1) implemented on every tap envelope; lines from older builds have none; consumer version-gating is not implemented |
 | Snapshot to live | a snapshot carries the cursor it was taken at; live resumes from that cursor | cursor metadata exists; no snapshot/subscription API or atomic handoff |
 | Resume | a future consumer resumes from `(run_id, sequence)` with explicit history-unavailable / resync-required when recovery is unavailable | cursor metadata exists; no replay buffer, resume protocol or restart recovery |
-| Duplicates and gaps | delivery duplicates identified by cursor; an unfiltered same-run sequence gap reports missed emitted output | no recovery API; semantic reply deduplication still lacks Codex provider reply ids |
+| Duplicates and gaps | delivery duplicates identified by cursor; an unfiltered same-run sequence gap reports missed emitted output | no recovery API; semantic reply deduplication uses the provider reply id (`message_id`), which a truncated reply lacks |
 | Filtered feeds | advance a watermark or signal gaps separately; skipped global values alone do not prove loss | no filtered delivery interface |
 | Durability | state the persistence and acknowledgement guarantees explicitly | queued or flushed lines do not imply fsync durability or durable acknowledgement |
 | Retention | bounded history; a consumer asking for dropped history gets a snapshot and a marker | rotation and retention are roadmap item 6 |
@@ -82,7 +82,7 @@ Target recovery walks, still requiring a delivery API: *join after answer* takes
 
 ## Soze work this implies
 
-1. Codex reply id as `message_id` on `reply_end` (from the turn boundaries doc).
+1. Codex reply id as `message_id` on `reply_end` (from the turn boundaries doc; implemented).
 2. A thread `role`, from positive evidence only, with a live check of Claude request classes.
 3. A run id and writer-order line sequence number (implemented on every tap envelope), plus a schema version (`schema_version`, also implemented on every tap envelope).
 4. A wrapper child-exit signal.

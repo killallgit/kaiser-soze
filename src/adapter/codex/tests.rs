@@ -1,6 +1,6 @@
 use super::*;
 use crate::adapter::event::*;
-use crate::adapter::{ExchangeParser, TapEvent, TapInput};
+use crate::adapter::{Event, ExchangeParser, TapEvent, TapInput};
 use crate::capture::MAX_BUFFER_BYTES;
 use crate::common::message::{Block, Message, Output};
 use crate::common::*;
@@ -445,7 +445,130 @@ fn maps_sse_events_split_across_chunks_with_a_partial_final_line() {
         })
         .event
     );
-    assert_eq!(events[9].event, reply_end(json!("completed")).event);
+    assert_eq!(
+        events[9].event,
+        reply_end_of_message(json!("completed"), json!("r1")).event
+    );
+}
+
+fn server_message(parser: &mut CodexParser, text: &str) -> Vec<TapEvent> {
+    parser.feed(TapInput::WsMessage {
+        from_client: false,
+        text: text.into(),
+        start: 0,
+        end: 1,
+    })
+}
+
+fn reply_end_of(events: &[TapEvent]) -> Event {
+    events.iter().map(|e| e.event.clone()).next_back().expect("an event")
+}
+
+#[test]
+fn the_end_frame_response_id_is_the_reply_message_id() {
+    // It prefers the id on the end frame over the one seen at response.created
+    let mut parser = parser();
+    server_message(&mut parser, r#"{"type":"response.created","response":{"id":"r1"}}"#);
+
+    let events = server_message(
+        &mut parser,
+        r#"{"type":"response.completed","response":{"id":"r2","status":"completed"}}"#,
+    );
+
+    assert_eq!(
+        reply_end_of(&events),
+        reply_end_of_message(json!("completed"), json!("r2")).event
+    );
+}
+
+#[test]
+fn an_end_frame_without_an_id_uses_the_id_from_response_created() {
+    // It falls back to the id remembered for the same reply
+    let mut parser = parser();
+    server_message(&mut parser, r#"{"type":"response.created","response":{"id":"r1"}}"#);
+
+    let events = server_message(
+        &mut parser,
+        r#"{"type":"response.incomplete","response":{"status":"incomplete"}}"#,
+    );
+
+    assert_eq!(
+        reply_end_of(&events),
+        reply_end_of_message(json!("incomplete"), json!("r1")).event
+    );
+}
+
+#[test]
+fn a_later_reply_does_not_inherit_the_previous_reply_id() {
+    // The first reply's remembered id is cleared when its end frame is handled
+    let mut parser = parser();
+    server_message(&mut parser, r#"{"type":"response.created","response":{"id":"r1"}}"#);
+    server_message(
+        &mut parser,
+        r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+    );
+
+    let events = server_message(
+        &mut parser,
+        r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+    );
+
+    assert_eq!(reply_end_of(&events), reply_end(json!("completed")).event);
+}
+
+#[test]
+fn a_failed_reply_does_not_leak_its_id_into_the_next_reply() {
+    // The error clears the remembered id
+    let mut parser = parser();
+    server_message(&mut parser, r#"{"type":"response.created","response":{"id":"r1"}}"#);
+    server_message(
+        &mut parser,
+        r#"{"type":"response.failed","response":{"error":{"code":"x"}}}"#,
+    );
+
+    let events = server_message(
+        &mut parser,
+        r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+    );
+
+    assert_eq!(reply_end_of(&events), reply_end(json!("completed")).event);
+}
+
+#[test]
+fn a_new_request_clears_the_id_of_a_reply_that_never_ended() {
+    // A truncated reply leaves no id behind for the next one
+    let mut parser = parser();
+    server_message(&mut parser, r#"{"type":"response.created","response":{"id":"r1"}}"#);
+    parser.feed(TapInput::WsMessage {
+        from_client: true,
+        text: r#"{"type":"response.create"}"#.into(),
+        start: 0,
+        end: 1,
+    });
+
+    let events = server_message(
+        &mut parser,
+        r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+    );
+
+    assert_eq!(reply_end_of(&events), reply_end(json!("completed")).event);
+}
+
+#[test]
+fn an_output_item_id_is_not_the_reply_message_id() {
+    // It ignores ids on output items
+    let mut parser = parser();
+    server_message(
+        &mut parser,
+        r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg1"}}"#,
+    );
+
+    let events = server_message(
+        &mut parser,
+        r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+    );
+
+    assert_eq!(reply_end_of(&events), reply_end(json!("completed")).event);
 }
 
 #[test]

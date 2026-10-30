@@ -17,7 +17,7 @@ Codex has an internal helper, the **conversation rebuild** (`History` in `src/ad
 
 | Unit | Meaning | Claude Code | Codex |
 |---|---|---|---|
-| Reply | one model response | `message_id` on `reply_end` and `record.reply` (observed) | the response id is read by the conversation rebuild but not written to the tap (unavailable today; the fix is a `message_id` on the Codex `reply_end`) |
+| Reply | one model response | `message_id` on `reply_end` and `record.reply` (observed) | `message_id` on `reply_end` and `record.reply`: the whole response id (`response.id`) from the end frame, else from `response.created` of the same reply; an item id is never used (a truncated reply has none) |
 | Step | one request and its reply | always `step` 1 (observed) | `step` counts requests on the socket, from 1 (observed) |
 | User turn | everything answering one prompt | `x-claude-code-prompt-id` header (observed; expected stable across a tool loop, not yet checked live) | `turn_id`: header for the first request, `client_metadata.turn_id` in each later body (observed) |
 
@@ -45,8 +45,8 @@ A turn id **groups** replies. It never says the turn **ended**. `reply_end` and 
 
 - Turn completion, permission waits and session end: a harness hook or wrapper signal (168.3, waiting, activity and session-end signals).
 - A stable key for resume and for "newest turn": exchange ids restart per run, so catch-up must key on thread plus turn plus step with a time order, or on a message id for Claude Code. Choosing it belongs to the delivery contract (168.4, delivery contract).
-- The Codex reply id: write it as `message_id` on the Codex `reply_end`, as Claude Code already does.
+- The Codex reply id: implemented. It is written as `message_id` on the Codex `reply_end`, as Claude Code already does.
 
 ## Catch-up without skips or duplicates
 
-Latest catch-up is safe only if each reply has a key that survives a proxy restart. Claude Code has one (`message_id`). Codex does not yet. Until it does, a consumer joining after a restart can show a Codex reply twice or miss one; this is the open point for 168.4 (delivery contract).
+Latest catch-up is safe only if each reply has a key that survives a proxy restart. Both lanes have one (`message_id`; a truncated Codex reply has none). The id does not prove the user turn or the capture is complete; deduplication keys are a consumer matter. Open point for 168.4 (delivery contract).

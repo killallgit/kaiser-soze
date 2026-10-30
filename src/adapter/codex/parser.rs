@@ -14,6 +14,7 @@ pub struct CodexParser {
     request: RequestBuffer,
     response_encoded: bool,
     steps: u64,
+    created_id: Value,
     sse: SseSplitter,
 }
 
@@ -24,6 +25,7 @@ impl CodexParser {
             request: RequestBuffer::new(request_encoded),
             response_encoded: false,
             steps: 0,
+            created_id: Value::Null,
             sse: SseSplitter::default(),
         }
     }
@@ -33,6 +35,7 @@ impl CodexParser {
             Ok(json) if json["type"].as_str().is_some_and(|kind| kind != "response.create") => return Vec::new(),
             Ok(json) => {
                 self.steps += 1;
+                self.created_id = Value::Null;
                 let conversation = Conversation {
                     step: Some(self.steps),
                     turn: named_turn(json["client_metadata"]["turn_id"].as_str()),
@@ -53,7 +56,7 @@ impl CodexParser {
             .iter()
             .flat_map(|e| {
                 self.history.watch(&e.data);
-                stream_event(&e.data, e.start, e.end)
+                stream_event(&e.data, e.start, e.end, &mut self.created_id)
             })
             .collect()
     }
@@ -96,7 +99,7 @@ impl ExchangeParser for CodexParser {
             } => self.request_events(text.as_bytes(), start, end),
             TapInput::WsMessage { text, start, end, .. } => {
                 self.history.watch(&text);
-                stream_event(&text, start, end)
+                stream_event(&text, start, end, &mut self.created_id)
             }
             _ => Vec::new(),
         }
