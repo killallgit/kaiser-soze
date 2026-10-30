@@ -104,8 +104,8 @@ async fn a_stalled_parser_drops_and_counts_instead_of_blocking_the_sender() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_dropped_websocket_chunk_stops_that_direction_decoding() {
-    // It feeds the parser no messages after a chunk was dropped, instead of decoding garbage
+async fn a_dropped_websocket_chunk_stops_decoding_only_from_the_gap() {
+    // It decodes every chunk queued before the drop and none after it
     let Fixture {
         tap,
         release,
@@ -115,14 +115,19 @@ async fn a_dropped_websocket_chunk_stops_that_direction_decoding() {
     } = blocked_tap().await;
     let text_frame = Bytes::from_static(&[0x81, 0x01, b'a']);
 
-    for _ in 0..1000 {
+    for _ in 0..300 {
         tap.send_ws_bytes(true, text_frame.clone(), Duration::ZERO);
     }
     release.send(()).unwrap();
+    for _ in 0..5 {
+        tap.send_ws_bytes(true, text_frame.clone(), Duration::ZERO);
+    }
     drop(tap);
     wait_for_exchange_end(&tap_file).await;
 
-    assert!(messages_seen.load(Ordering::Relaxed) <= 1);
+    // The queue holds 256, plus the one the blocked parser had already taken
+    let seen = messages_seen.load(Ordering::Relaxed);
+    assert!((256..=257).contains(&seen));
 }
 
 #[tokio::test]
