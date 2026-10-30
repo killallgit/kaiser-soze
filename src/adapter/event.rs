@@ -27,13 +27,6 @@ pub fn usage(usage: Usage) -> TapEvent {
     TapEvent::from(Event::Usage(usage))
 }
 
-pub fn reply_end(stop_reason: Value) -> TapEvent {
-    TapEvent::from(Event::ReplyEnd(ReplyEnd {
-        message_id: None,
-        stop_reason,
-    }))
-}
-
 pub fn reply_end_of_message(stop_reason: Value, message_id: Value) -> TapEvent {
     TapEvent::from(Event::ReplyEnd(ReplyEnd {
         message_id: Some(message_id).filter(|id| !id.is_null()),

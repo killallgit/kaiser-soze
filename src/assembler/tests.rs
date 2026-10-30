@@ -25,7 +25,7 @@ fn text_reply(text: &str) -> Vec<TapEvent> {
             output: Some(1),
             ..Usage::default()
         }),
-        reply_end(json!("end_turn")),
+        reply_end_of_message(json!("end_turn"), Value::Null),
     ]
 }
 
@@ -134,7 +134,7 @@ fn an_item_outside_the_format_is_skipped_and_later_blocks_keep_their_order() {
             name: Value::Null,
         }),
         block_delta(1, Delta::Text("kept".into())),
-        reply_end(json!("end_turn")),
+        reply_end_of_message(json!("end_turn"), Value::Null),
     ];
 
     let records = feed(&mut assembler, events, 0);
@@ -157,7 +157,7 @@ fn a_tool_call_joins_its_json_fragments_into_the_input() {
         }),
         block_delta(0, Delta::InputJson("{\"a\"".into())),
         block_delta(0, Delta::InputJson(":1}".into())),
-        reply_end(json!("tool_use")),
+        reply_end_of_message(json!("tool_use"), Value::Null),
     ];
 
     let records = feed(&mut assembler, events, 0);
@@ -186,7 +186,7 @@ fn a_reply_past_the_bound_stops_assembling_and_is_incomplete() {
         }),
         block_delta(0, Delta::Text("abc".into())),
         block_delta(0, Delta::Text("defgh".into())),
-        reply_end(json!("end_turn")),
+        reply_end_of_message(json!("end_turn"), Value::Null),
     ];
 
     let records = feed(&mut assembler, events, 0);
@@ -207,7 +207,7 @@ fn encrypted_reasoning_without_text_becomes_an_encrypted_block() {
             name: Value::Null,
         }),
         block_delta(0, Delta::Encrypted("enc".into())),
-        reply_end(json!("completed")),
+        reply_end_of_message(json!("completed"), Value::Null),
     ];
 
     let records = feed(&mut assembler, events, 0);
@@ -235,7 +235,7 @@ fn usage_fields_merge_across_events() {
             output: Some(4),
             ..Usage::default()
         }),
-        reply_end(json!("end_turn")),
+        reply_end_of_message(json!("end_turn"), Value::Null),
     ];
 
     let records = feed(&mut assembler, events, 0);
@@ -252,7 +252,10 @@ fn the_reply_message_id_reaches_the_record_when_the_end_names_one() {
         conversation_event(),
         reply_end_of_message(json!("end_turn"), json!("msg_1")),
     ];
-    let unnamed = vec![conversation_event(), reply_end(json!("end_turn"))];
+    let unnamed = vec![
+        conversation_event(),
+        reply_end_of_message(json!("end_turn"), Value::Null),
+    ];
 
     let named_records = feed(&mut assembler, named, 0);
     let unnamed_records = feed(&mut assembler, unnamed, 0);
@@ -283,7 +286,10 @@ fn a_reply_end_that_carries_a_null_message_id_names_no_message() {
 fn a_record_without_a_request_names_no_step() {
     // An unparsed request leaves no step, so it cannot collide with the real first one
     let mut assembler = Assembler::default();
-    let events = vec![unparsed(Side::Request), reply_end(json!("end_turn"))];
+    let events = vec![
+        unparsed(Side::Request),
+        reply_end_of_message(json!("end_turn"), Value::Null),
+    ];
 
     let records = feed(&mut assembler, events, 0);
 
@@ -299,7 +305,11 @@ fn a_request_that_states_its_step_and_turn_gives_them_to_the_record() {
     conversation.step = Some(3);
     conversation.turn = Some("u2".into());
 
-    let records = feed(&mut assembler, vec![request, reply_end(json!("end_turn"))], 0);
+    let records = feed(
+        &mut assembler,
+        vec![request, reply_end_of_message(json!("end_turn"), Value::Null)],
+        0,
+    );
 
     assert_eq!((records[0].step, records[0].turn.as_deref()), (Some(3), Some("u2")));
 }
@@ -311,7 +321,10 @@ fn a_request_that_states_no_step_is_step_one_and_has_no_turn() {
 
     let records = feed(
         &mut assembler,
-        vec![conversation_event(), reply_end(json!("end_turn"))],
+        vec![
+            conversation_event(),
+            reply_end_of_message(json!("end_turn"), Value::Null),
+        ],
         0,
     );
 
@@ -325,7 +338,10 @@ fn a_record_without_a_request_names_no_turn() {
 
     let records = feed(
         &mut assembler,
-        vec![unparsed(Side::Request), reply_end(json!("end_turn"))],
+        vec![
+            unparsed(Side::Request),
+            reply_end_of_message(json!("end_turn"), Value::Null),
+        ],
         0,
     );
 

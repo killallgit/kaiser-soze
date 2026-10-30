@@ -212,7 +212,7 @@ impl ExchangeParser for EchoParser {
                 name: Value::Null,
             }),
             block_delta(0, Delta::Text("echo".into())),
-            reply_end(Value::Null),
+            reply_end_of_message(Value::Null, Value::Null),
         ]
     }
 }

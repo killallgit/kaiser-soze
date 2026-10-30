@@ -513,7 +513,10 @@ fn a_later_reply_does_not_inherit_the_previous_reply_id() {
         r#"{"type":"response.completed","response":{"status":"completed"}}"#,
     );
 
-    assert_eq!(reply_end_of(&events), reply_end(json!("completed")).event);
+    assert_eq!(
+        reply_end_of(&events),
+        reply_end_of_message(json!("completed"), Value::Null).event
+    );
 }
 
 #[test]
@@ -531,7 +534,10 @@ fn a_failed_reply_does_not_leak_its_id_into_the_next_reply() {
         r#"{"type":"response.completed","response":{"status":"completed"}}"#,
     );
 
-    assert_eq!(reply_end_of(&events), reply_end(json!("completed")).event);
+    assert_eq!(
+        reply_end_of(&events),
+        reply_end_of_message(json!("completed"), Value::Null).event
+    );
 }
 
 #[test]
@@ -551,7 +557,10 @@ fn a_new_request_clears_the_id_of_a_reply_that_never_ended() {
         r#"{"type":"response.completed","response":{"status":"completed"}}"#,
     );
 
-    assert_eq!(reply_end_of(&events), reply_end(json!("completed")).event);
+    assert_eq!(
+        reply_end_of(&events),
+        reply_end_of_message(json!("completed"), Value::Null).event
+    );
 }
 
 #[test]
@@ -568,7 +577,10 @@ fn an_output_item_id_is_not_the_reply_message_id() {
         r#"{"type":"response.completed","response":{"status":"completed"}}"#,
     );
 
-    assert_eq!(reply_end_of(&events), reply_end(json!("completed")).event);
+    assert_eq!(
+        reply_end_of(&events),
+        reply_end_of_message(json!("completed"), Value::Null).event
+    );
 }
 
 #[test]
