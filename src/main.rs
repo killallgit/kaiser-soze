@@ -45,29 +45,33 @@ fn reload_failed(log: &Logger, error_kind: &'static str) {
     log.event(Level::Error, "config_reload_failed", fields);
 }
 
+/// The new level applies first, so the notices that follow obey it.
+fn reload_applied(log: &Logger, running: &mut AppSettings, candidate: AppSettings) {
+    let before = running.logging();
+    let restart = running.reload_into(candidate);
+    if running.logging() != before {
+        log.reload(running.logging());
+        log.event(Level::Info, "config_reloaded", Fields::default());
+    }
+    for field in restart {
+        log.event(
+            Level::Warn,
+            "config_restart_required",
+            Fields {
+                field: Some(field),
+                ..Fields::default()
+            },
+        );
+    }
+}
+
 /// A `SIGHUP` re-reads the files under the flags and environment the run started with. A bad file
 /// is reported and changes nothing; the listener and the tap never wait on it.
 async fn reload_on_hangup(mut hangup: Signal, reload: Arc<cli::Reload>, mut running: AppSettings, log: Logger) {
     while hangup.recv().await.is_some() {
         let reload = reload.clone();
         match tokio::task::spawn_blocking(move || reload.run()).await {
-            Ok(Ok(candidate)) => {
-                let before = running.logging();
-                for field in running.reload_into(candidate) {
-                    log.event(
-                        Level::Warn,
-                        "config_restart_required",
-                        Fields {
-                            field: Some(field),
-                            ..Fields::default()
-                        },
-                    );
-                }
-                if running.logging() != before {
-                    log.reload(running.logging());
-                    log.event(Level::Info, "config_reloaded", Fields::default());
-                }
-            }
+            Ok(Ok(candidate)) => reload_applied(&log, &mut running, candidate),
             Ok(Err(error)) => reload_failed(&log, error.kind()),
             Err(_) => reload_failed(&log, "reload_panicked"),
         }
@@ -76,7 +80,8 @@ async fn reload_on_hangup(mut hangup: Signal, reload: Arc<cli::Reload>, mut runn
 
 async fn run(args: AppSettings, reload: cli::Reload, log: &mut Logger) -> Result<(), &'static str> {
     // Installed before anything is announced, so a reload sent at once is never the default SIGHUP.
-    let hangup = signal(SignalKind::hangup());
+    // On a terminal the default stays: closing the terminal must still stop `soze`.
+    let hangup = (!std::io::stderr().is_terminal()).then(|| signal(SignalKind::hangup()));
     let running = args.clone();
     // Bind before resetting the debug file: a duplicate dev launch must not erase a live run's log.
     let listener = TcpListener::bind(("127.0.0.1", args.port)).await.map_err(|error| {
@@ -105,12 +110,13 @@ async fn run(args: AppSettings, reload: cli::Reload, log: &mut Logger) -> Result
     .map_err(|_| "proxy_initialization_failed")?;
     let log = proxy.logger();
     match hangup {
-        Ok(hangup) => {
+        Some(Ok(hangup)) => {
             tokio::spawn(reload_on_hangup(hangup, Arc::new(reload), running, log.clone()));
         }
-        Err(error) => {
+        Some(Err(error)) => {
             log.event(Level::Warn, "reload_unavailable", Fields::io(&error));
         }
+        None => {}
     }
     let port = listener.local_addr().map_err(|_| "listener_address_failed")?.port();
     log.event(
@@ -240,7 +246,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_reload_is_reported_even_at_the_quietest_level() {
+    async fn a_failed_reload_is_reported_at_the_error_level() {
         let (writer, mut reader) = tokio::io::duplex(8192);
         let log = Logger::new(
             writer,
@@ -261,5 +267,33 @@ mod tests {
         let record: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
         assert_eq!(record["event"], "config_reload_failed");
         assert_eq!(record["error_kind"], "invalid_configuration");
+    }
+
+    #[tokio::test]
+    async fn restart_notices_follow_the_level_the_reload_just_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        let write = |text: &str| std::fs::write(&config, format!("tap_file = 'synthetic.jsonl'\n{text}")).unwrap();
+        write("port = 1000\nlog_level = 'error'\n");
+        let (mut running, reload) = cli::parse_with_reload(
+            ["--config".to_string(), config.display().to_string()],
+            config::Sources::new(Format::Json),
+        )
+        .ok()
+        .unwrap();
+        let (writer, mut reader) = tokio::io::duplex(8192);
+        let log = Logger::new(writer, running.logging());
+
+        write("port = 2000\nlog_level = 'warn'\n");
+        reload_applied(&log, &mut running, reload.run().ok().unwrap());
+        drop(log);
+
+        let mut text = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut reader, &mut text)
+            .await
+            .unwrap();
+        let record: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(record["event"], "config_restart_required");
+        assert_eq!(record["field"], "port");
     }
 }

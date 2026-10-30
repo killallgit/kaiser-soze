@@ -1,11 +1,13 @@
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
 use std::net::TcpStream;
-use std::process::{Child, ChildStderr, Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::time::Duration;
 
 struct Soze {
     child: Child,
-    lines: BufReader<ChildStderr>,
+    lines: Receiver<String>,
 }
 
 impl Soze {
@@ -18,14 +20,23 @@ impl Soze {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let lines = BufReader::new(child.stderr.take().unwrap());
+        let stderr = BufReader::new(child.stderr.take().unwrap());
+        let (sender, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            stderr
+                .lines()
+                .map_while(Result::ok)
+                .for_each(|line| drop(sender.send(line)))
+        });
         Self { child, lines }
     }
 
     fn next(&mut self, event: &str) -> Value {
         loop {
-            let mut line = String::new();
-            assert!(self.lines.read_line(&mut line).unwrap() > 0, "soze exited");
+            let line = self
+                .lines
+                .recv_timeout(Duration::from_secs(30))
+                .expect("no line in 30s");
             let record: Value = serde_json::from_str(&line).unwrap();
             if record["event"] == event {
                 return record;
@@ -81,4 +92,18 @@ fn a_hangup_names_each_restart_only_key_it_did_not_apply() {
     soze.hangup();
 
     assert_eq!(soze.next("config_restart_required")["field"], "port");
+}
+
+#[test]
+fn a_hangup_with_a_good_file_applies_the_live_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config, tap) = (dir.path().join("config.toml"), dir.path().join("tap.jsonl"));
+    write(&config, &tap, "log_level = 'info'\n");
+    let mut soze = Soze::start(&config);
+    soze.next("listening");
+
+    write(&config, &tap, "log_level = 'info'\nlive = true\n");
+    soze.hangup();
+
+    soze.next("config_reloaded");
 }

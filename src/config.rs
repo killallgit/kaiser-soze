@@ -154,9 +154,13 @@ fn check_version(contents: &str) -> Result<(), Error> {
         .add_source(::config::File::from_str(contents, ::config::FileFormat::Toml))
         .build()
         .map_err(Error::Load)?;
-    match file.get_int("version") {
-        Ok(VERSION) | Err(::config::ConfigError::NotFound(_)) => Ok(()),
-        Ok(_) => Err(Error::UnsupportedVersion),
+    // `get_int` would also read the string "1"; the version is an integer.
+    match file.get::<::config::Value>("version").map(|value| value.kind) {
+        Ok(::config::ValueKind::I64(VERSION)) | Err(::config::ConfigError::NotFound(_)) => Ok(()),
+        Ok(::config::ValueKind::I64(_)) => Err(Error::UnsupportedVersion),
+        Ok(_) => Err(Error::Load(::config::ConfigError::Message(
+            "version must be an integer".into(),
+        ))),
         Err(error) => Err(Error::Load(error)),
     }
 }
