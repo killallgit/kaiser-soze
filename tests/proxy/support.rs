@@ -263,10 +263,15 @@ pub fn post_request(host: &str) -> Request<Full<Bytes>> {
         .unwrap()
 }
 
+fn complete_events(text: &str) -> Vec<Value> {
+    let written = text.rfind('\n').map_or("", |end| &text[..end]);
+    written.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
 pub async fn read_events(tap_file: &Path) -> Vec<Value> {
     for _ in 0..50 {
         let text = std::fs::read_to_string(tap_file).unwrap_or_default();
-        let events: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let events = complete_events(&text);
         if events.iter().any(|e| e["event"] == "exchange_end") {
             return events;
         }
@@ -430,4 +435,43 @@ pub fn basic_label(command: &str, dir: &Path) -> String {
         encoded.push_str(&"=".repeat(3 - chunk.len()));
     }
     format!("Basic {encoded}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FIRST: &str = "{\"event\":\"exchange_start\"}\n";
+
+    #[tokio::test]
+    async fn read_events_waits_for_the_cut_off_last_line_to_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        let tap_file = dir.path().join("tap.jsonl");
+        std::fs::write(&tap_file, format!("{FIRST}{{\"event\":\"exchange_e")).unwrap();
+        let rest = tap_file.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let mut file = std::fs::OpenOptions::new().append(true).open(rest).unwrap();
+            std::io::Write::write_all(&mut file, b"nd\"}\n").unwrap();
+        });
+
+        let events = read_events(&tap_file).await;
+
+        assert_eq!(count(&events, "exchange_start"), 1);
+        assert_eq!(count(&events, "exchange_end"), 1);
+    }
+
+    #[test]
+    fn complete_events_ignores_a_line_without_its_newline() {
+        let events = complete_events(&format!("{FIRST}{{\"event\":\"exchange_e"));
+
+        assert_eq!(count(&events, "exchange_start"), 1);
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn complete_events_rejects_a_finished_line_that_is_not_json() {
+        complete_events(&format!("{FIRST}{{\"event\":\n"));
+    }
 }
