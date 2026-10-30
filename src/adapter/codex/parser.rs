@@ -54,11 +54,16 @@ impl CodexParser {
     fn stream_events(&mut self, events: Vec<SseEvent>) -> Vec<TapEvent> {
         events
             .iter()
-            .flat_map(|e| {
-                self.history.watch(&e.data);
-                stream_event(&e.data, e.start, e.end, &mut self.created_id)
-            })
+            .flat_map(|e| self.reply_events(&e.data, e.start, e.end))
             .collect()
+    }
+
+    fn reply_events(&mut self, data: &str, start: u64, end: u64) -> Vec<TapEvent> {
+        let Ok(json) = serde_json::from_str::<Value>(data) else {
+            return Vec::new();
+        };
+        self.history.watch(&json);
+        stream_event(&json, start, end, &mut self.created_id)
     }
 }
 
@@ -75,7 +80,7 @@ impl ExchangeParser for CodexParser {
             }
             TapInput::RequestEnd if self.request.bytes().is_empty() => Vec::new(),
             TapInput::RequestEnd => {
-                let body = self.request.bytes().to_vec();
+                let body = self.request.take();
                 self.request_events(&body, 0, body.len() as u64)
             }
             TapInput::ResponseHead(head) => {
@@ -97,10 +102,7 @@ impl ExchangeParser for CodexParser {
                 start,
                 end,
             } => self.request_events(text.as_bytes(), start, end),
-            TapInput::WsMessage { text, start, end, .. } => {
-                self.history.watch(&text);
-                stream_event(&text, start, end, &mut self.created_id)
-            }
+            TapInput::WsMessage { text, start, end, .. } => self.reply_events(&text, start, end),
             _ => Vec::new(),
         }
     }

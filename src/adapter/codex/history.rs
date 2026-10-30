@@ -52,10 +52,7 @@ impl History {
         self.broken = true;
     }
 
-    pub(super) fn watch(&mut self, data: &str) {
-        let Ok(json) = serde_json::from_str::<Value>(data) else {
-            return;
-        };
+    pub(super) fn watch(&mut self, json: &Value) {
         match json["type"].as_str().unwrap_or_default() {
             "response.created" => {
                 self.reply_id = json["response"]["id"].as_str().map(String::from);

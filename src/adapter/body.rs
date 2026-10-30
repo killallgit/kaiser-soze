@@ -33,7 +33,26 @@ impl RequestBuffer {
         &self.bytes
     }
 
+    /// Hands the bytes over without copying; the buffer is empty afterwards.
+    pub fn take(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.bytes)
+    }
+
     pub fn unreadable(&self) -> bool {
         self.truncated || self.encoded
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn take_moves_the_bytes_out_and_leaves_the_buffer_empty() {
+        let mut buffer = RequestBuffer::new(false);
+        buffer.push(b"abc");
+
+        assert_eq!(buffer.take(), b"abc");
+        assert!(buffer.bytes().is_empty());
     }
 }

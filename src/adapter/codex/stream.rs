@@ -3,10 +3,7 @@ use crate::adapter::TapEvent;
 use crate::common::*;
 use serde_json::Value;
 
-pub(super) fn stream_event(data: &str, start: u64, end: u64, created_id: &mut Value) -> Vec<TapEvent> {
-    let Ok(json) = serde_json::from_str::<Value>(data) else {
-        return Vec::new();
-    };
+pub(super) fn stream_event(json: &Value, start: u64, end: u64, created_id: &mut Value) -> Vec<TapEvent> {
     let index = json["output_index"].as_u64().unwrap_or_default();
     let delta = || json["delta"].as_str().map(String::from);
     let events = match json["type"].as_str().unwrap_or_default() {
