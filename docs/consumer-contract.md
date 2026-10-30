@@ -57,7 +57,7 @@ Required behaviors, independent of transport:
 |---|---|---|
 | Identity across restarts | native conversation keyed by `(adapter, thread)`; capture attempts by `(run_id, exchange, step)` when the step is known | `run_id` implemented on every tap envelope; native identity is unchanged |
 | Ordering | emission/file order across exchanges, separate from model causality and producer timestamps; pre-writer drops use loss counters | writer-assigned 1-based `sequence` implemented on every tap envelope; it restarts with a new `run_id` |
-| Schema compatibility | every tap envelope carries a schema version | none written |
+| Schema compatibility | every tap envelope carries a schema version | `schema_version` (currently 1) implemented on every tap envelope; lines from older builds have none; consumer version-gating is not implemented |
 | Snapshot to live | a snapshot carries the cursor it was taken at; live resumes from that cursor | cursor metadata exists; no snapshot/subscription API or atomic handoff |
 | Resume | a future consumer resumes from `(run_id, sequence)` with explicit history-unavailable / resync-required when recovery is unavailable | cursor metadata exists; no replay buffer, resume protocol or restart recovery |
 | Duplicates and gaps | delivery duplicates identified by cursor; an unfiltered same-run sequence gap reports missed emitted output | no recovery API; semantic reply deduplication still lacks Codex provider reply ids |
@@ -84,7 +84,7 @@ Target recovery walks, still requiring a delivery API: *join after answer* takes
 
 1. Codex reply id as `message_id` on `reply_end` (from the turn boundaries doc).
 2. A thread `role`, from positive evidence only, with a live check of Claude request classes.
-3. A run id and writer-order line sequence number (implemented on every tap envelope), plus a schema version.
+3. A run id and writer-order line sequence number (implemented on every tap envelope), plus a schema version (`schema_version`, also implemented on every tap envelope).
 4. A wrapper child-exit signal.
 
 Each is a separate change; none is started by this document.

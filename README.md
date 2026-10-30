@@ -110,7 +110,7 @@ Operational diagnostics go to stderr independently of the tap file. Disk open/wr
 
 ## The tap file
 
-Each line has `run_id`, `sequence`, `exchange`, `adapter`, `event`, `mono_us`, `wall_ms`, `start`, `end` and `payload`. Credential headers are redacted before anything is written. Tap files append across runs; disk size and retention are currently unbounded.
+Each line has `run_id`, `schema_version`, `sequence`, `exchange`, `adapter`, `event`, `mono_us`, `wall_ms`, `start`, `end` and `payload`. Credential headers are redacted before anything is written. Tap files append across runs; disk size and retention are currently unbounded.
 
 - **Live events** are written as each chunk arrives: `conversation`, `block_start`, `block_delta`, `block_stop`, `usage`, `reply_end`, `error`.
 - **`record`** is one line per reply, written when it ends, with the whole conversation and reply. `incomplete` and `dropped` are set when events were lost or the stream was cut off.
