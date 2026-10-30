@@ -1,9 +1,9 @@
-use crate::adapter::event::{block_delta, block_start, block_stop, error, reply_end, usage};
+use crate::adapter::event::{block_delta, block_start, block_stop, error, reply_end_of_message, usage};
 use crate::adapter::TapEvent;
 use crate::common::*;
 use serde_json::Value;
 
-pub(super) fn stream_event(data: &str, start: u64, end: u64) -> Vec<TapEvent> {
+pub(super) fn stream_event(data: &str, start: u64, end: u64, created_id: &mut Value) -> Vec<TapEvent> {
     let Ok(json) = serde_json::from_str::<Value>(data) else {
         return Vec::new();
     };
@@ -29,12 +29,31 @@ pub(super) fn stream_event(data: &str, start: u64, end: u64) -> Vec<TapEvent> {
                 .chain([block_stop(index)])
                 .collect()
         }
+        "response.created" => {
+            *created_id = json["response"]["id"].clone();
+            Vec::new()
+        }
         "response.completed" | "response.incomplete" => {
             let response = &json["response"];
-            vec![usage_event(&response["usage"]), reply_end(response["status"].clone())]
+            let remembered = std::mem::take(created_id);
+            let id = if response["id"].is_null() {
+                remembered
+            } else {
+                response["id"].clone()
+            };
+            vec![
+                usage_event(&response["usage"]),
+                reply_end_of_message(response["status"].clone(), id),
+            ]
         }
-        "response.failed" => vec![error(json["response"]["error"]["code"].clone())],
-        "error" => vec![error(json["error"]["code"].clone())],
+        "response.failed" => {
+            *created_id = Value::Null;
+            vec![error(json["response"]["error"]["code"].clone())]
+        }
+        "error" => {
+            *created_id = Value::Null;
+            vec![error(json["error"]["code"].clone())]
+        }
         _ => Vec::new(),
     };
     events.into_iter().map(|event| event.at(start, end)).collect()

@@ -197,7 +197,11 @@ fn open_reply() -> Vec<TapEvent> {
 fn closed_reply() -> Vec<TapEvent> {
     use crate::common::*;
     let mut events = open_reply();
-    events.extend([block_stop(0), usage(Usage::default()), reply_end(json!("end_turn"))]);
+    events.extend([
+        block_stop(0),
+        usage(Usage::default()),
+        reply_end_of_message(json!("end_turn"), Value::Null),
+    ]);
     events
 }
 
@@ -489,7 +493,7 @@ async fn a_result_in_a_later_request_writes_one_calls_edge_for_its_call() {
             name: json!("shell"),
         }),
         block_stop(0),
-        reply_end(json!("tool_use")),
+        reply_end_of_message(json!("tool_use"), Value::Null),
     ];
     let answering = |extra: &str| {
         let result = Message::user(vec![Block::ToolResult {

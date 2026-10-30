@@ -60,7 +60,7 @@ Required behaviors, independent of transport:
 | Schema compatibility | every tap envelope carries a schema version | `schema_version` (currently 1) implemented on every tap envelope; lines from older builds have none; consumer version-gating is not implemented |
 | Snapshot to live | a snapshot carries the cursor it was taken at; live resumes from that cursor | cursor metadata exists; no snapshot/subscription API or atomic handoff |
 | Resume | a future consumer resumes from `(run_id, sequence)` with explicit history-unavailable / resync-required when recovery is unavailable | cursor metadata exists; no replay buffer, resume protocol or restart recovery |
-| Duplicates and gaps | delivery duplicates identified by cursor; an unfiltered same-run sequence gap reports missed emitted output | no recovery API; semantic reply deduplication still lacks Codex provider reply ids |
+| Duplicates and gaps | delivery duplicates identified by cursor; an unfiltered same-run sequence gap reports missed emitted output | no recovery API; semantic reply deduplication uses the provider reply id (`message_id`), which a truncated reply lacks |
 | Filtered feeds | advance a watermark or signal gaps separately; skipped global values alone do not prove loss | no filtered delivery interface |
 | Durability | state the persistence and acknowledgement guarantees explicitly | queued or flushed lines do not imply fsync durability or durable acknowledgement |
 | Retention | bounded history; a consumer asking for dropped history gets a snapshot and a marker | rotation and retention are roadmap item 6 |
@@ -75,14 +75,14 @@ Target recovery walks, still requiring a delivery API: *join after answer* takes
 ## Assistant text (168.5)
 
 - **Eligible prose.** `text` blocks of assistant replies on a `main` thread. Excluded: `reasoning`, `tool_call`, `tool_result`, `image`, and every subagent thread by default. No commentary/final marker is observed in either harness, so soze offers none.
-- **Committed blocks vs deltas.** The record is a committed whole reply; live `block_delta` events are incremental, with block indexes local to one reply. vk assumes whole append-only blocks, so the smallest compatible change is to deliver committed blocks only: a text block is eligible once its `block_stop` arrives. The Claude `message_id` is read at `message_start` but written only on `reply_end`, after the deltas, so a live consumer cannot key deltas by it. Live text pairs with its record by `(run_id, exchange, step, index)`; `(message_id, index)` is a stable key only once the reply has ended, and Codex has no reply id yet.
+- **Committed blocks vs deltas.** The record is a committed whole reply; live `block_delta` events are incremental, with block indexes local to one reply. vk assumes whole append-only blocks, so the smallest compatible change is to deliver committed blocks only: a text block is eligible once its `block_stop` arrives. The Claude `message_id` is read at `message_start` but written only on `reply_end`, after the deltas, so a live consumer cannot key deltas by it. Live text pairs with its record by `(run_id, exchange, step, index)`; `(message_id, index)` is a stable key only once the reply has ended, and the Codex `message_id` is likewise written only on `reply_end`.
 - **Traces** (synthetic): live text then its record, where the record replaces the live copy by `(run_id, exchange, step, index)`; an extended block, where a later delta of the same key appends; duplicated delivery, dropped by key (Claude Code only, and not for an interrupted reply, which has no `message_id`); a missing delta, detected by the `dropped` count and `incomplete`, so the block is not played as final; a correction, which needs revision semantics soze does not have; several replies on one Codex socket, separated by `step`.
 - **Belongs in vk:** prose eligibility, speech-specific text cleanup, and the main-only default. **Must survive normalization:** thread, role, turn, step, reply id, block index, run id, and the `incomplete` flag.
 - **Smallest vk change.** None to the `Source` trait. A soze `Source` maps a turn's committed text blocks to `Event::Turn` with `finished` set by a stated rule (derived, see Lifecycle); `Newest` maps to the newest closed turn.
 
 ## Soze work this implies
 
-1. Codex reply id as `message_id` on `reply_end` (from the turn boundaries doc).
+1. Codex reply id as `message_id` on `reply_end` (from the turn boundaries doc; implemented).
 2. A thread `role`, from positive evidence only, with a live check of Claude request classes.
 3. A run id and writer-order line sequence number (implemented on every tap envelope), plus a schema version (`schema_version`, also implemented on every tap envelope).
 4. A wrapper child-exit signal.

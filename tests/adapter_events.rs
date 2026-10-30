@@ -23,7 +23,7 @@ fn builds_each_live_event_with_its_contract_kind_and_fields() {
     });
     let delta = block_delta(1, Delta::InputJson("{}".into()));
     let stop = block_stop(1);
-    let end = reply_end(json!("end_turn"));
+    let end = reply_end_of_message(json!("end_turn"), Value::Null);
     let failed = error(json!("overloaded_error"));
     let unreadable = unparsed(Side::Reply);
 

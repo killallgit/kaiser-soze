@@ -341,7 +341,10 @@ fn a_reply_without_a_message_start_ends_with_no_message_id() {
 
     let events = stream(&wire, 64);
 
-    assert_eq!(events[1].event, reply_end(json!("end_turn")).event);
+    assert_eq!(
+        events[1].event,
+        reply_end_of_message(json!("end_turn"), Value::Null).event
+    );
 }
 
 #[test]

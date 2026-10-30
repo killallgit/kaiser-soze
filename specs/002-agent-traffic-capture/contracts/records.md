@@ -35,7 +35,7 @@ Every emitted tap envelope carries a `sequence`: a strictly increasing, 1-based 
 | `block_delta` | `{index, text?, input_json?, signature?, encrypted?}` | A chunk of a reply block arrives |
 | `block_stop` | `{index}` | A reply block ends |
 | `usage` | `{input, output, cache_read, cache_write, reasoning}` | The agent reports usage |
-| `reply_end` | `{stop_reason, message_id?}` where `message_id` is the reply's message id when the stream named it (Claude Code `message_start`) | The reply ends |
+| `reply_end` | `{stop_reason, message_id?}` where `message_id` is the reply's message id when the stream named it (Claude Code `message_start`; Codex `response.id` on the end frame, else on `response.created` of the same reply) | The reply ends |
 | `error` | `{error_type}` | The upstream reports an error. No message text. |
 | `unparsed` | `{side}` where side is `request` or `reply` | The request or reply could not be read (too large, or still compressed) |
 | `unsupported` | `{host, path, label?}` | A claimed host's adapter declined to read the request. The bytes were relayed untouched. No content. |
