@@ -4,6 +4,7 @@ use crate::adapter::ResponseHead;
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
 use crate::common::message::{Block, Message, Output};
 use crate::common::*;
+use crate::graph::ThreadRole;
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -33,6 +34,7 @@ fn ids(session: &str, thread: &str, parent: Option<&str>) -> Identity {
         thread: Some(thread.into()),
         parent_thread: parent.map(Into::into),
         turn: None,
+        role: ThreadRole::Unknown,
     }
 }
 
@@ -44,7 +46,13 @@ fn the_main_agent_is_the_session_thread_with_no_parent() {
         ("x-claude-code-request-class", "main"),
     ]);
 
-    assert_eq!(identity, ids("s1", "s1", None));
+    assert_eq!(
+        identity,
+        Identity {
+            role: ThreadRole::Main,
+            ..ids("s1", "s1", None)
+        }
+    );
 }
 
 #[test]
@@ -56,7 +64,13 @@ fn a_subagent_is_its_own_thread_under_the_main_agent() {
         ("x-claude-code-request-class", "subagent"),
     ]);
 
-    assert_eq!(identity, ids("s1", "a1", Some("s1")));
+    assert_eq!(
+        identity,
+        Identity {
+            role: ThreadRole::Subagent,
+            ..ids("s1", "a1", Some("s1"))
+        }
+    );
 }
 
 #[test]
@@ -80,7 +94,44 @@ fn a_nested_subagent_names_the_agent_that_launched_it() {
         ("x-claude-code-request-class", "subagent"),
     ]);
 
-    assert_eq!(identity, ids("s1", "a2", Some("a1")));
+    assert_eq!(
+        identity,
+        Identity {
+            role: ThreadRole::Subagent,
+            ..ids("s1", "a2", Some("a1"))
+        }
+    );
+}
+
+#[test]
+fn a_subagent_request_without_an_agent_id_is_unknown() {
+    // Its thread is the session itself, so nothing proves it is a subagent
+    let identity = identity_of(&[
+        ("x-claude-code-session-id", "s1"),
+        ("x-claude-code-request-class", "subagent"),
+    ]);
+
+    assert_eq!(identity.role, ThreadRole::Unknown);
+}
+
+#[test]
+fn conflicting_or_missing_request_class_is_unknown() {
+    // Only a main class with no agent id, or a subagent class with one, gives a role
+    let main_with_agent = identity_of(&[
+        ("x-claude-code-session-id", "s1"),
+        ("x-claude-code-agent-id", "a1"),
+        ("x-claude-code-request-class", "main"),
+    ]);
+    let no_class = identity_of(&[("x-claude-code-session-id", "s1")]);
+    let other_class = identity_of(&[
+        ("x-claude-code-session-id", "s1"),
+        ("x-claude-code-request-class", "compact"),
+    ]);
+    let agent_without_class = identity_of(&[("x-claude-code-session-id", "s1"), ("x-claude-code-agent-id", "a1")]);
+
+    for identity in [main_with_agent, no_class, other_class, agent_without_class] {
+        assert_eq!(identity.role, ThreadRole::Unknown);
+    }
 }
 
 #[test]

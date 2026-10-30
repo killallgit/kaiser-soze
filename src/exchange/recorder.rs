@@ -106,6 +106,7 @@ impl Recorder {
             end: offsets.1,
             session: self.session.clone(),
             thread: self.thread.clone(),
+            thread_role: self.identity.role,
             step,
             entry,
         }

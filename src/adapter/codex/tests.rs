@@ -4,7 +4,7 @@ use crate::adapter::{Event, ExchangeParser, TapEvent, TapInput};
 use crate::capture::MAX_BUFFER_BYTES;
 use crate::common::message::{Block, Message, Output};
 use crate::common::*;
-use crate::graph::Identity;
+use crate::graph::{Identity, ThreadRole};
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -34,6 +34,7 @@ fn the_session_and_thread_headers_are_read() {
             thread: Some("t1".into()),
             parent_thread: None,
             turn: None,
+            role: ThreadRole::Unknown,
         }
     );
 }
@@ -44,6 +45,58 @@ fn a_parent_thread_header_gives_the_parent() {
     let identity = identity_of(&[("thread-id", "t2"), ("x-codex-parent-thread-id", "t1")]);
 
     assert_eq!(identity.parent_thread.as_deref(), Some("t1"));
+}
+
+#[test]
+fn a_thread_equal_to_its_session_is_main() {
+    // It needs both ids, equal, and no sign of a parent
+    let identity = identity_of(&[("session-id", "s1"), ("thread-id", "s1")]);
+
+    assert_eq!(identity.role, ThreadRole::Main);
+}
+
+#[test]
+fn a_parent_thread_header_makes_a_subagent() {
+    // It wins even when the thread equals the session
+    let identity = identity_of(&[
+        ("session-id", "s1"),
+        ("thread-id", "s1"),
+        ("x-codex-parent-thread-id", "t0"),
+    ]);
+
+    assert_eq!(identity.role, ThreadRole::Subagent);
+}
+
+#[test]
+fn a_subagent_header_alone_makes_a_subagent() {
+    // It reads x-openai-subagent without a parent header
+    let identity = identity_of(&[
+        ("session-id", "s1"),
+        ("thread-id", "s1"),
+        ("x-openai-subagent", "collab_spawn"),
+    ]);
+
+    assert_eq!(identity.role, ThreadRole::Subagent);
+}
+
+#[test]
+fn an_empty_subagent_header_does_not_block_main() {
+    // An empty value is no evidence either way
+    let identity = identity_of(&[("session-id", "s1"), ("thread-id", "s1"), ("x-openai-subagent", "")]);
+
+    assert_eq!(identity.role, ThreadRole::Main);
+}
+
+#[test]
+fn missing_or_different_ids_are_unknown() {
+    // It never promotes a thread it cannot tie to the session
+    let different = identity_of(&[("session-id", "s1"), ("thread-id", "t1")]);
+    let no_session = identity_of(&[("thread-id", "t1")]);
+    let no_thread = identity_of(&[("session-id", "s1")]);
+
+    for identity in [different, no_session, no_thread, identity_of(&[])] {
+        assert_eq!(identity.role, ThreadRole::Unknown);
+    }
 }
 
 #[test]

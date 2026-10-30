@@ -1,6 +1,6 @@
 use crate::adapter::body::is_encoded;
 use crate::adapter::{header, Adapter, ExchangeParser, RequestHead};
-use crate::graph::{named_turn, Identity};
+use crate::graph::{named_turn, Identity, ThreadRole};
 use serde_json::Value;
 
 mod history;
@@ -47,11 +47,20 @@ impl Adapter for CodexAdapter {
         let owned = |name| header(head, name).map(str::to_string);
         let turn_metadata =
             header(head, "x-codex-turn-metadata").and_then(|json| serde_json::from_str::<Value>(json).ok());
+        let (session, thread) = (owned("session-id"), owned("thread-id"));
+        let parent_thread = owned("x-codex-parent-thread-id");
+        let spawned = parent_thread.is_some() || header(head, "x-openai-subagent").is_some_and(|name| !name.is_empty());
+        let role = match (spawned, &session, &thread) {
+            (true, _, _) => ThreadRole::Subagent,
+            (false, Some(session), Some(thread)) if session == thread => ThreadRole::Main,
+            _ => ThreadRole::Unknown,
+        };
         Identity {
-            session: owned("session-id"),
-            thread: owned("thread-id"),
-            parent_thread: owned("x-codex-parent-thread-id"),
+            session,
+            thread,
+            parent_thread,
             turn: named_turn(turn_metadata.as_ref().and_then(|metadata| metadata["turn_id"].as_str())),
+            role,
         }
     }
 }

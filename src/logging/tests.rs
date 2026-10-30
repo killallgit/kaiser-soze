@@ -1,6 +1,7 @@
 use super::formatting::{MAX_COLUMNS, MAX_RECORD_BYTES};
 use super::*;
 use crate::event::{BlockDelta, Delta, Event};
+use crate::graph::ThreadRole;
 use crate::line::{Entry, Line};
 use serde_json::Value;
 use std::time::Duration;
@@ -40,6 +41,7 @@ fn delta() -> Line {
         end: 99,
         session: None,
         thread: None,
+        thread_role: ThreadRole::Unknown,
         step: None,
         entry: Entry::Event(Event::BlockDelta(BlockDelta {
             index: 3,

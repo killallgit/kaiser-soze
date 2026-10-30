@@ -1,4 +1,5 @@
 use super::*;
+use crate::graph::ThreadRole;
 use crate::line::Entry;
 use crate::note::{Note, Tunnel};
 use serde_json::Value;
@@ -15,6 +16,7 @@ fn line(exchange: u64) -> Line {
         end: 0,
         session: None,
         thread: None,
+        thread_role: ThreadRole::Unknown,
         step: None,
         entry: Entry::Note(Note::Tunnel(Tunnel {
             host: "synthetic.test".into(),
