@@ -1,5 +1,5 @@
 use crate::note::ExchangeEnd;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 pub(super) const UNSET: u64 = u64::MAX;
@@ -13,7 +13,6 @@ pub(super) struct Stats {
     pub(super) first_byte_us: AtomicU64,
     pub(super) forward_sum_us: AtomicU64,
     pub(super) forward_max_us: AtomicU64,
-    pub(super) ws_desynced: [AtomicBool; 2],
 }
 
 impl Stats {
@@ -27,7 +26,6 @@ impl Stats {
             first_byte_us: AtomicU64::new(UNSET),
             forward_sum_us: AtomicU64::new(0),
             forward_max_us: AtomicU64::new(0),
-            ws_desynced: Default::default(),
         }
     }
 

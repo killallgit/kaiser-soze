@@ -11,7 +11,7 @@ use crate::line::Entry;
 use crate::note::{self, Note, Transport};
 use bytes::Bytes;
 use hyper::{Response, StatusCode};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -20,7 +20,11 @@ const TAP_QUEUE: usize = 256;
 
 enum Msg {
     Input(TapInput),
-    WsBytes { from_client: bool, bytes: Bytes },
+    WsBytes {
+        from_client: bool,
+        bytes: Bytes,
+        after_gap: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -29,6 +33,8 @@ pub struct ExchangeTap {
     clock: Clock,
     recorder: Recorder,
     stats: Arc<Stats>,
+    /// Per direction: a chunk was refused and the next one queued must say so.
+    gap: Arc<[AtomicBool; 2]>,
 }
 
 impl ExchangeTap {
@@ -53,6 +59,7 @@ impl ExchangeTap {
             clock,
             recorder,
             stats,
+            gap: Default::default(),
         }
     }
 
@@ -107,7 +114,12 @@ impl ExchangeTap {
         if !from_client {
             self.stats.response_chunk_arrived(bytes.len());
         }
-        self.offer(Msg::WsBytes { from_client, bytes });
+        let after_gap = self.gap[from_client as usize].swap(false, Ordering::Relaxed);
+        self.offer(Msg::WsBytes {
+            from_client,
+            bytes,
+            after_gap,
+        });
     }
 
     pub(super) fn handed_on(&self, elapsed: Duration) {
@@ -118,7 +130,7 @@ impl ExchangeTap {
         if let Err(refused) = self.tx.try_send((self.clock.stamp(), msg)) {
             self.stats.dropped.fetch_add(1, Ordering::Relaxed);
             if let (_, Msg::WsBytes { from_client, .. }) = refused.into_inner() {
-                self.stats.ws_desynced[from_client as usize].store(true, Ordering::Relaxed);
+                self.gap[from_client as usize].store(true, Ordering::Relaxed);
             }
         }
     }
@@ -147,9 +159,13 @@ impl TapTask {
         while let Some((stamp, msg)) = rx.recv().await {
             let inputs = match msg {
                 Msg::Input(input) => vec![input],
-                Msg::WsBytes { from_client, bytes } => {
+                Msg::WsBytes {
+                    from_client,
+                    bytes,
+                    after_gap,
+                } => {
                     let decoder = &mut decoders[from_client as usize];
-                    if stats.ws_desynced[from_client as usize].load(Ordering::Relaxed) {
+                    if after_gap {
                         decoder.mark_broken();
                     }
                     decoder
