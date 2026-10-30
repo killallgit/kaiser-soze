@@ -8,7 +8,6 @@ use crate::note::{self, Label, Note};
 use crate::project::{ProjectCache, ProjectLookups};
 use bytes::Bytes;
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -16,7 +15,7 @@ use std::time::{Duration, Instant};
 struct BlocksUntilReleased {
     release: Receiver<()>,
     blocked: bool,
-    messages_seen: Arc<AtomicUsize>,
+    messages_seen: Arc<Mutex<Vec<String>>>,
 }
 
 impl ExchangeParser for BlocksUntilReleased {
@@ -24,8 +23,8 @@ impl ExchangeParser for BlocksUntilReleased {
         if !std::mem::replace(&mut self.blocked, true) {
             self.release.recv().ok();
         }
-        if matches!(input, TapInput::WsMessage { .. }) {
-            self.messages_seen.fetch_add(1, Ordering::Relaxed);
+        if let TapInput::WsMessage { text, .. } = input {
+            self.messages_seen.lock().unwrap().push(text);
         }
         Vec::new()
     }
@@ -34,7 +33,7 @@ impl ExchangeParser for BlocksUntilReleased {
 struct Fixture {
     tap: ExchangeTap,
     release: std::sync::mpsc::Sender<()>,
-    messages_seen: Arc<AtomicUsize>,
+    messages_seen: Arc<Mutex<Vec<String>>>,
     tap_file: std::path::PathBuf,
     _dir: tempfile::TempDir,
 }
@@ -47,7 +46,7 @@ async fn blocked_tap() -> Fixture {
         .unwrap();
     let recorder = Recorder::new(output, 1, "test");
     let (release, receiver) = std::sync::mpsc::channel();
-    let messages_seen = Arc::new(AtomicUsize::new(0));
+    let messages_seen = Arc::<Mutex<Vec<String>>>::default();
     let parser = BlocksUntilReleased {
         release: receiver,
         blocked: false,
@@ -113,21 +112,25 @@ async fn a_dropped_websocket_chunk_stops_decoding_only_from_the_gap() {
         tap_file,
         _dir,
     } = blocked_tap().await;
-    let text_frame = Bytes::from_static(&[0x81, 0x01, b'a']);
+    let before_gap = Bytes::from_static(&[0x81, 0x01, b'a']);
+    let after_gap = Bytes::from_static(&[0x81, 0x01, b'b']);
 
     for _ in 0..300 {
-        tap.send_ws_bytes(true, text_frame.clone(), Duration::ZERO);
+        tap.send_ws_bytes(true, before_gap.clone(), Duration::ZERO);
     }
     release.send(()).unwrap();
-    for _ in 0..5 {
-        tap.send_ws_bytes(true, text_frame.clone(), Duration::ZERO);
+    // The queue has room again once the parser has drained it, so this frame is queued, not refused
+    while messages_seen.lock().unwrap().len() < 256 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    tap.send_ws_bytes(true, after_gap, Duration::ZERO);
     drop(tap);
     wait_for_exchange_end(&tap_file).await;
 
     // The queue holds 256, plus the one the blocked parser had already taken
-    let seen = messages_seen.load(Ordering::Relaxed);
-    assert!((256..=257).contains(&seen));
+    let seen = messages_seen.lock().unwrap();
+    assert!((256..=257).contains(&seen.len()));
+    assert!(seen.iter().all(|text| text == "a"));
 }
 
 #[tokio::test]
