@@ -142,7 +142,7 @@ async fn exchange_end_reports_records_the_sink_had_to_drop() {
     };
     let tap = ExchangeTap::spawn(recorder.clone(), Clock::start(), Box::new(parser));
     for _ in 0..5000 {
-        recorder.write(Clock::start().stamp(), filler(), (0, 0));
+        recorder.write(Clock::start().stamp(), filler(), (0, 0), None);
     }
 
     drop(tap);
@@ -356,6 +356,113 @@ async fn a_record_carries_the_ids_the_recorder_knows() {
     assert_eq!(ids(record), [json!("host/owner/repo"), json!("s1"), json!("t1")]);
     let others = lines.iter().filter(|line| line["event"] != "record");
     assert!(others.map(ids).all(|ids| ids.iter().all(Value::is_null)));
+}
+
+const STEPPED_LINES: [&str; 6] = [
+    "conversation",
+    "block_start",
+    "block_delta",
+    "block_stop",
+    "usage",
+    "reply_end",
+];
+
+fn steps_of_live_lines(lines: &[Value]) -> Vec<Option<u64>> {
+    lines
+        .iter()
+        .filter(|line| STEPPED_LINES.contains(&line["event"].as_str().unwrap()))
+        .map(|line| line.get("step").map(|step| step.as_u64().unwrap()))
+        .collect()
+}
+
+#[tokio::test]
+async fn live_lines_carry_the_step_of_the_record_they_are_folded_into() {
+    // Each reply's live lines show the step of the record after them
+    let mut second = closed_reply();
+    second[0].event.conversation_mut().step = Some(2);
+    let mut events = closed_reply();
+    events[0].event.conversation_mut().step = Some(1);
+    events.extend(second);
+
+    let lines = run_to_the_end(events).await;
+
+    let mut live_steps = Vec::new();
+    let mut record_steps = Vec::new();
+    for line in &lines {
+        if line["event"] == "record" {
+            record_steps.push(line["payload"]["step"].as_u64());
+            live_steps.push(None);
+        } else if STEPPED_LINES.contains(&line["event"].as_str().unwrap()) {
+            live_steps.push(line["step"].as_u64());
+        }
+    }
+    let per_reply: Vec<_> = live_steps
+        .split(Option::is_none)
+        .filter(|reply| !reply.is_empty())
+        .collect();
+    assert_eq!(record_steps, [Some(1), Some(2)]);
+    assert_eq!(per_reply, [[Some(1); 6], [Some(2); 6]]);
+}
+
+#[tokio::test]
+async fn a_conversation_with_no_step_gives_its_live_lines_step_one() {
+    // A Claude request names no step, so the record is step 1 and so are its live lines
+    let lines = run_to_the_end(closed_reply()).await;
+
+    assert_eq!(steps_of_live_lines(&lines), [Some(1); 6]);
+}
+
+#[tokio::test]
+async fn a_reply_with_no_conversation_has_no_step_anywhere() {
+    // No request means no step, on the live lines and on the record
+    let lines = run_to_the_end(closed_reply().split_off(1)).await;
+
+    assert!(steps_of_live_lines(&lines).iter().all(Option::is_none));
+    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+    assert!(record["payload"]["step"].is_null());
+}
+
+#[tokio::test]
+async fn a_new_conversation_leaves_the_open_reply_on_its_old_step() {
+    // The cut record and the lines before the new conversation show step 1; the new conversation shows step 2
+    let mut events = open_reply();
+    events[0].event.conversation_mut().step = Some(1);
+    let mut next = closed_reply();
+    next[0].event.conversation_mut().step = Some(2);
+    events.extend(next);
+
+    let lines = run_to_the_end(events).await;
+
+    let steps = steps_of_live_lines(&lines);
+    assert_eq!(&steps[..3], [Some(1); 3]);
+    assert_eq!(&steps[3..], [Some(2); 6]);
+    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
+    assert_eq!(record["payload"]["step"], 1);
+    assert_eq!(record["payload"]["incomplete"], true);
+}
+
+#[tokio::test]
+async fn every_line_of_an_identified_exchange_carries_its_session_and_thread() {
+    // It puts the ids at the top of each line, and leaves the keys out when the exchange has none
+    let known = Identity {
+        session: Some("s1".into()),
+        thread: Some("t1".into()),
+        ..Identity::default()
+    };
+
+    let identified = run_recorded(closed_reply(), |mut recording| {
+        recording.identity = known;
+        recording
+    })
+    .await;
+    let anonymous = run_to_the_end(closed_reply()).await;
+
+    assert!(identified
+        .iter()
+        .all(|line| line["session"] == "s1" && line["thread"] == "t1"));
+    assert!(anonymous
+        .iter()
+        .all(|line| line.get("session").is_none() && line.get("thread").is_none()));
 }
 
 #[tokio::test]
@@ -876,7 +983,7 @@ async fn a_reliable_write_waits_for_room_in_a_full_queue() {
     // It delivers the line once the queue drains, where a plain write would drop it
     let (output, mut drained) = TapOutput::detached(1).unwrap();
     let recorder = Recorder::new(output, 1, "test");
-    recorder.write(Clock::start().stamp(), filler(), (0, 0));
+    recorder.write(Clock::start().stamp(), filler(), (0, 0), None);
     let writer = recorder.clone();
     let edge = Entry::Edge(graph::Edge::new(EdgeKind::InThread, "exchange:1", "thread:t1"));
     let written = tokio::spawn(async move { writer.write_reliable(Clock::start().stamp(), edge).await });

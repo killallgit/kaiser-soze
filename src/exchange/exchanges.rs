@@ -80,7 +80,7 @@ impl Exchanges {
     /// Writes one line under an exchange id of its own, for something that happened without an exchange.
     pub fn note_alone(&self, adapter: &'static str, note: Note) {
         let recorder = Recorder::new(self.output.clone(), self.next_exchange(), adapter);
-        recorder.write(self.clock.stamp(), Entry::Note(note), (0, 0));
+        recorder.write(self.clock.stamp(), Entry::Note(note), (0, 0), None);
     }
 
     fn next_exchange(&self) -> u64 {

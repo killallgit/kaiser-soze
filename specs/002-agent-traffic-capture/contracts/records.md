@@ -1,12 +1,14 @@
 # Contract: Records in the Tap File
 
-Consumer: any application that reads the JSONL tap file. One JSON object per line. Every line has the envelope in [data-model.md](../data-model.md). Only `event` and `payload` differ.
+Consumer: any application that reads the JSONL tap file. One JSON object per line. Every line has the envelope in [data-model.md](../data-model.md). The lines differ in `event` and `payload`, and in the optional `session`, `thread` and `step` below.
 
 ## Envelope
 
 Every tap line carries a nonempty string `run_id`, including `tunnel`, `unsupported`, `edge`, `record` and `exchange_end`. It is an opaque random capture identity generated once before a Proxy instance can emit a line and shared by all its exchanges and cloned recorders. The writer uses 128 random bits encoded as hexadecimal; consumers treat the string as opaque. A new Proxy instance gets a fresh identity even when it appends to the same tap file and starts again at exchange 1. Generation uses the existing crypto provider at startup, never the forwarding path.
 
 Every tap line also carries an integer `schema_version`, currently 1: soze's own output contract version, independent of provider wire schemas, the package version and fingerprints. Within a version only additive optional fields appear; removing or renaming a field, or changing a type or meaning, needs a new version. Consumers ignore unknown optional fields and stop on an unsupported version with a compatibility diagnostic, while capture and forwarding continue. Lines from older builds have no `schema_version` and are legacy, never version 1.
+
+Lines written for an identified exchange also carry, at the top level and never `null`, `session` and `thread` (the same ids as the record's `payload.session` and `payload.thread`), and the live event lines carry `step`. A key is left out when its value is unknown, so a tunnel, an unsupported line and an anonymous exchange keep the lines they had. They are additive optional fields, so `schema_version` stays 1.
 
 Identity scopes remain separate:
 
@@ -55,6 +57,7 @@ Every emitted tap envelope carries a `sequence`: a strictly increasing, 1-based 
 - Within an exchange identified by `(run_id, exchange)`, lines appear in the order the events occurred.
 - A `record` line is written once per reply, when the reply ends. If an exchange ends while a reply is open (a cut-off stream), one more `record` is written for it. A Claude Code exchange has one reply; a Codex WebSocket can have many.
 - A `record` line (and the closing `exchange_end` line) is not lost because the output queue is busy. Live lines may be dropped there and counted; the `record` waits for room. The one live line that is refused while its own `record` is being built is not in that record's `dropped` count.
+- A live event line (`conversation`, `block_start`, `block_delta`, `block_stop`, `usage`, `reply_end`, `error`, `unparsed`) carries a top-level `step` equal to the `payload.step` of the `record` it is folded into: the step of the reply's conversation, 1 for a request that names none. With no conversation the line and its record have no `step`. A new conversation that cuts an open reply carries the new step; the cut reply and its record keep the old one. Notes, `edge` and `record` lines carry no top-level `step`.
 - A `record` equals the fold of its reply's live events, plus its conversation (carried by the record alone, not by the live `conversation` line) and the `project`, `session` and `thread` ids of its exchange when known. For an incomplete record it equals the fold of the events that were written.
 - `incomplete` is true when `dropped` is above 0 (counting live lines lost on the output side), the stream was cut off, the request or reply was unparsed, or assembly stopped at the 32 MiB bound.
 - A reply item that is not text, reasoning or a tool call is left out and does not set `incomplete`.

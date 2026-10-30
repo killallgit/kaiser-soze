@@ -4,7 +4,7 @@ All shapes are JSON values. Field lists match [docs/common-format.md](../../docs
 
 ## Envelope
 
-`run_id` (opaque capture epoch), `sequence` (1-based emission order within that epoch), `exchange` (id within that epoch), `adapter` (name), `event` (kind), `mono_us`, `wall_ms`, `start`, `end` (byte offsets), `payload`.
+`run_id` (opaque capture epoch), `sequence` (1-based emission order within that epoch), `exchange` (id within that epoch), `adapter` (name), `event` (kind), `mono_us`, `wall_ms`, `start`, `end` (byte offsets), `payload`, and when known `session`, `thread` and (on live event lines) `step`.
 
 Every Proxy instance generates a fresh random `run_id` before emitting any tap lines. All its exchanges and cloned recorders share it, including traffic with no native session or thread. Appending to the same file after a restart preserves the earlier lines and starts a new epoch. See the [envelope contract](contracts/records.md#envelope) for identity scopes and guarantees.
 
