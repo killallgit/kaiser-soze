@@ -6,13 +6,15 @@ Consumer: any application that reads the JSONL tap file. One JSON object per lin
 
 Every tap line carries a nonempty string `run_id`, including `tunnel`, `unsupported`, `edge`, `record` and `exchange_end`. It is an opaque random capture identity generated once before a Proxy instance can emit a line and shared by all its exchanges and cloned recorders. The writer uses 128 random bits encoded as hexadecimal; consumers treat the string as opaque. A new Proxy instance gets a fresh identity even when it appends to the same tap file and starts again at exchange 1. Generation uses the existing crypto provider at startup, never the forwarding path.
 
+Every tap line also carries an integer `schema_version`, currently 1: soze's own output contract version, independent of provider wire schemas, the package version and fingerprints. Within a version only additive optional fields appear; removing or renaming a field, or changing a type or meaning, needs a new version. Consumers ignore unknown optional fields and stop on an unsupported version with a compatibility diagnostic, while capture and forwarding continue. Lines from older builds have no `schema_version` and are legacy, never version 1.
+
 Identity scopes remain separate:
 
 - Native conversation: `(adapter, thread)`. Session and thread ids are unchanged across capture epochs when the harness sends the same ids.
 - Capture attempt: `(run_id, exchange, step)` when the step is known; `(run_id, exchange)` identifies the exchange even for anonymous or unread traffic.
 - Graph nodes named `exchange:<n>` and `step:<exchange>.<n>` are scoped to the enclosing line's `run_id`; their bare names are not globally unique.
 
-The capture identity is independent of native harness sessions and wrapper run attribution. Diagnostic `--shape-file` output has its own format and carries neither `run_id` nor `sequence`.
+The capture identity is independent of native harness sessions and wrapper run attribution. Diagnostic `--shape-file` output has its own format and carries none of `run_id`, `schema_version` or `sequence`.
 
 ## Delivery cursor
 

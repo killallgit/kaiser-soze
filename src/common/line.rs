@@ -38,6 +38,9 @@ impl Serialize for Entry {
     }
 }
 
+/// The version of soze's own tap line schema. Lines from builds before it carry no `schema_version`.
+pub const SCHEMA_VERSION: u64 = 1;
+
 /// One line of the tap file: where it came from, when, which bytes of the exchange it covers, and what it says.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Line {
@@ -56,7 +59,7 @@ pub struct Line {
 /// The tap file has its keys sorted, so the fields are written in key order.
 impl Serialize for Line {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut line = serializer.serialize_struct("Line", 10)?;
+        let mut line = serializer.serialize_struct("Line", 11)?;
         line.serialize_field("adapter", self.adapter)?;
         line.serialize_field("end", &self.end)?;
         line.serialize_field("event", self.entry.event())?;
@@ -64,6 +67,7 @@ impl Serialize for Line {
         line.serialize_field("mono_us", &self.mono_us)?;
         line.serialize_field("payload", &self.entry)?;
         line.serialize_field("run_id", self.run_id.as_ref())?;
+        line.serialize_field("schema_version", &SCHEMA_VERSION)?;
         line.serialize_field("sequence", &self.sequence)?;
         line.serialize_field("start", &self.start)?;
         line.serialize_field("wall_ms", &self.wall_ms)?;
@@ -107,11 +111,11 @@ mod tests {
 
         assert_eq!(
             serde_json::to_string(&line(Entry::Event(Event::Usage(usage)))).unwrap(),
-            r#"{"adapter":"claude","end":9,"event":"usage","exchange":7,"mono_us":1500,"payload":{"cache_read":null,"cache_write":null,"input":3,"output":null,"reasoning":null},"run_id":"run-synthetic","sequence":5,"start":4,"wall_ms":1700000000000}"#
+            r#"{"adapter":"claude","end":9,"event":"usage","exchange":7,"mono_us":1500,"payload":{"cache_read":null,"cache_write":null,"input":3,"output":null,"reasoning":null},"run_id":"run-synthetic","schema_version":1,"sequence":5,"start":4,"wall_ms":1700000000000}"#
         );
         assert_eq!(
             serde_json::to_string(&line(Entry::Event(Event::BlockDelta(delta)))).unwrap(),
-            r#"{"adapter":"claude","end":9,"event":"block_delta","exchange":7,"mono_us":1500,"payload":{"encrypted":"e","index":1},"run_id":"run-synthetic","sequence":5,"start":4,"wall_ms":1700000000000}"#
+            r#"{"adapter":"claude","end":9,"event":"block_delta","exchange":7,"mono_us":1500,"payload":{"encrypted":"e","index":1},"run_id":"run-synthetic","schema_version":1,"sequence":5,"start":4,"wall_ms":1700000000000}"#
         );
     }
 
@@ -126,7 +130,7 @@ mod tests {
 
         assert_eq!(
             serde_json::to_string(&line(Entry::Note(tunnel))).unwrap(),
-            r#"{"adapter":"claude","end":9,"event":"tunnel","exchange":7,"mono_us":1500,"payload":{"host":"t.test","port":443},"run_id":"run-synthetic","sequence":5,"start":4,"wall_ms":1700000000000}"#
+            r#"{"adapter":"claude","end":9,"event":"tunnel","exchange":7,"mono_us":1500,"payload":{"host":"t.test","port":443},"run_id":"run-synthetic","schema_version":1,"sequence":5,"start":4,"wall_ms":1700000000000}"#
         );
     }
 
@@ -137,7 +141,7 @@ mod tests {
 
         assert_eq!(
             serde_json::to_string(&line).unwrap(),
-            r#"{"adapter":"claude","end":9,"event":"edge","exchange":7,"mono_us":1500,"payload":{"from":"step:7.1","kind":"turn","to":"turn:u1"},"run_id":"run-synthetic","sequence":5,"start":4,"wall_ms":1700000000000}"#
+            r#"{"adapter":"claude","end":9,"event":"edge","exchange":7,"mono_us":1500,"payload":{"from":"step:7.1","kind":"turn","to":"turn:u1"},"run_id":"run-synthetic","schema_version":1,"sequence":5,"start":4,"wall_ms":1700000000000}"#
         );
     }
 
@@ -148,7 +152,7 @@ mod tests {
 
         assert_eq!(
             serde_json::to_string(&line).unwrap(),
-            r#"{"adapter":"claude","end":9,"event":"record","exchange":7,"mono_us":1500,"payload":{"conversation":null,"dropped":0,"incomplete":false,"reply":{"message":{"blocks":[],"role":"assistant"},"stop_reason":null,"usage":{"cache_read":null,"cache_write":null,"input":null,"output":null,"reasoning":null}}},"run_id":"run-synthetic","sequence":5,"start":4,"wall_ms":1700000000000}"#
+            r#"{"adapter":"claude","end":9,"event":"record","exchange":7,"mono_us":1500,"payload":{"conversation":null,"dropped":0,"incomplete":false,"reply":{"message":{"blocks":[],"role":"assistant"},"stop_reason":null,"usage":{"cache_read":null,"cache_write":null,"input":null,"output":null,"reasoning":null}}},"run_id":"run-synthetic","schema_version":1,"sequence":5,"start":4,"wall_ms":1700000000000}"#
         );
     }
 
