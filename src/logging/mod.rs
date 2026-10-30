@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWrite;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 const LOG_QUEUE: usize = 256;
 const STREAM_PER_SECOND: u64 = 20;
@@ -75,7 +75,7 @@ impl FromStr for Format {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
     pub level: Level,
     pub format: Format,
@@ -110,7 +110,7 @@ struct Counts {
 
 struct Output {
     tx: mpsc::Sender<Msg>,
-    settings: Settings,
+    settings: watch::Sender<Settings>,
     counts: Counts,
     origin: Instant,
     stream_rate: Rate,
@@ -161,7 +161,7 @@ impl Logger {
         Self {
             outputs: vec![Arc::new(Output {
                 tx,
-                settings,
+                settings: watch::channel(settings).0,
                 counts,
                 origin: Instant::now(),
                 stream_rate: Rate::default(),
@@ -206,6 +206,18 @@ impl Logger {
             .await?;
         let debug = Self::debug(file, self.clone(), DEBUG_FILE_BYTES);
         Ok(self.combine(debug))
+    }
+
+    /// Replaces the level, `live` and `stream` of the terminal output for later events. The
+    /// format stays: the writer task took it at start. The debug file keeps its full detail.
+    pub fn reload(&self, settings: Settings) {
+        for out in self.outputs.iter().filter(|out| out.limited) {
+            out.settings.send_modify(|current| {
+                current.level = settings.level;
+                current.live = settings.live;
+                current.stream = settings.stream;
+            });
+        }
     }
 
     pub(crate) fn for_run(&self, run_id: Arc<str>) -> Self {

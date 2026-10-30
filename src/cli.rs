@@ -67,6 +67,7 @@ impl Error {
             Self::Display(_) => "display_requested",
             Self::Configuration(config::Error::OutputOverlap) => "debug_file_overlaps_capture",
             Self::Configuration(config::Error::ConfigOverlap) => "output_overlaps_configuration",
+            Self::Configuration(config::Error::UnsupportedVersion) => "unsupported_version",
             Self::Configuration(config::Error::Load(error)) => match error {
                 ::config::ConfigError::NotFound(_) => "missing_configuration",
                 ::config::ConfigError::Foreign(error)
@@ -82,7 +83,28 @@ impl Error {
     }
 }
 
+/// The flags and sources a run started with, so a reload layers files under the same precedence.
+pub(super) struct Reload {
+    options: Options,
+    sources: Sources,
+}
+
+impl Reload {
+    pub fn run(&self) -> Result<config::Settings, Error> {
+        config::load(&self.options, self.options.config.as_deref(), self.sources.clone()).map_err(Error::Configuration)
+    }
+}
+
+#[cfg(test)]
 pub(super) fn parse_args_from<I, T>(args: I, sources: Sources) -> Result<config::Settings, Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    parse_with_reload(args, sources).map(|(settings, _)| settings)
+}
+
+pub(super) fn parse_with_reload<I, T>(args: I, sources: Sources) -> Result<(config::Settings, Reload), Error>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
@@ -98,11 +120,12 @@ where
             Error::Arguments(error.kind())
         }
     })?;
-    config::load(&options, options.config.as_deref(), sources).map_err(Error::Configuration)
+    let settings = config::load(&options, options.config.as_deref(), sources.clone()).map_err(Error::Configuration)?;
+    Ok((settings, Reload { options, sources }))
 }
 
-pub(super) fn parse_args(format: Format) -> Result<config::Settings, Error> {
-    parse_args_from(std::env::args_os().skip(1), Sources::from_environment(format))
+pub(super) fn parse_args(format: Format) -> Result<(config::Settings, Reload), Error> {
+    parse_with_reload(std::env::args_os().skip(1), Sources::from_environment(format))
 }
 
 #[cfg(test)]

@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
+use tokio::signal::unix::{signal, Signal, SignalKind};
 
 /// The system store (and `SSL_CERT_FILE`) joins the bundled roots, so a network that re-signs TLS with its own CA still connects.
 fn system_certs(log: &Logger) -> Vec<CertificateDer<'static>> {
@@ -36,7 +37,47 @@ fn upstream_roots(system: Vec<CertificateDer<'static>>) -> RootCertStore {
     roots
 }
 
-async fn run(args: AppSettings, log: &mut Logger) -> Result<(), &'static str> {
+fn reload_failed(log: &Logger, error_kind: &'static str) {
+    let fields = Fields {
+        error_kind: Some(error_kind),
+        ..Fields::default()
+    };
+    log.event(Level::Warn, "config_reload_failed", fields);
+}
+
+/// A `SIGHUP` re-reads the files under the flags and environment the run started with. A bad file
+/// is reported and changes nothing; the listener and the tap never wait on it.
+async fn reload_on_hangup(mut hangup: Signal, reload: Arc<cli::Reload>, mut running: AppSettings, log: Logger) {
+    while hangup.recv().await.is_some() {
+        let reload = reload.clone();
+        match tokio::task::spawn_blocking(move || reload.run()).await {
+            Ok(Ok(candidate)) => {
+                let before = running.logging();
+                for field in running.reload_into(candidate) {
+                    log.event(
+                        Level::Warn,
+                        "config_restart_required",
+                        Fields {
+                            field: Some(field),
+                            ..Fields::default()
+                        },
+                    );
+                }
+                if running.logging() != before {
+                    log.reload(running.logging());
+                    log.event(Level::Info, "config_reloaded", Fields::default());
+                }
+            }
+            Ok(Err(error)) => reload_failed(&log, error.kind()),
+            Err(_) => reload_failed(&log, "reload_panicked"),
+        }
+    }
+}
+
+async fn run(args: AppSettings, reload: cli::Reload, log: &mut Logger) -> Result<(), &'static str> {
+    // Installed before anything is announced, so a reload sent at once is never the default SIGHUP.
+    let hangup = signal(SignalKind::hangup());
+    let running = args.clone();
     // Bind before resetting the debug file: a duplicate dev launch must not erase a live run's log.
     let listener = TcpListener::bind(("127.0.0.1", args.port)).await.map_err(|error| {
         log.event(Level::Error, "listener_bind_failed", Fields::io(&error));
@@ -63,6 +104,14 @@ async fn run(args: AppSettings, log: &mut Logger) -> Result<(), &'static str> {
     .await
     .map_err(|_| "proxy_initialization_failed")?;
     let log = proxy.logger();
+    match hangup {
+        Ok(hangup) => {
+            tokio::spawn(reload_on_hangup(hangup, Arc::new(reload), running, log.clone()));
+        }
+        Err(error) => {
+            log.event(Level::Warn, "reload_unavailable", Fields::io(&error));
+        }
+    }
     let port = listener.local_addr().map_err(|_| "listener_address_failed")?.port();
     log.event(
         Level::Info,
@@ -123,14 +172,14 @@ async fn service() -> ExitCode {
             format: default_format,
             ..Settings::default()
         },
-        |args| args.logging(),
+        |(args, _)| args.logging(),
     );
     let Ok(stderr) = std::io::stderr().as_fd().try_clone_to_owned() else {
         return ExitCode::FAILURE;
     };
     let mut log = Logger::new(tokio::fs::File::from_std(std::fs::File::from(stderr)), settings);
     let result = match parsed {
-        Ok(args) => run(args, &mut log).await,
+        Ok((args, reload)) => run(args, reload, &mut log).await,
         Err(error) => Err(error.kind()),
     };
     if let Err(kind) = result {
@@ -173,7 +222,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let debug = dir.path().join("debug.jsonl");
         std::fs::write(&debug, b"synthetic active run\n").unwrap();
-        let args = cli::parse_args_from(
+        let (args, reload) = cli::parse_with_reload(
             [
                 "--port".to_string(),
                 listener.local_addr().unwrap().port().to_string(),
@@ -185,7 +234,7 @@ mod tests {
             config::Sources::new(Format::Human),
         )
         .unwrap();
-        assert!(run(args, &mut Logger::default()).await.is_err());
+        assert!(run(args, reload, &mut Logger::default()).await.is_err());
         assert_eq!(std::fs::metadata(debug).unwrap().len(), 21);
         assert!(!dir.path().join("tap.jsonl").exists());
     }

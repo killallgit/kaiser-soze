@@ -5,9 +5,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Deserialize)]
+/// The newest file schema this build reads. An absent `version` means 1.
+const VERSION: i64 = 1;
+
+/// A reload changes `log_level`, `live` and `stream`; every other key needs a restart
+/// (see `reload_into`).
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Settings {
+    #[serde(rename = "version", default)]
+    _version: u32,
     pub port: u16,
     pub tap_file: PathBuf,
     pub shape_file: Option<PathBuf>,
@@ -29,9 +36,27 @@ impl Settings {
             stream: self.stream,
         }
     }
+
+    /// Takes the live keys from `candidate` and names the restart-only keys it changed, which keep
+    /// their running value.
+    pub fn reload_into(&mut self, candidate: Settings) -> Vec<&'static str> {
+        let restart = [
+            ("port", self.port != candidate.port),
+            ("tap_file", self.tap_file != candidate.tap_file),
+            ("shape_file", self.shape_file != candidate.shape_file),
+            ("log_file", self.log_file != candidate.log_file),
+            ("log_format", self.log_format != candidate.log_format),
+        ]
+        .into_iter()
+        .filter_map(|(name, changed)| changed.then_some(name))
+        .collect();
+        (self.log_level, self.live, self.stream) = (candidate.log_level, candidate.live, candidate.stream);
+        restart
+    }
 }
 
 /// Inputs are captured once so tests and startup resolve the same sources without mutating process state.
+#[derive(Clone)]
 pub(super) struct Sources {
     pub files: Vec<PathBuf>,
     pub environment: HashMap<String, String>,
@@ -67,6 +92,7 @@ pub(super) enum Error {
     Load(::config::ConfigError),
     OutputOverlap,
     ConfigOverlap,
+    UnsupportedVersion,
 }
 
 pub(super) fn load(overrides: &impl Serialize, explicit: Option<&Path>, sources: Sources) -> Result<Settings, Error> {
@@ -96,6 +122,7 @@ pub(super) fn load(overrides: &impl Serialize, explicit: Option<&Path>, sources:
         }
         let contents = std::fs::read_to_string(path)
             .map_err(|error| Error::Load(::config::ConfigError::Foreign(Box::new(error))))?;
+        check_version(&contents)?;
         builder = builder.add_source(::config::File::from_str(&contents, ::config::FileFormat::Toml));
     }
     let environment = sources
@@ -119,4 +146,17 @@ pub(super) fn load(overrides: &impl Serialize, explicit: Option<&Path>, sources:
         .map_err(Error::Load)?;
     paths::validate(&settings, &files)?;
     Ok(settings)
+}
+
+/// Each file is checked alone: after layering, a newer file could hide behind an older one.
+fn check_version(contents: &str) -> Result<(), Error> {
+    let file = ::config::Config::builder()
+        .add_source(::config::File::from_str(contents, ::config::FileFormat::Toml))
+        .build()
+        .map_err(Error::Load)?;
+    match file.get_int("version") {
+        Ok(VERSION) | Err(::config::ConfigError::NotFound(_)) => Ok(()),
+        Ok(_) => Err(Error::UnsupportedVersion),
+        Err(error) => Err(Error::Load(error)),
+    }
 }
