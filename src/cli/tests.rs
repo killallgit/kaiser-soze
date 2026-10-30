@@ -391,3 +391,124 @@ fn optional_config_paths_report_io_errors_instead_of_ignoring_them() {
     let result = parse_args_from(["--tap-file=synthetic.jsonl"], sources);
     assert!(matches!(result, Err(Error::Configuration(config::Error::Load(_)))));
 }
+
+fn config_file(dir: &tempfile::TempDir, text: &str) -> PathBuf {
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, format!("tap_file = 'synthetic.jsonl'\n{text}")).unwrap();
+    path
+}
+
+fn started(path: &Path, flags: &[&str]) -> (config::Settings, Reload) {
+    let args = ["--config".to_string(), path.display().to_string()]
+        .into_iter()
+        .chain(flags.iter().map(|flag| flag.to_string()));
+    parse_with_reload(args, Sources::new(Format::Human)).ok().unwrap()
+}
+
+#[test]
+fn a_file_may_omit_its_version_or_declare_1_and_nothing_newer() {
+    let dir = tempfile::tempdir().unwrap();
+    for text in ["", "version = 1\n"] {
+        let path = config_file(&dir, text);
+        assert!(parse_args_from(
+            ["--config".into(), path.display().to_string()],
+            Sources::new(Format::Human)
+        )
+        .is_ok());
+    }
+    for (text, newer) in [
+        ("version = 2\n", true),
+        ("version = 'one'\n", false),
+        ("version = '1'\n", false),
+    ] {
+        let path = config_file(&dir, text);
+        let result = parse_args_from(
+            ["--config".into(), path.display().to_string()],
+            Sources::new(Format::Human),
+        );
+        assert_eq!(
+            matches!(result, Err(Error::Configuration(config::Error::UnsupportedVersion))),
+            newer
+        );
+        assert!(result.is_err());
+    }
+}
+
+#[test]
+fn a_reload_takes_the_live_keys_and_names_the_restart_only_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = config_file(&dir, "port = 1000\nlog_level = 'warn'\n");
+    let (mut running, reload) = started(&path, &[]);
+
+    config_file(&dir, "port = 2000\nlog_level = 'debug'\nlive = true\n");
+    let restart = running.reload_into(reload.run().ok().unwrap());
+
+    assert_eq!(restart, ["port"]);
+    assert_eq!(running.port, 1000);
+    assert_eq!(running.logging().level, Level::Debug);
+    assert!(running.logging().live);
+}
+
+#[test]
+fn a_reload_that_changes_nothing_reports_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = config_file(&dir, "log_level = 'warn'\n");
+    let (mut running, reload) = started(&path, &[]);
+    let before = running.logging();
+
+    let restart = running.reload_into(reload.run().ok().unwrap());
+
+    assert!(restart.is_empty());
+    assert_eq!(running.logging(), before);
+}
+
+#[test]
+fn a_failed_reload_returns_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = config_file(&dir, "log_level = 'warn'\n");
+    let (_, reload) = started(&path, &[]);
+
+    for text in ["port = ", "unknown_key = 1\n", "version = 2\n", "log_level = 'loud'\n"] {
+        config_file(&dir, text);
+        assert!(reload.run().is_err());
+    }
+    std::fs::remove_file(&path).unwrap();
+    assert!(reload.run().is_err());
+}
+
+#[test]
+fn flags_keep_their_precedence_over_an_edited_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = config_file(&dir, "log_level = 'warn'\n");
+    let (mut running, reload) = started(&path, &["--log-level=error"]);
+
+    config_file(&dir, "log_level = 'debug'\n");
+    running.reload_into(reload.run().ok().unwrap());
+
+    assert_eq!(running.logging().level, Level::Error);
+}
+
+#[test]
+fn each_restart_only_key_is_named_when_a_reload_changes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    for (key, value) in [
+        ("port", "2000"),
+        ("tap_file", "'other.jsonl'"),
+        ("shape_file", "'shape.jsonl'"),
+        ("log_file", "'debug.jsonl'"),
+        ("log_format", "'json'"),
+    ] {
+        std::fs::write(&path, "tap_file = 'synthetic.jsonl'\n").unwrap();
+        let (mut running, reload) = started(&path, &[]);
+
+        let tap = if key == "tap_file" {
+            String::new()
+        } else {
+            "tap_file = 'synthetic.jsonl'\n".into()
+        };
+        std::fs::write(&path, format!("{tap}{key} = {value}\n")).unwrap();
+
+        assert_eq!(running.reload_into(reload.run().ok().unwrap()), [key]);
+    }
+}

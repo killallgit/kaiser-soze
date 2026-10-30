@@ -409,3 +409,34 @@ async fn conversation_counts_distinguish_roles_definitions_and_calls() {
     assert_eq!(records[0]["other_messages"], 0);
     assert_eq!(records[0]["tool_calls"], 0);
 }
+
+#[tokio::test]
+async fn reload_changes_the_level_for_later_events() {
+    let (writer, reader) = tokio::io::duplex(8192);
+    let log = Logger::new(writer, json_settings(Level::Error));
+
+    log.event(Level::Info, "before", Fields::default());
+    log.reload(json_settings(Level::Info));
+    log.event(Level::Info, "after", Fields::default());
+
+    let lines = collected(log, reader).await;
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["event"], "after");
+}
+
+#[tokio::test]
+async fn reload_leaves_the_debug_file_at_full_detail() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("debug.jsonl");
+    let (writer, _reader) = tokio::io::duplex(8192);
+    let log = Logger::new(writer, json_settings(Level::Info))
+        .with_debug_file(&path)
+        .await
+        .unwrap();
+
+    log.reload(json_settings(Level::Off));
+    log.event(Level::Debug, "detail", Fields::default());
+    assert!(log.flush().await);
+
+    assert!(std::fs::read_to_string(&path).unwrap().contains("detail"));
+}

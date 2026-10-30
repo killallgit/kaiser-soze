@@ -36,15 +36,16 @@ impl Logger {
 
 impl Output {
     fn enabled(&self, level: Level) -> bool {
-        level != Level::Off && self.settings.level >= level
+        level != Level::Off && self.settings.borrow().level >= level
     }
 
     fn tap_level(&self, kind: Kind) -> Option<Level> {
-        let operation = matches!(kind, Kind::Warning) || matches!(kind, Kind::Summary) && self.settings.live;
+        let settings = *self.settings.borrow();
+        let operation = matches!(kind, Kind::Warning) || matches!(kind, Kind::Summary) && settings.live;
         let level = match kind {
             Kind::Warning => Level::Warn,
-            Kind::Summary if self.settings.live => Level::Info,
-            _ if self.settings.stream => Level::Debug,
+            Kind::Summary if settings.live => Level::Info,
+            _ if settings.stream => Level::Debug,
             _ => return None,
         };
         if !self.enabled(level) {
