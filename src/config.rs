@@ -23,6 +23,27 @@ pub(super) struct Settings {
     log_format: Format,
     live: bool,
     stream: bool,
+    pub retention: Retention,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Retention {
+    pub segment_mib: u64,
+    pub capacity_mib: u64,
+    pub max_age_days: u64,
+}
+
+impl Retention {
+    fn validate(self) -> Result<(), Error> {
+        let positive = self.segment_mib > 0 && self.capacity_mib > 0 && self.max_age_days > 0;
+        if positive && self.capacity_mib >= self.segment_mib {
+            return Ok(());
+        }
+        Err(Error::Load(::config::ConfigError::Message(
+            "retention values must be positive and capacity_mib at least segment_mib".into(),
+        )))
+    }
 }
 
 impl Settings {
@@ -46,6 +67,7 @@ impl Settings {
             ("shape_file", self.shape_file != candidate.shape_file),
             ("log_file", self.log_file != candidate.log_file),
             ("log_format", self.log_format != candidate.log_format),
+            ("retention", self.retention != candidate.retention),
         ]
         .into_iter()
         .filter_map(|(name, changed)| changed.then_some(name))
@@ -103,6 +125,12 @@ pub(super) fn load(overrides: &impl Serialize, explicit: Option<&Path>, sources:
         .map_err(Error::Load)?
         .set_default("stream", false)
         .map_err(Error::Load)?
+        .set_default("retention.segment_mib", 64)
+        .map_err(Error::Load)?
+        .set_default("retention.capacity_mib", 1024)
+        .map_err(Error::Load)?
+        .set_default("retention.max_age_days", 14)
+        .map_err(Error::Load)?
         .set_default(
             "log_format",
             match sources.format {
@@ -144,6 +172,7 @@ pub(super) fn load(overrides: &impl Serialize, explicit: Option<&Path>, sources:
         .map_err(Error::Load)?
         .try_deserialize()
         .map_err(Error::Load)?;
+    settings.retention.validate()?;
     paths::validate(&settings, &files)?;
     Ok(settings)
 }
