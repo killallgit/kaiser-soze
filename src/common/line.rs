@@ -1,7 +1,7 @@
 use super::event::Event;
 use super::note::Note;
 use super::record::Record;
-use crate::graph::Edge;
+use crate::graph::{Edge, ThreadRole};
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use std::sync::Arc;
 
@@ -55,15 +55,17 @@ pub struct Line {
     pub end: u64,
     pub session: Option<Arc<str>>,
     pub thread: Option<Arc<str>>,
+    /// Written only with `thread`.
+    pub thread_role: ThreadRole,
     /// The step of the record this line is folded into.
     pub step: Option<u64>,
     pub entry: Entry,
 }
 
-/// The tap file has its keys sorted, so the fields are written in key order. Unknown ids and step leave their keys out.
+/// The tap file has its keys sorted, so the fields are written in key order. Unknown ids and step leave their keys out, and the role goes with the thread.
 impl Serialize for Line {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut line = serializer.serialize_struct("Line", 14)?;
+        let mut line = serializer.serialize_struct("Line", 15)?;
         line.serialize_field("adapter", self.adapter)?;
         line.serialize_field("end", &self.end)?;
         line.serialize_field("event", self.entry.event())?;
@@ -82,6 +84,7 @@ impl Serialize for Line {
         }
         if let Some(thread) = &self.thread {
             line.serialize_field("thread", thread.as_ref())?;
+            line.serialize_field("thread_role", &self.thread_role)?;
         }
         line.serialize_field("wall_ms", &self.wall_ms)?;
         line.end()
@@ -108,6 +111,7 @@ mod tests {
             end: 9,
             session: None,
             thread: None,
+            thread_role: ThreadRole::Unknown,
             step: None,
             entry,
         }
@@ -179,12 +183,24 @@ mod tests {
             session: Some("s1".into()),
             thread: Some("t1".into()),
             step: Some(2),
+            thread_role: ThreadRole::Subagent,
             ..line(Entry::Record(Box::new(Record::empty())))
         };
 
-        assert!(serde_json::to_string(&line)
-            .unwrap()
-            .contains(r#""sequence":5,"session":"s1","start":4,"step":2,"thread":"t1","wall_ms":"#));
+        assert!(serde_json::to_string(&line).unwrap().contains(
+            r#""sequence":5,"session":"s1","start":4,"step":2,"thread":"t1","thread_role":"subagent","wall_ms":"#
+        ));
+    }
+
+    #[test]
+    fn a_line_without_a_thread_writes_no_role() {
+        // It leaves thread_role out even when the identity has a role
+        let line = Line {
+            thread_role: ThreadRole::Main,
+            ..line(Entry::Record(Box::new(Record::empty())))
+        };
+
+        assert!(!serde_json::to_string(&line).unwrap().contains("thread_role"));
     }
 
     #[test]

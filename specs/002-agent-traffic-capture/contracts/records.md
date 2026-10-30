@@ -1,6 +1,6 @@
 # Contract: Records in the Tap File
 
-Consumer: any application that reads the JSONL tap file. One JSON object per line. Every line has the envelope in [data-model.md](../data-model.md). The lines differ in `event` and `payload`, and in the optional `session`, `thread` and `step` below.
+Consumer: any application that reads the JSONL tap file. One JSON object per line. Every line has the envelope in [data-model.md](../data-model.md). The lines differ in `event` and `payload`, and in the optional `session`, `thread`, `thread_role` and `step` below.
 
 ## Envelope
 
@@ -8,7 +8,7 @@ Every tap line carries a nonempty string `run_id`, including `tunnel`, `unsuppor
 
 Every tap line also carries an integer `schema_version`, currently 1: soze's own output contract version, independent of provider wire schemas, the package version and fingerprints. Within a version only additive optional fields appear; removing or renaming a field, or changing a type or meaning, needs a new version. Consumers ignore unknown optional fields and stop on an unsupported version with a compatibility diagnostic, while capture and forwarding continue. Lines from older builds have no `schema_version` and are legacy, never version 1.
 
-Lines written for an identified exchange also carry, at the top level and never `null`, `session` and `thread` (the same ids as the record's `payload.session` and `payload.thread`), and the live event lines carry `step`. A key is left out when its value is unknown, so a tunnel, an unsupported line and an anonymous exchange keep the lines they had. They are additive optional fields, so `schema_version` stays 1.
+Lines written for an identified exchange also carry, at the top level and never `null`, `session` and `thread` (the same ids as the record's `payload.session` and `payload.thread`), `thread_role` (`main`, `subagent` or `unknown`) on exactly the lines that carry `thread`, and the live event lines carry `step`. Each exchange sets `thread_role` from its own headers, with no state shared across exchanges. Claude Code: `subagent` is `x-claude-code-request-class: subagent` with `x-claude-code-agent-id`; `main` is `request-class: main` with no agent id; anything else, including a subagent class with no agent id and class `main` with an agent id, is `unknown`. Codex: `subagent` is `x-codex-parent-thread-id`, or a non-empty `x-openai-subagent` (observed `collab_spawn`); `main` is `thread-id` equal to `session-id` with neither subagent header; anything else, including a missing id, is `unknown`. `unknown` is never promoted to `main`. Basis: a live probe (probe 2026-10-29) saw 3 main and 1 subagent Claude Code exchanges and 1 main and 1 subagent Codex exchange, so Codex main rests on a one-exchange sample. A key is left out when its value is unknown, so a tunnel, an unsupported line and an anonymous exchange keep the lines they had. They are additive optional fields, so `schema_version` stays 1.
 
 Identity scopes remain separate:
 

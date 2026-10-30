@@ -6,12 +6,23 @@ mod step;
 use crate::project::Project;
 use calls::Calls;
 use place::Queue;
+use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 pub use edge::{Edge, EdgeKind};
 pub use place::Place;
 pub use step::{claimed, named_turn, Claimed, Step};
+
+/// Whether a thread is the main agent or a subagent; `Unknown` unless the headers say so outright.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadRole {
+    Main,
+    Subagent,
+    #[default]
+    Unknown,
+}
 
 /// Which session, thread and turn an exchange belongs to, as its request headers say.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -20,6 +31,7 @@ pub struct Identity {
     pub thread: Option<String>,
     pub parent_thread: Option<String>,
     pub turn: Option<String>,
+    pub role: ThreadRole,
 }
 
 /// The edges one exchange adds to the graph. An edge whose far end is unknown is left out.
@@ -125,6 +137,7 @@ mod tests {
             thread: Some(thread.into()),
             parent_thread: parent.map(Into::into),
             turn: None,
+            role: ThreadRole::Unknown,
         }
     }
 

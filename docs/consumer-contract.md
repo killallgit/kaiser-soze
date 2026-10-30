@@ -25,10 +25,10 @@ vk owns the `Source` seam in `src/source.rs`. A source lists `Conversation { id,
 Soze keeps `project`, `session` and `thread` distinct and leaves interpretation of native ids in the adapters.
 
 - **Scope.** A conversation is `(adapter, thread id)`. Native ids come from the harness, so they survive a soze restart; exchange ids do not. Two harnesses cannot collide because the adapter name is part of the key. Edge node ids (`thread:<id>`) carry no adapter, so the key is built from the `adapter` field of the tap line.
-- **Main thread.** Claude Code's main agent sends no agent id, so its thread is the session id. A Codex main thread has no parent header. Both are defined by the *absence* of a header, and a missing header is also what an unidentified request looks like. The adapter reads only `request-class: subagent`; any other value, and the set of classes Claude Code sends, is unverified. A `subagent` request that carries a session id but no agent id would get thread = parent = session, a `spawned` self-edge that no test covers.
-- **Proposal.** Add an explicit `role` per thread, set by the adapter only from positive evidence: `subagent` (Claude `request-class: subagent` is read by the code; Codex `x-openai-subagent` is in docs/common-format.md from Codex 0.163.0 but the code reads only `x-codex-parent-thread-id`), `main` (needs a header or value proven live to mean main; only a synthetic test uses `request-class: main` today), else `unknown`. vk lists and plays `main` only. `unknown` threads are never promoted to main.
+- **Main thread.** Claude Code's main agent sends no agent id, so its thread is the session id. A `subagent` request that carries a session id but no agent id has no parent, so it writes no `spawned` self-edge, and its role is `unknown`.
+- **Thread role.** Every tap line that carries `thread` also carries a top-level `thread_role` of `main`, `subagent` or `unknown`, set by the adapter only from positive evidence. Each exchange sets `thread_role` from its own headers, with no state shared across exchanges. Claude Code: `subagent` is `x-claude-code-request-class: subagent` with `x-claude-code-agent-id`; `main` is `request-class: main` with no agent id; anything else, including a subagent class with no agent id and class `main` with an agent id, is `unknown`. Codex: `subagent` is `x-codex-parent-thread-id`, or a non-empty `x-openai-subagent` (observed `collab_spawn`); `main` is `thread-id` equal to `session-id` with neither subagent header; anything else, including a missing id, is `unknown`. `unknown` is never promoted to `main`. Basis: a live probe (probe 2026-10-29) saw 3 main and 1 subagent Claude Code exchanges and 1 main and 1 subagent Codex exchange, so Codex main rests on a one-exchange sample. vk lists and plays `main` only.
 - **Catalog.** `title` is unknown, so vk shows `workspace` (directory, else project id and branch) plus start time, and soze offers no title. Worktrees of one repository share a project id and differ in directory and branch, so they stay separate conversations.
-- **Late or missing edges.** Records already carry `session` and `thread`, so the thread is known at once; the edges are written after `exchange_start`, so the `role` would arrive after it. Until the role is known the thread is `unknown`, not main.
+- **Late or missing edges.** Records already carry `session`, `thread` and `thread_role`, so the role is known at once, on the same lines as the thread, and an exchange whose headers prove nothing is `unknown`, not main.
 - **Replacement (`/clear`).** A new session id in the same window is a new conversation. Soze cannot see the window, so `replaces` stays unset. A wrapper could link them (unverified).
 - **Restart.** Conversations come back by native id on their next request; soze cannot list idle sessions it has not seen traffic from, so the catalog is *observed traffic*, not a complete list of live sessions.
 
@@ -83,7 +83,7 @@ Target recovery walks, still requiring a delivery API: *join after answer* takes
 ## Soze work this implies
 
 1. Codex reply id as `message_id` on `reply_end` (from the turn boundaries doc; implemented).
-2. A thread `role`, from positive evidence only, with a live check of Claude request classes.
+2. Done: `thread_role`, from positive evidence only (see Thread role above).
 3. A run id and writer-order line sequence number (implemented on every tap envelope), plus a schema version (`schema_version`, also implemented on every tap envelope).
 4. A wrapper child-exit signal.
 
