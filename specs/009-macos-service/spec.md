@@ -1,6 +1,6 @@
 # Feature Specification: Always-on macOS service for development
 
-**Status**: Draft. Two decisions are Open (see Open); the rest were settled in a design grilling on 2026-10-30.
+**Status**: Draft. One caution is Open (see Open); the rest were settled in a design grilling on 2026-10-30 and after review.
 **Input**: Epic `kaiser-soze-4dn` (run soze as an always-on local macOS service for development) and its children `kaiser-soze-4dn.1` (this spec), `kaiser-soze-4dn.3` (service shell tests), `kaiser-soze-65w` (install as a launchd user agent from a local debug build), `kaiser-soze-4dn.4` (restart, reload, status, logs and uninstall commands) and `kaiser-soze-4dn.5` (wire the tasks, `task check` and the README). The roadmap items are service and install (item 6) and the dev half of item 8. Configuration reload ([008](../008-config-reload/spec.md)) is what lets `launchctl kill HUP` change the live settings.
 
 ## Problem
@@ -67,11 +67,11 @@ A person runs `task service:install` and `soze` is running, and starts again at 
 - **`scripts/service.sh`** is one POSIX shell script with the commands `install <binary>`, `restart`, `reload`, `status`, `logs` and `uninstall [--purge]`. The binary is built by the task, not by the script; the script takes a path. It calls `launchctl`, `git` and `tail` through `PATH`, which is the seam the tests use.
 - **Install is idempotent.** The binary is copied beside the target and renamed over it, so the new file has a new inode (see the install sequence). The plist is written beside the target and compared with the current one, so an unchanged plist while the agent is loaded is a `kickstart -k`, and a changed plist is a `bootout` then a `bootstrap`.
 - **Taskfile.** `service:install` builds the debug binary and calls the script with its path. The other five tasks are thin wrappers. The README documents the layout, the ports, how to update the service and that the service tests are local only.
-- **`task dev` and the service share a user config.** `~/.config/soze/config.toml` is also the user config that `task dev` reads, so `task dev` picks up `log_format = "human"` and `live = true` too.
+- **`task dev` and the service share a user config.** `~/.config/soze/config.toml` is also the user config that `task dev` reads, so `task dev` picks up `log_format = "human"` and `live = true` too. Once `config.toml` holds `live = true`, `LIVE=0 task dev` no longer turns live lines off: with no flag the file's value applies, and `dev.sh` passes `--live` unless `LIVE=0`.
 
 ## Contracts
 
-The paths, the script interface, the file formats and the test doubles below are the shared contract for the script, its tests and the Taskfile. They are quoted by the later lanes, so change them here first.
+The paths, the script interface, the file formats and the test doubles below are the shared contract for the script, its tests and the Taskfile. They are quoted by the later beads, so change them here first.
 
 **Label and paths** (`$HOME` is expanded when written; every path is absolute):
 - `LABEL=com.killallgit.soze`
@@ -176,7 +176,7 @@ live = true
 - `status --porcelain`: prints ` M README.md` only if `$HOME/git.dirty` exists
 - anything else: exits 1
 
-**Fake tail** (lane C): writes its arguments one per line to `$HOME/tail.args` and exits 0.
+**Fake tail** (kaiser-soze-4dn.4, service commands): writes its arguments one per line to `$HOME/tail.args` and exits 0.
 
 **tests/service/lib.sh:**
 - First line: `. "$(dirname "$0")/../wrappers/lib.sh"`. This reuses `ROOT`, `ORIG_PATH`, `RM`, `eq`, `case_run` and `finish`.
@@ -188,11 +188,11 @@ live = true
   - `loaded`: `touch "$HOME/launchctl.loaded"`
   - `calls`: prints `$HOME/launchctl.calls`
   - `expected_plist`: prints the plist above for the current HOME
-  - `fake_tail`: added in lane C
+  - `fake_tail`: added with kaiser-soze-4dn.4 (service commands)
 - `tests/service/run.sh` is a copy of `tests/wrappers/run.sh`.
 
-**Taskfile (lane E):**
-- `service:install`: `cargo build --quiet`, then `scripts/service.sh install "<binary path>"`. Binary path rule is open (user has not chosen); see spec notes.
+**Taskfile (kaiser-soze-4dn.5, Taskfile wiring):**
+- `service:install`: `cargo build --quiet`, then `scripts/service.sh install "<binary path>"`. The binary is `<target_directory>/debug/soze`, with `target_directory` read from `cargo metadata --format-version 1 --no-deps`.
 - `service:uninstall`: passes `{{.CLI_ARGS}}` (for `--purge`).
 - The other four tasks each run `scripts/service.sh <command>`.
 
@@ -223,14 +223,15 @@ live = true
 
 1. **`--purge` has no confirmation prompt.** It lists every path under the data directory, then deletes it. The person typed `--purge`; a prompt would also make the script hard to test and to call from a task.
 2. **A changed plist while loaded uses `bootout` then `bootstrap`.** `launchctl kickstart -k` restarts the process but does not re-read the plist, so a new flag or path would be ignored. An unchanged plist keeps the cheaper `kickstart -k`.
-3. **Service tests are local only.** They run from `scripts/check.sh`, not from `ci.yml`. The CI runners have no launchd user session worth testing, and the fakes already cover the script.
+3. **Service tests are local only.** They run from `scripts/check.sh`, not from `ci.yml`. `ci.yml` runs on Linux only and has no macOS job; the fakes cover the script.
 4. **Restart is abrupt.** In-flight streams are cut and a new `run_id` marks the restart. A graceful drain is deferred to `kaiser-soze-4dn.8` (graceful drain on SIGTERM).
 5. **The binary is renamed into place.** Overwriting a running signed binary in place can get it killed on Apple Silicon, so the install copies to `bin/soze.new` and renames.
 6. **Live settings live in `config.toml`, not in the plist.** The plist carries only the port and the output paths, so a `SIGHUP` reload can change the log format, level and `live` without reinstalling. `log_format` is restart-only in 008, so changing it needs `restart`.
+7. **The binary path comes from `cargo metadata`.** `service:install` reads `target_directory` from `cargo metadata --format-version 1 --no-deps` and uses `<target_directory>/debug/soze`, so a shared Cargo target directory works where the literal `target/debug/soze` would not.
+8. **The dev profile already has no debug symbols.** `Cargo.toml` sets `[profile.dev] debug = 0` and `incremental = false` (from #67, configuration versioning and reload), which keeps the target directory and the installed binary small. No `Cargo.toml` change is needed.
 
 ## Open
 
 These are recorded, not decided.
 
-1. **How `service:install` locates the debug binary.** Either the literal `target/debug/soze`, or `cargo metadata` and its `target_directory`. The literal path is one line and wrong when `CARGO_TARGET_DIR` or a Cargo config moves the target directory; `cargo metadata` is right in both cases and costs one more command in the task.
-2. **Dev profile without debug symbols.** The user's new requirement is that the dev profile disable debug symbols (`[profile.dev] debug` off) to shrink the target directory, since debug utilities are never used. The `Cargo.toml` change is a separate lane and not part of this spec's files. It does not change this spec's contracts except that the installed binary is smaller.
+1. **A `bootout` followed straight by `bootstrap` can race on real launchd.** `bootout` can return before the job is gone, so the `bootstrap` may fail. The fakes cannot show it. No fix is chosen; check it on a real install.
