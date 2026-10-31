@@ -55,6 +55,14 @@ FAKE
   chmod +x "$HOME/bin/git"
 }
 
+fake_tail() {
+  cat > "$HOME/bin/tail" <<'FAKE'
+#!/bin/sh
+printf '%s\n' "$@" > "$HOME/tail.args"
+FAKE
+  chmod +x "$HOME/bin/tail"
+}
+
 service() {
   sh "$ROOT/scripts/service.sh" "$@"
 }

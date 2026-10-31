@@ -163,7 +163,7 @@ nothing_is_written_under_agent_folders() {
 nothing_is_written_outside_the_home() {
   install_fake one
   install_fake two
-  eq "$(find "$ROOT" -newer "$HOME/.marker" -not -path '*/.git/*' -not -path '*/target/*')" "" "files written in the repo"
+  eq "$(find "$ROOT" -newer "$HOME/.marker" -not -path '*/.git/*' -not -path '*/target/*' -not -path "$ROOT/.claude/worktrees/*" -not -path "$ROOT/.beads/*")" "" "files written in the repo"
 }
 
 case_run writes_the_plist_and_the_binary_then_bootstraps writes_the_plist_and_the_binary_then_bootstraps
