@@ -26,6 +26,11 @@ tasks:
     cmds:
       - tests/wrappers/run.sh
 
+  test:smoke:
+    desc: Check the installed always-on service with one real claude call; needs the service and a logged-in claude
+    cmds:
+      - scripts/smoke.sh
+
   wrappers:install:
     desc: Install the claude, codex and agent wrappers for zsh or bash; pass --dry-run after --
     cmds:
