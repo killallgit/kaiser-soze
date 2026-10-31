@@ -498,6 +498,7 @@ fn each_restart_only_key_is_named_when_a_reload_changes_it() {
         ("shape_file", "'shape.jsonl'"),
         ("log_file", "'debug.jsonl'"),
         ("log_format", "'json'"),
+        ("retention", "{ segment_mib = 32 }"),
     ] {
         std::fs::write(&path, "tap_file = 'synthetic.jsonl'\n").unwrap();
         let (mut running, reload) = started(&path, &[]);
@@ -510,5 +511,54 @@ fn each_restart_only_key_is_named_when_a_reload_changes_it() {
         std::fs::write(&path, format!("{tap}{key} = {value}\n")).unwrap();
 
         assert_eq!(running.reload_into(reload.run().ok().unwrap()), [key]);
+    }
+}
+
+fn retention_from(text: &str) -> Result<config::Retention, Error> {
+    let dir = tempfile::tempdir().unwrap();
+    let path = config_file(&dir, text);
+    parse_args_from(
+        ["--config".into(), path.display().to_string()],
+        Sources::new(Format::Human),
+    )
+    .map(|settings| settings.retention)
+}
+
+#[test]
+fn retention_defaults_apply_to_whatever_the_file_omits() {
+    let defaults = config::Retention {
+        segment_mib: 64,
+        capacity_mib: 1024,
+        max_age_days: 14,
+    };
+    assert_eq!(retention_from("").ok(), Some(defaults));
+    assert_eq!(
+        retention_from("[retention]\nsegment_mib = 32\n").ok(),
+        Some(config::Retention {
+            segment_mib: 32,
+            ..defaults
+        })
+    );
+}
+
+#[test]
+fn retention_accepts_a_capacity_equal_to_the_segment_size() {
+    let retention = retention_from("[retention]\nsegment_mib = 8\ncapacity_mib = 8\n").ok();
+    assert_eq!(retention.map(|retention| retention.capacity_mib), Some(8));
+}
+
+#[test]
+fn invalid_retention_is_an_invalid_configuration() {
+    for text in [
+        "[retention]\nsegment_mib = 0\n",
+        "[retention]\ncapacity_mib = 0\n",
+        "[retention]\nmax_age_days = 0\n",
+        "[retention]\nmax_age_days = -1\n",
+        "[retention]\nsegment_mib = 100\ncapacity_mib = 99\n",
+        "[retention]\nunknown_key = 1\n",
+    ] {
+        let result = retention_from(text);
+        assert!(matches!(result, Err(Error::Configuration(config::Error::Load(_)))));
+        assert_eq!(result.unwrap_err().kind(), "invalid_configuration");
     }
 }
