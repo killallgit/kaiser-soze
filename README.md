@@ -53,6 +53,36 @@ Open a new shell, start the proxy on the wrappers' port (`soze --port 48731 ...`
 - **Known limit:** the proxy address is fixed when the agent starts. If soze stops mid-session, that session loses its connection; start a new one.
 - `agent` (Cursor) gets the proxy only: its host is tunnelled, so nothing is parsed from it.
 
+## The always-on service (macOS)
+
+A launchd user agent keeps one `soze` running on port 48731, the port the wrappers use. `task dev` listens on 48732, so both can run at once.
+
+```sh
+task service:install     # build the debug binary, copy it into place, rotate the log, (re)start
+task service:status      # state, pid, and the sha, branch, dirty flag and time of the install
+task service:logs        # tail -F soze.log
+task service:reload      # SIGHUP: re-read the live logging settings
+task service:restart     # kickstart the service
+task service:uninstall   # stop and remove the service and binary
+```
+
+Layout, all under your home directory:
+
+| Path | Holds |
+| --- | --- |
+| `~/Library/LaunchAgents/com.killallgit.soze.plist` | the launchd job, label `com.killallgit.soze` |
+| `~/.local/share/soze/bin/soze`, `bin/install.json` | the installed binary and what it was built from |
+| `~/.local/share/soze/logs/soze.log`, `soze.log.1` | the service's stdout and stderr, and the previous generation |
+| `~/.local/share/soze/tap.jsonl`, `shapes.jsonl`, `debug.jsonl` | the tap, shape and debug files |
+| `~/.config/soze/config.toml` | settings; written on first install with `log_format = "human"` and `live = true`, never overwritten |
+
+- **Update the service** by re-running `task service:install`. It rebuilds the debug binary, copies it over the installed one, moves `soze.log` to `soze.log.1`, and restarts the service.
+- **Restart is abrupt.** In-flight streams are cut and agents must reconnect. The new process has a new `run_id`, which marks the restart in the tap.
+- **Logs.** `task service:logs` tails `soze.log` only. It never reads the tap, because message content must not reach a terminal.
+- **Uninstall** removes the plist, binary and `install.json`, and keeps captures, logs and config. `task service:uninstall -- --purge` also lists every path under `~/.local/share/soze/`, then deletes the directory; `~/.config/soze` stays.
+- **`live = true` in `config.toml`** applies to `task dev` too, so `LIVE=0 task dev` no longer turns live lines off. Pass `-- --live=false`, or edit the file.
+- **Tests.** The service tests in `tests/service/` are local shell tests with a fake `launchctl`. `task check` runs them; CI does not.
+
 ## Configuration
 
 `soze --help` lists the options, and `soze --version` prints the version. Arguments are parsed with clap; config-rs loads and merges TOML settings at startup.
@@ -148,6 +178,7 @@ Run `task --list`. Tasks run from any directory in the repo.
 - `task dev:stream`: real-time metadata in compact terminal format.
 - `task dev:stream:json`: real-time metadata as JSON logs.
 - `task test:wrappers`: shell tests for the wrappers and their installer, run under every shell installed. `task check` runs them too.
+- `task service:install`, `service:status`, `service:logs`, `service:reload`, `service:restart`, `service:uninstall`: the always-on macOS service, see above.
 
 ## Build disk use
 
