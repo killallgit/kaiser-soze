@@ -105,7 +105,7 @@ stream = false
 
 `tap_file` must be supplied by a file or flag. Unknown keys and invalid winning values are rejected; a valid higher-priority flag may override an invalid lower-priority environment value. Relative paths use the process working directory. Capture and debug outputs cannot alias the configuration inputs; the existing debug-versus-capture alias protection also applies after merging.
 
-Bare `--live` and `--stream` enable their setting; `--live=false` and `--stream=false` disable a configured value. Repeating a valued option uses its last value, so flags forwarded by `task dev -- ...` still override the script's defaults. An explicit log level wins over the stream-dependent default (`debug` with streaming, `info` otherwise); the log-format default is human on a terminal and JSON otherwise. The dev script's explicit capture paths, port and live flag take precedence over config files.
+Bare `--live` and `--stream` enable their setting; `--live=false` and `--stream=false` disable a configured value. Repeating a valued option uses its last value, so flags forwarded by `task dev -- ...` still override the script's defaults. An explicit log level wins over the stream-dependent default (`debug` with streaming, `info` otherwise); the log-format default is human on a terminal and JSON otherwise. The dev script's explicit capture paths, port and live flag (unless `LIVE=0`) take precedence over config files.
 
 Configuration is loaded at startup. SIGHUP reloads the live logging settings; every other key, including `[retention]`, takes effect on restart.
 
@@ -117,7 +117,7 @@ Configuration is loaded at startup. SIGHUP reloads the live logging settings; ev
 task dev:stream                              # compact real-time metadata, debug level by default
 task dev:stream:json                         # structured stderr for collection
 task dev -- --log-level warn                 # warnings and errors only
-LIVE=0 task dev                              # operational logs without request/reply summaries
+task dev -- --live=false                      # operational logs without request/reply summaries
 ```
 
 Human output uses UTC time, a short run id, exchange id, adapter and a few metadata keys, capped at 160 characters per line. JSON keeps the full run id and numeric metadata in valid records of at most 1 KiB, excluding the newline. Message, system and reasoning text, tool names/inputs/outputs, headers and credentials are never included. For example, a delta is identified by its block index, field name and byte count; its text is not previewed.
