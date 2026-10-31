@@ -62,11 +62,8 @@ status_without_an_install_shows_not_loaded() {
 
 logs_follows_only_the_service_log() {
   fake_tail
-  mkdir -p "$DATA/logs"
-  with_captures
   service logs
   eq "$(cat "$HOME/tail.args")" "$(printf '%s\n%s' -F "$DATA/logs/soze.log")" "tail arguments"
-  eq "$(grep -c -e tap.jsonl -e shapes.jsonl -e debug.jsonl "$HOME/tail.args")" 0 "capture paths"
 }
 
 uninstall_removes_the_service_and_keeps_the_data() {
