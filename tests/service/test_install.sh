@@ -46,6 +46,19 @@ a_dirty_tree_is_recorded() {
   eq "$(record_without_time)" "$(expected_record "$SHA" main true)" "install record"
 }
 
+a_quote_in_the_branch_is_escaped() {
+  printf 'a"b\n' > "$HOME/git.branch"
+  install_fake
+  eq "$(sed -n 4p "$DATA/bin/install.json")" '  "branch": "a\"b",' "branch line"
+}
+
+the_binary_is_installed_with_mode_755() {
+  fake_soze "$HOME/soze" one
+  chmod 700 "$HOME/soze"
+  service install "$HOME/soze"
+  [ -n "$(find "$DATA/bin/soze" -perm 755)" ]
+}
+
 a_git_failure_records_unknown() {
   printf '#!/bin/sh\nexit 1\n' > "$HOME/bin/git"
   install_fake
@@ -156,6 +169,8 @@ nothing_is_written_outside_the_home() {
 case_run writes_the_plist_and_the_binary_then_bootstraps writes_the_plist_and_the_binary_then_bootstraps
 case_run records_the_build_in_install_json records_the_build_in_install_json
 case_run a_dirty_tree_is_recorded a_dirty_tree_is_recorded
+case_run a_quote_in_the_branch_is_escaped a_quote_in_the_branch_is_escaped
+case_run the_binary_is_installed_with_mode_755 the_binary_is_installed_with_mode_755
 case_run a_git_failure_records_unknown a_git_failure_records_unknown
 case_run creates_the_config_when_absent creates_the_config_when_absent
 case_run keeps_an_existing_config keeps_an_existing_config

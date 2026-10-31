@@ -41,13 +41,13 @@ FAKE
   chmod +x "$HOME/bin/launchctl"
 }
 
-# The tree is dirty while $HOME/git.dirty exists.
+# The tree is dirty while $HOME/git.dirty exists; the branch is $HOME/git.branch, or main.
 fake_git() {
   cat > "$HOME/bin/git" <<'FAKE'
 #!/bin/sh
 case "$*" in
   'rev-parse HEAD') echo 0123456789abcdef0123456789abcdef01234567 ;;
-  'rev-parse --abbrev-ref HEAD') echo main ;;
+  'rev-parse --abbrev-ref HEAD') if [ -e "$HOME/git.branch" ]; then cat "$HOME/git.branch"; else echo main; fi ;;
   'status --porcelain') [ ! -e "$HOME/git.dirty" ] || echo ' M README.md' ;;
   *) exit 1 ;;
 esac
