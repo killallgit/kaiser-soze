@@ -34,7 +34,7 @@ starts_the_proxy_through_cargo_run_without_a_timer() {
   eq "$(cat "$HOME/cargo.calls")" run "one cargo run builds and launches"
   eq "$(arg_after --tap-file)" target/dev/tap.jsonl "tap file"
   eq "$(arg_after --log-file)" target/dev/debug.jsonl "debug log file"
-  eq "$(arg_after --port)" 48731 "default port"
+  eq "$(arg_after --port)" 48732 "default port"
   [ ! -e "$HOME/timeout.called" ]
 }
 

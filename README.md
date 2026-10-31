@@ -11,10 +11,10 @@ Hosts an adapter claims (Codex: `chatgpt.com`, `api.openai.com`; Claude Code: `a
 1. Start the proxy. It prints its port and the CA path.
 
    ```sh
-   task dev            # shared proxy; tap files under target/dev/, runs until Ctrl-C
+   task dev            # dev proxy on port 48732; tap files under target/dev/, runs until Ctrl-C
    ```
 
-   The shared proxy stays up until explicitly stopped; agents and consumer apps can use it concurrently. There is no automatic timeout. Or run the binary: `soze --tap-file out.jsonl [--shape-file shapes.jsonl] [--log-file debug.jsonl] [--port 0]`. `--shape-file` writes the keys and types of each distinct request and reply event, never values. The CA is always `~/.config/soze/ca.pem`, made on first run.
+   The dev proxy stays up until explicitly stopped; agents and consumer apps can use it concurrently. The shared proxy is the always-on service on 48731. There is no automatic timeout. Or run the binary: `soze --tap-file out.jsonl [--shape-file shapes.jsonl] [--log-file debug.jsonl] [--port 0]`. `--shape-file` writes the keys and types of each distinct request and reply event, never values. The CA is always `~/.config/soze/ca.pem`, made on first run.
 
 2. Run an agent through it. The CA is created on first run, is name-constrained to the adapter hosts, and is never installed into a trust store. The agent trusts it through its own variable:
 
@@ -44,12 +44,12 @@ task wrappers:install -- --rc ~/.zshrc.local   # use another start-up file (or s
 
 If the start-up file cannot be written (a managed or read-only `.zshrc`), or you answer no, the installer leaves it alone, installs only `~/.config/soze/wrappers.sh`, and prints the block to add by hand, in that file or any file your shell reads. The block does nothing if the wrappers file is missing.
 
-Open a new shell, start the proxy on the wrappers' port (`task dev` uses it, or `soze --port 48731 ...`), then run `claude`, `codex` or `agent` as usual.
+Open a new shell, start the proxy on the wrappers' port (`soze --port 48731 ...`, or the always-on service), then run `claude`, `codex` or `agent` as usual.
 
 - **They fail open.** The proxy is used only when something is listening on the port, the CA file is readable, and `HTTPS_PROXY` is not already set. In every other case, including soze not running or broken, the real command runs exactly as without the wrappers.
 - **Bypass one command** with `SOZE_OFF=1 claude` or `command claude`.
 - **Without shell functions** (a start-up file you cannot edit): `task wrappers:install` also copies `soze-wrap` to `~/.local/bin`, so `soze-wrap claude -p "..."` runs one command through the same wrappers. Put `~/.local/bin` on `PATH`.
-- **Settings:** `SOZE_PORT` (default 48731). The CA is always `~/.config/soze/ca.pem`, made on first run, so `task dev` and the wrappers need no setting.
+- **Settings:** `SOZE_PORT` (default 48731, the always-on service port; `task dev` listens on 48732, so `SOZE_PORT=48732 claude` reaches the dev build). The CA is always `~/.config/soze/ca.pem`, made on first run, so `task dev` and the wrappers need no setting.
 - **Known limit:** the proxy address is fixed when the agent starts. If soze stops mid-session, that session loses its connection; start a new one.
 - `agent` (Cursor) gets the proxy only: its host is tunnelled, so nothing is parsed from it.
 
