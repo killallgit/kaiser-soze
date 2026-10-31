@@ -50,3 +50,37 @@ tasks:
     desc: Run the shared proxy with real-time metadata as JSON logs
     cmds:
       - scripts/dev.sh --stream --log-format json {{.CLI_ARGS}}
+
+  service:install:
+    desc: Build the debug binary, install it as the always-on macOS service on port 48731, and restart it
+    vars:
+      BINARY:
+        sh: cargo metadata --format-version 1 --no-deps | jq -r '.target_directory + "/debug/soze"'
+    cmds:
+      - cargo build --quiet
+      - scripts/service.sh install "{{.BINARY}}"
+
+  service:restart:
+    desc: Restart the service abruptly; in-flight streams are cut
+    cmds:
+      - scripts/service.sh restart
+
+  service:reload:
+    desc: Reload the service's live logging settings from config.toml
+    cmds:
+      - scripts/service.sh reload
+
+  service:logs:
+    desc: Follow soze.log, the service's stderr; never the tap
+    cmds:
+      - scripts/service.sh logs
+
+  service:status:
+    desc: Show the service state, pid and what is installed
+    cmds:
+      - scripts/service.sh status
+
+  service:uninstall:
+    desc: Remove the service and binary, keeping captures, logs and config; pass --purge after -- to delete the data dir
+    cmds:
+      - scripts/service.sh uninstall {{.CLI_ARGS}}
