@@ -81,6 +81,7 @@ Layout, all under your home directory:
 - **Logs.** `task service:logs` tails `soze.log` only. It never reads the tap, because message content must not reach a terminal.
 - **Uninstall** removes the plist, binary and `install.json`, and keeps captures, logs and config. `task service:uninstall -- --purge` also lists every path under `~/.local/share/soze/`, then deletes the directory; `~/.config/soze` stays.
 - **`live = true` in `config.toml`** applies to `task dev` too, so `LIVE=0 task dev` no longer turns live lines off. Pass `-- --live=false`, or edit the file.
+- **Smoke test.** `task test:smoke` checks that the installed service is running, accepts connections, proxies one `claude -p` call and captures it in the tap without new `connect_failed` lines; it needs the installed service and a logged-in `claude`, and prints counts and ids only.
 - **Tests.** The service tests in `tests/service/` are local shell tests with a fake `launchctl`. `task check` runs them; CI does not.
 
 ## Configuration
@@ -177,6 +178,7 @@ Run `task --list`. Tasks run from any directory in the repo.
 - `task dev`: see above.
 - `task dev:stream`: real-time metadata in compact terminal format.
 - `task dev:stream:json`: real-time metadata as JSON logs.
+- `task test:smoke`: one real `claude` call through the installed always-on service; local only, not part of `task check`.
 - `task test:wrappers`: shell tests for the wrappers and their installer, run under every shell installed. `task check` runs them too.
 - `task service:install`, `service:status`, `service:logs`, `service:reload`, `service:restart`, `service:uninstall`: the always-on macOS service, see above.
 
