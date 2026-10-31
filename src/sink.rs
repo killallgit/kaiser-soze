@@ -93,13 +93,16 @@ impl<T: Serialize + Send + 'static> Sink<T> {
         prepare: impl FnMut(&mut T, u64) + Send + 'static,
         log: Logger,
     ) -> std::io::Result<Self> {
-        let mut rotation = Rotation::after_existing_segments(path, retention.segment_bytes).await;
+        let mut rotation = Rotation::after_existing_segments(path, retention).await;
         // A symlink is the user's redirect: it is appended to through the link and never renamed.
         let found = tokio::fs::symlink_metadata(path).await;
         let linked = found.as_ref().is_ok_and(|found| found.is_symlink());
         if found.is_ok_and(|found| found.is_file() && found.len() > 0) {
-            if let Err(error) = rotation.close_earlier_run().await {
-                log.event(Level::Warn, "sink_rotate_failed", Fields::io(&error));
+            match rotation.close_earlier_run().await {
+                Ok(()) => rotation.delete_expired(&log).await,
+                Err(error) => {
+                    log.event(Level::Warn, "sink_rotate_failed", Fields::io(&error));
+                }
             }
         }
         // Read access lets the open inspect the file's end; a file it cannot inspect is an error, not a clean boundary.
@@ -151,9 +154,12 @@ impl<T: Serialize + Send + 'static> Sink<T> {
                     .as_mut()
                     .filter(|rotation| rotation.is_due(file.len, line.len()))
                 {
-                    if let Err(error) = rotation.rotate(&mut file).await {
-                        log.event(Level::Warn, "sink_rotate_failed", Fields::io(&error));
-                        rotation.limit = file.len + rotation.segment_bytes;
+                    match rotation.rotate(&mut file).await {
+                        Ok(()) => rotation.delete_expired(&log).await,
+                        Err(error) => {
+                            log.event(Level::Warn, "sink_rotate_failed", Fields::io(&error));
+                            rotation.limit = file.len + rotation.retention.segment_bytes;
+                        }
                     }
                 }
                 if file.last.is_some_and(|byte| byte != b'\n') {
@@ -188,26 +194,81 @@ async fn open_active(path: &Path) -> std::io::Result<tokio::fs::File> {
 /// Closes the active regular file into numbered segments; `next` is never reused.
 struct Rotation {
     active: PathBuf,
-    segment_bytes: u64,
+    retention: Retention,
     limit: u64,
     next: u64,
 }
 
-impl Rotation {
-    /// Starts numbering after the highest segment already beside `active`.
-    async fn after_existing_segments(active: &Path, segment_bytes: u64) -> Self {
-        let mut highest = 0;
-        let parent = active.parent().filter(|parent| !parent.as_os_str().is_empty());
-        if let Ok(mut entries) = tokio::fs::read_dir(parent.unwrap_or(Path::new("."))).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                highest = highest.max(segment_index(active, &entry.file_name()).unwrap_or(0));
+/// The segments beside `active`, lowest index first.
+async fn closed_segments(active: &Path) -> Vec<(u64, PathBuf)> {
+    let mut segments = Vec::new();
+    let parent = active.parent().filter(|parent| !parent.as_os_str().is_empty());
+    if let Ok(mut entries) = tokio::fs::read_dir(parent.unwrap_or(Path::new("."))).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if let Some(index) = segment_index(active, &entry.file_name()) {
+                segments.push((index, entry.path()));
             }
         }
+    }
+    segments.sort();
+    segments
+}
+
+impl Rotation {
+    /// Starts numbering after the highest segment already beside `active`.
+    async fn after_existing_segments(active: &Path, retention: Retention) -> Self {
+        let highest = closed_segments(active).await.last().map_or(0, |(index, _)| *index);
         Self {
             active: active.to_path_buf(),
-            segment_bytes,
-            limit: segment_bytes,
+            retention,
+            limit: retention.segment_bytes,
             next: highest + 1,
+        }
+    }
+
+    /// Deletes the lowest segment while the output is over capacity or that segment is past the maximum age,
+    /// stopping at the first failed delete so the next rotation retries it. The active file is never a segment.
+    async fn delete_expired(&self, log: &Logger) {
+        let mut segments = Vec::new();
+        for (index, path) in closed_segments(&self.active).await {
+            let found = tokio::fs::symlink_metadata(&path).await;
+            if let Some(metadata) = found.ok().filter(|found| found.is_file()) {
+                segments.push((index, path, metadata));
+            }
+        }
+        let active_bytes = tokio::fs::metadata(&self.active).await.map_or(0, |found| found.len());
+        let mut total = active_bytes + segments.iter().map(|(_, _, metadata)| metadata.len()).sum::<u64>();
+        let oldest_kept = std::time::SystemTime::now().checked_sub(self.retention.max_age);
+        let mut deleted = 0;
+        let mut highest = 0;
+        for (index, path, metadata) in segments {
+            let too_old = metadata
+                .modified()
+                .ok()
+                .zip(oldest_kept)
+                .is_some_and(|(modified, oldest_kept)| modified < oldest_kept);
+            if total <= self.retention.capacity_bytes && !too_old {
+                break;
+            }
+            if let Err(error) = tokio::fs::remove_file(&path).await {
+                let fields = Fields {
+                    segment: Some(index),
+                    ..Fields::io(&error)
+                };
+                log.event(Level::Warn, "retention_delete_failed", fields);
+                break;
+            }
+            total -= metadata.len();
+            deleted += 1;
+            highest = index;
+        }
+        if deleted > 0 {
+            let fields = Fields {
+                segments: Some(deleted),
+                segment: Some(highest),
+                ..Fields::default()
+            };
+            log.event(Level::Info, "retention_deleted", fields);
         }
     }
 
@@ -239,7 +300,7 @@ impl Rotation {
         match open_active(&self.active).await {
             Ok(opened) => {
                 *file = Tail::new(opened, None, 0);
-                self.limit = self.segment_bytes;
+                self.limit = self.retention.segment_bytes;
                 Ok(())
             }
             Err(error) => {
@@ -632,9 +693,14 @@ mod tests {
     }
 
     /// Closes the sink and its log, then returns every record the writer logged.
-    async fn logged(sink: Sink<Value>, log: Logger, mut reader: tokio::io::DuplexStream) -> Vec<Value> {
-        use tokio::io::AsyncReadExt;
+    async fn logged(sink: Sink<Value>, log: Logger, reader: tokio::io::DuplexStream) -> Vec<Value> {
         drop(sink);
+        records(log, reader).await
+    }
+
+    /// Closes the log, then returns every record written to it.
+    async fn records(log: Logger, mut reader: tokio::io::DuplexStream) -> Vec<Value> {
+        use tokio::io::AsyncReadExt;
         drop(log);
         let mut output = String::new();
         tokio::time::timeout(std::time::Duration::from_secs(2), reader.read_to_string(&mut output))
@@ -869,6 +935,171 @@ mod tests {
         assert_eq!(records[0]["level"], "warn");
         assert_eq!(records[0]["event"], "sink_rotate_failed");
         assert_eq!(records[0]["error_kind"], "permission_denied");
+    }
+
+    fn capped(capacity_bytes: u64) -> Retention {
+        Retention {
+            capacity_bytes,
+            ..Retention::TAP
+        }
+    }
+
+    fn write_aged(path: &Path, bytes: usize, days: u64) {
+        std::fs::write(path, "x".repeat(bytes)).unwrap();
+        let modified = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+    }
+
+    #[test]
+    fn shape_files_keep_four_mib_segments_within_thirty_two_mib() {
+        // It bounds the shape output tighter than the tap output
+        assert_eq!(Retention::SHAPES.segment_bytes, 4 << 20);
+        assert_eq!(Retention::SHAPES.capacity_bytes, 32 << 20);
+    }
+
+    #[tokio::test]
+    async fn the_rotation_at_start_deletes_the_oldest_segments_while_over_capacity() {
+        // It deletes segments 1 and 2, keeps 3 onwards and the active file, and logs one retention_deleted without content
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tap.jsonl");
+        for index in 1..=5 {
+            write_aged(&segment_path(&path, index), 100, 0);
+        }
+        write_aged(&path, 100, 0);
+        let (log, reader) = json_log();
+
+        let sink = Sink::open_reporting(&path, capped(450), log.clone()).await.unwrap();
+        let records = logged(sink, log, reader).await;
+
+        let kept: Vec<bool> = (1..=6).map(|index| segment_path(&path, index).exists()).collect();
+        assert_eq!(kept, [false, false, true, true, true, true]);
+        assert!(path.exists());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["level"], "info");
+        assert_eq!(records[0]["event"], "retention_deleted");
+        assert_eq!(records[0]["segments"], 2);
+        assert_eq!(records[0]["segment"], 2);
+        assert!(records[0].get("body").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_segment_older_than_the_maximum_age_is_deleted_and_a_younger_one_kept() {
+        // It deletes a 15-day-old segment and keeps a 13-day-old one under a 14-day limit
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tap.jsonl");
+        write_aged(&segment_path(&path, 1), 10, 15);
+        write_aged(&segment_path(&path, 2), 10, 13);
+        write_aged(&path, 10, 0);
+
+        Sink::<Value>::open(&path).await.unwrap();
+
+        assert!(!segment_path(&path, 1).exists());
+        assert!(segment_path(&path, 2).exists());
+    }
+
+    #[tokio::test]
+    async fn files_that_are_not_segments_of_the_active_file_are_never_deleted() {
+        // It keeps look-alike and unrelated files even when every segment is over capacity
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tap.jsonl");
+        let others = ["tap.jsonl.bak", "tap.12.jsonl", "other.000001.jsonl", "debug.jsonl"];
+        for name in others {
+            write_aged(&dir.path().join(name), 100, 30);
+        }
+        write_aged(&segment_path(&path, 1), 10, 0);
+        write_aged(&path, 10, 0);
+
+        Sink::<Value>::open_reporting(&path, capped(1), Logger::default())
+            .await
+            .unwrap();
+
+        assert!(others.iter().all(|name| dir.path().join(name).exists()));
+        assert!(!segment_path(&path, 1).exists());
+    }
+
+    #[tokio::test]
+    async fn a_symlink_named_like_a_segment_is_never_deleted() {
+        // It keeps the link and its target even when the output is over capacity
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tap.jsonl");
+        let target = dir.path().join("kept.jsonl");
+        write_aged(&target, 100, 30);
+        std::os::unix::fs::symlink(&target, segment_path(&path, 1)).unwrap();
+        let rotation = Rotation::after_existing_segments(&path, capped(1)).await;
+
+        rotation.delete_expired(&Logger::default()).await;
+
+        assert!(segment_path(&path, 1).is_symlink());
+        assert!(target.exists());
+    }
+
+    #[tokio::test]
+    async fn an_active_file_larger_than_the_capacity_on_its_own_is_kept() {
+        // It deletes every closed segment but never the active file
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tap.jsonl");
+        write_aged(&segment_path(&path, 1), 10, 0);
+        write_aged(&path, 1000, 0);
+        let rotation = Rotation::after_existing_segments(&path, capped(100)).await;
+
+        rotation.delete_expired(&Logger::default()).await;
+
+        assert!(!segment_path(&path, 1).exists());
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 1000);
+    }
+
+    #[tokio::test]
+    async fn a_rotation_while_writing_deletes_the_oldest_segments() {
+        // It keeps the newest lines and drops the first segment once the capacity is passed
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tap.jsonl");
+        let retention = Retention {
+            segment_bytes: 40,
+            ..capped(100)
+        };
+        let sink = Sink::open_reporting(&path, retention, Logger::default()).await.unwrap();
+
+        for number in 0..10 {
+            sink.write_reliable(json!({"number": number, "pad": "xxxxxxxx"})).await;
+        }
+        wait_for_text(&path, "\"number\":9").await;
+
+        assert!(!segment_path(&path, 1).exists());
+        assert!(segment_path(&path, 9).exists());
+    }
+
+    #[tokio::test]
+    async fn a_delete_the_directory_refuses_is_reported_and_retried_at_the_next_pass() {
+        // It logs retention_delete_failed with the error kind and index, then deletes the segment once permitted
+        let dir = tempfile::tempdir().unwrap();
+        if running_as_root(dir.path()) {
+            return;
+        }
+        let path = dir.path().join("tap.jsonl");
+        write_aged(&segment_path(&path, 1), 10, 0);
+        let rotation = Rotation::after_existing_segments(&path, capped(1)).await;
+        let (log, reader) = json_log();
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+        rotation.delete_expired(&log).await;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let survived = segment_path(&path, 1).exists();
+        rotation.delete_expired(&log).await;
+        let records = records(log, reader).await;
+
+        assert!(survived);
+        assert!(!segment_path(&path, 1).exists());
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["level"], "warn");
+        assert_eq!(records[0]["event"], "retention_delete_failed");
+        assert_eq!(records[0]["error_kind"], "permission_denied");
+        assert_eq!(records[0]["segment"], 1);
+        assert_eq!(records[1]["event"], "retention_deleted");
     }
 
     #[tokio::test]
