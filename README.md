@@ -14,7 +14,7 @@ Hosts an adapter claims (Codex: `chatgpt.com`, `api.openai.com`; Claude Code: `a
    task dev            # dev proxy on port 48732; tap files under target/dev/, runs until Ctrl-C
    ```
 
-   The shared proxy stays up until explicitly stopped; agents and consumer apps can use it concurrently. There is no automatic timeout. Or run the binary: `soze --tap-file out.jsonl [--shape-file shapes.jsonl] [--log-file debug.jsonl] [--port 0]`. `--shape-file` writes the keys and types of each distinct request and reply event, never values. The CA is always `~/.config/soze/ca.pem`, made on first run.
+   The dev proxy stays up until explicitly stopped; agents and consumer apps can use it concurrently. The shared proxy is the always-on service on 48731. There is no automatic timeout. Or run the binary: `soze --tap-file out.jsonl [--shape-file shapes.jsonl] [--log-file debug.jsonl] [--port 0]`. `--shape-file` writes the keys and types of each distinct request and reply event, never values. The CA is always `~/.config/soze/ca.pem`, made on first run.
 
 2. Run an agent through it. The CA is created on first run, is name-constrained to the adapter hosts, and is never installed into a trust store. The agent trusts it through its own variable:
 

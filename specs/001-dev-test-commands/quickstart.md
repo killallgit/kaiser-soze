@@ -45,7 +45,7 @@ Run `task test:integration` again with the network off. Expect the same result (
 task dev
 ```
 
-Expect: stderr shows the listening address on port 48731 and the CA path `~/.config/soze/ca.pem`. Tap files are under `target/dev/`. Agents and consumer apps share this service; it stays up until explicitly stopped with Ctrl-C. For an isolated automated smoke test, choose an unused port and wrap that test invocation in an external timeout. Do not stop the shared service or delete its tap files as test cleanup.
+Expect: stderr shows the listening address on port 48732 and the CA path `~/.config/soze/ca.pem`. Tap files are under `target/dev/`. Agents and consumer apps share this service; it stays up until explicitly stopped with Ctrl-C. For an isolated automated smoke test, choose an unused port and wrap that test invocation in an external timeout. Do not stop the shared service or delete its tap files as test cleanup.
 
 ## 6. Any directory (FR-009)
 
