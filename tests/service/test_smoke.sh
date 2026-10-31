@@ -26,8 +26,12 @@ echo call >> "$HOME/claude.calls"
 } > "$HOME/seen.claude"
 cat > "$HOME/claude.stdin"
 echo synthetic-agent-output
-[ -e "$HOME/claude.nosession" ] || echo '{"session":"synthetic-new"}' >> "$HOME/.local/share/soze/tap.jsonl"
-[ ! -e "$HOME/claude.oldsession" ] || echo '{"session":"synthetic-old"}' >> "$HOME/.local/share/soze/tap.jsonl"
+while [ $# -gt 0 ]; do
+  [ "$1" != --session-id ] || id=$2
+  shift
+done
+[ -e "$HOME/claude.nosession" ] || echo "{\"session\":\"$id\"}" >> "$HOME/.local/share/soze/tap.jsonl"
+[ ! -e "$HOME/claude.othersession" ] || echo '{"session":"synthetic-other"}' >> "$HOME/.local/share/soze/tap.jsonl"
 [ ! -e "$HOME/claude.logfail" ] || echo connect_failed >> "$HOME/.local/share/soze/logs/soze.log"
 [ ! -e "$HOME/claude.fail" ] || exit 1
 [ ! -e "$HOME/claude.hang" ] || exec sleep 30
@@ -100,9 +104,9 @@ fails_when_the_tap_gains_no_new_session() {
   [ "$(smoke_code)" -ne 0 ]
 }
 
-fails_when_the_tap_only_repeats_an_old_session() {
+fails_when_the_tap_gains_only_another_session() {
   ready
-  touch "$HOME/claude.nosession" "$HOME/claude.oldsession"
+  touch "$HOME/claude.nosession" "$HOME/claude.othersession"
   [ "$(smoke_code)" -ne 0 ]
 }
 
@@ -132,7 +136,10 @@ calls_the_agent_through_the_proxy_without_inherited_settings() {
   eq "$(seen claude lower)" "" "lower-case proxy"
   eq "$(seen claude base)" "" "base url"
   eq "$(seen claude node_ca)" "$HOME/.config/soze/ca.pem" "ca"
-  eq "$(seen claude arg)" "$(printf '%s\n%s' -p 'Reply with the single word ok.')" "arguments"
+  session=$(seen claude arg | sed -n 3p)
+  eq "$(seen claude arg | sed -n '1,2p;4p')" "$(printf '%s\n%s\n%s' -p --session-id 'Reply with the single word ok.')" "arguments"
+  eq "$(printf '%s' "$session" | grep -cE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')" 1 "session id shape"
+  eq "$(grep -c "$session" "$DATA/tap.jsonl")" 1 "tap records of the session"
   [ ! -s "$HOME/claude.stdin" ]
   grep -q 48999 "$HOME/nc.calls"
 }
@@ -143,7 +150,7 @@ case_run fails_without_calling_the_agent_when_the_port_is_closed fails_without_c
 case_run fails_when_the_agent_exits_non_zero fails_when_the_agent_exits_non_zero
 case_run fails_when_the_agent_outlasts_the_watchdog fails_when_the_agent_outlasts_the_watchdog
 case_run fails_when_the_tap_gains_no_new_session fails_when_the_tap_gains_no_new_session
-case_run fails_when_the_tap_only_repeats_an_old_session fails_when_the_tap_only_repeats_an_old_session
+case_run fails_when_the_tap_gains_only_another_session fails_when_the_tap_gains_only_another_session
 case_run fails_when_the_log_gains_a_connect_failure fails_when_the_log_gains_a_connect_failure
 case_run gives_the_agent_an_empty_stdin gives_the_agent_an_empty_stdin
 case_run never_prints_the_agent_output never_prints_the_agent_output
