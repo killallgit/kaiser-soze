@@ -1,18 +1,59 @@
 #!/bin/sh
 # Runs soze as a launchd user agent from a binary built by the caller.
-# Usage: service.sh install <binary>
+# Usage: service.sh install <binary> | restart | reload | status | logs | uninstall [--purge]
 set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
-usage="usage: service.sh install <binary>"
-[ "${1:-}" = install ] && [ $# -eq 2 ] || { echo "$usage" >&2; exit 2; }
-binary=$2
-[ -f "$binary" ] && [ -x "$binary" ] || { echo "not an executable file: $binary" >&2; exit 2; }
+usage="usage: service.sh install <binary> | restart | reload | status | logs | uninstall [--purge]"
 
 label=com.killallgit.soze
 domain="gui/$(id -u)"
 data=$HOME/.local/share/soze
 plist=$HOME/Library/LaunchAgents/$label.plist
 config=$HOME/.config/soze/config.toml
+
+# launchd_field <key>: a value from the top level of `launchctl print` on stdin
+launchd_field() {
+  awk -v key="$1" 'index($0, "\t" key " = ") == 1 { print substr($0, length(key) + 5); exit }'
+}
+
+show_status() {
+  state="not loaded"
+  pid=
+  if printed=$(launchctl print "$domain/$label" 2>/dev/null); then
+    state=$(printf '%s\n' "$printed" | launchd_field state)
+    pid=$(printf '%s\n' "$printed" | launchd_field pid)
+  fi
+  printf 'state=%s\npid=%s\n' "$state" "$pid"
+  [ ! -e "$data/bin/install.json" ] ||
+    sed -n '/^  "/{s/,$//;s/^  "\([a-z_]*\)": /\1=/;s/="\(.*\)"$/=\1/;p;}' "$data/bin/install.json"
+}
+
+uninstall() {
+  launchctl bootout "$domain/$label" 2>/dev/null || true
+  rm -f "$plist" "$data/bin/soze" "$data/bin/install.json"
+  rmdir "$data/bin" 2>/dev/null || true
+}
+
+# an empty HOME would turn the data dir into /.local/share/soze
+purge() {
+  [ -n "$HOME" ] || { echo "HOME is empty: nothing purged" >&2; exit 2; }
+  uninstall
+  [ ! -e "$data" ] || find "$data" -mindepth 1
+  rm -rf "$data"
+}
+
+case "$#:$*" in
+  1:restart) exec launchctl kickstart -k "$domain/$label" ;;
+  1:reload) exec launchctl kill HUP "$domain/$label" ;;
+  1:status) show_status; exit ;;
+  1:logs) exec tail -F "$data/logs/soze.log" ;;
+  1:uninstall) uninstall; exit ;;
+  '2:uninstall --purge') purge; exit ;;
+esac
+
+[ "${1:-}" = install ] && [ $# -eq 2 ] || { echo "$usage" >&2; exit 2; }
+binary=$2
+[ -f "$binary" ] && [ -x "$binary" ] || { echo "not an executable file: $binary" >&2; exit 2; }
 
 in_repo() {
   (cd "$root" && git "$@" 2>/dev/null)
