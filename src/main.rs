@@ -6,7 +6,6 @@ use kaiser_soze::claude::ClaudeAdapter;
 use kaiser_soze::codex::CodexAdapter;
 use kaiser_soze::logging::{Fields, Format, Level, Logger, Settings};
 use kaiser_soze::proxy::{Proxy, ProxyConfig};
-use kaiser_soze::sink::Retention;
 use rustls::pki_types::CertificateDer;
 use rustls::RootCertStore;
 use std::io::IsTerminal;
@@ -103,7 +102,7 @@ async fn run(args: AppSettings, reload: cli::Reload, log: &mut Logger) -> Result
         adapters: vec![Arc::new(CodexAdapter::default()), Arc::new(ClaudeAdapter::default())],
         ca_dir: ca_dir.clone(),
         tap_file: args.tap_file,
-        tap_retention: Retention::TAP,
+        tap_retention: args.retention.into(),
         shape_file: args.shape_file,
         upstream_roots: upstream_roots(system_certs(log)),
         upstream_addr: None,

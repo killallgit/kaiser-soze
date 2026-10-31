@@ -355,6 +355,69 @@ fn output_alias_validation_uses_the_merged_configuration() {
     assert_eq!(std::fs::metadata(capture).unwrap().len(), 18);
 }
 
+fn outputs_in(dir: &Path, flags: &[(&str, &str)]) -> Result<config::Settings, Error> {
+    let args = flags
+        .iter()
+        .flat_map(|(flag, name)| [flag.to_string(), dir.join(name).display().to_string()]);
+    parse_args_from(args, Sources::new(Format::Human))
+}
+
+#[test]
+fn an_output_named_like_a_closed_tap_or_shape_segment_is_refused() {
+    // Cleanup deletes closed segments, so an output carrying a segment name next to the tap or shape file is refused
+    let dir = tempfile::tempdir().unwrap();
+    for flags in [
+        [("--tap-file", "tap.jsonl"), ("--shape-file", "tap.000003.jsonl")],
+        [("--tap-file", "tap.jsonl"), ("--log-file", "tap.000003.jsonl")],
+        [("--tap-file", "shapes.000001.jsonl"), ("--shape-file", "shapes.jsonl")],
+    ] {
+        let result = outputs_in(dir.path(), &flags);
+
+        assert!(matches!(
+            result,
+            Err(Error::Configuration(config::Error::SegmentOverlap))
+        ));
+        assert_eq!(result.err().unwrap().kind(), "output_overlaps_segment");
+    }
+}
+
+#[test]
+fn a_configuration_file_named_like_a_closed_tap_segment_is_refused() {
+    // The configuration file itself would be deleted as a segment of the tap file beside it
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("tap.000003.jsonl");
+    let tap = dir.path().join("tap.jsonl");
+    std::fs::write(&file, format!("tap_file = {tap:?}\n")).unwrap();
+
+    let result = parse_args_from(
+        ["--config".to_string(), file.display().to_string()],
+        Sources::new(Format::Human),
+    );
+
+    assert!(matches!(
+        result,
+        Err(Error::Configuration(config::Error::SegmentOverlap))
+    ));
+}
+
+#[test]
+fn outputs_that_only_resemble_a_segment_or_live_elsewhere_are_accepted() {
+    // A segment name in another directory, a suffixed name and a short index are not segments of the tap or shape file
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("other")).unwrap();
+    for flags in [
+        [("--tap-file", "tap.jsonl"), ("--shape-file", "other/tap.000003.jsonl")],
+        [
+            ("--tap-file", "other/shapes.000001.jsonl"),
+            ("--shape-file", "shapes.jsonl"),
+        ],
+        [("--tap-file", "tap.jsonl"), ("--log-file", "tap.jsonl.bak")],
+        [("--tap-file", "tap.jsonl"), ("--log-file", "tap.12.jsonl")],
+    ] {
+        assert!(outputs_in(dir.path(), &flags).is_ok());
+    }
+}
+
 #[test]
 fn missing_required_capture_path_is_a_configuration_error() {
     let result = parse_args_from(Vec::<String>::new(), Sources::new(Format::Human));
@@ -545,6 +608,38 @@ fn retention_defaults_apply_to_whatever_the_file_omits() {
 fn retention_accepts_a_capacity_equal_to_the_segment_size() {
     let retention = retention_from("[retention]\nsegment_mib = 8\ncapacity_mib = 8\n").ok();
     assert_eq!(retention.map(|retention| retention.capacity_mib), Some(8));
+}
+
+#[test]
+fn the_default_retention_converts_to_the_sink_tap_retention() {
+    let retention = retention_from("").unwrap();
+
+    assert_eq!(
+        kaiser_soze::sink::Retention::from(retention),
+        kaiser_soze::sink::Retention::TAP
+    );
+}
+
+#[test]
+fn one_mebibyte_segments_convert_to_bytes() {
+    let retention = retention_from("[retention]\nsegment_mib = 1\n").unwrap();
+
+    assert_eq!(kaiser_soze::sink::Retention::from(retention).segment_bytes, 1_048_576);
+}
+
+#[test]
+fn huge_retention_values_saturate_instead_of_wrapping() {
+    let huge = config::Retention {
+        segment_mib: u64::MAX,
+        capacity_mib: u64::MAX,
+        max_age_days: u64::MAX,
+    };
+
+    let retention = kaiser_soze::sink::Retention::from(huge);
+
+    assert_eq!(retention.segment_bytes, u64::MAX);
+    assert_eq!(retention.capacity_bytes, u64::MAX);
+    assert_eq!(retention.max_age, std::time::Duration::from_secs(u64::MAX));
 }
 
 #[test]

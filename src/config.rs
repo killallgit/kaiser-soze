@@ -46,6 +46,16 @@ impl Retention {
     }
 }
 
+impl From<Retention> for kaiser_soze::sink::Retention {
+    fn from(retention: Retention) -> Self {
+        Self {
+            segment_bytes: retention.segment_mib.saturating_mul(1 << 20),
+            capacity_bytes: retention.capacity_mib.saturating_mul(1 << 20),
+            max_age: std::time::Duration::from_secs(retention.max_age_days.saturating_mul(86_400)),
+        }
+    }
+}
+
 impl Settings {
     pub fn logging(&self) -> LogSettings {
         LogSettings {
@@ -114,6 +124,7 @@ pub(super) enum Error {
     Load(::config::ConfigError),
     OutputOverlap,
     ConfigOverlap,
+    SegmentOverlap,
     UnsupportedVersion,
 }
 
