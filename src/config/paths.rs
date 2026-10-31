@@ -1,4 +1,5 @@
 use super::{Error, Settings};
+use kaiser_soze::sink::segment_index;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -8,19 +9,42 @@ pub(super) fn validate(settings: &Settings, files: &[PathBuf]) -> Result<(), Err
     }) {
         return Err(Error::OutputOverlap);
     }
-    for output in [
+    let outputs = [
         Some(&settings.tap_file),
         settings.shape_file.as_ref(),
         settings.log_file.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
+    ];
+    for output in outputs.into_iter().flatten() {
         if files.iter().any(|file| same_file(output, file)) {
             return Err(Error::ConfigOverlap);
         }
     }
+    let rotated = [Some(&settings.tap_file), settings.shape_file.as_ref()];
+    if outputs.into_iter().flatten().chain(files).any(|output| {
+        rotated
+            .into_iter()
+            .flatten()
+            .any(|active| named_like_segment(output, active))
+    }) {
+        return Err(Error::SegmentOverlap);
+    }
     Ok(())
+}
+
+/// Cleanup deletes closed segments, so an output carrying a segment name beside the active file would be lost.
+fn named_like_segment(output: &Path, active: &Path) -> bool {
+    output
+        .file_name()
+        .is_some_and(|name| segment_index(active, name).is_some())
+        && directory(output).is_some_and(|parent| directory(active) == Some(parent))
+}
+
+fn directory(path: &Path) -> Option<PathBuf> {
+    resolved(
+        path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new(".")),
+    )
 }
 
 fn same_file(left: &Path, right: &Path) -> bool {

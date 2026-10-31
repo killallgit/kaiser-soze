@@ -67,6 +67,7 @@ impl Error {
             Self::Display(_) => "display_requested",
             Self::Configuration(config::Error::OutputOverlap) => "debug_file_overlaps_capture",
             Self::Configuration(config::Error::ConfigOverlap) => "output_overlaps_configuration",
+            Self::Configuration(config::Error::SegmentOverlap) => "output_overlaps_segment",
             Self::Configuration(config::Error::UnsupportedVersion) => "unsupported_version",
             Self::Configuration(config::Error::Load(error)) => match error {
                 ::config::ConfigError::NotFound(_) => "missing_configuration",
