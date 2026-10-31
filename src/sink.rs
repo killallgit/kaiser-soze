@@ -94,10 +94,10 @@ impl<T: Serialize + Send + 'static> Sink<T> {
         log: Logger,
     ) -> std::io::Result<Self> {
         let mut rotation = Rotation::after_existing_segments(path, retention.segment_bytes).await;
-        let holds_lines = tokio::fs::metadata(path)
-            .await
-            .is_ok_and(|found| found.is_file() && found.len() > 0);
-        if holds_lines {
+        // A symlink is the user's redirect: it is appended to through the link and never renamed.
+        let found = tokio::fs::symlink_metadata(path).await;
+        let linked = found.as_ref().is_ok_and(|found| found.is_symlink());
+        if found.is_ok_and(|found| found.is_file() && found.len() > 0) {
             if let Err(error) = rotation.close_earlier_run().await {
                 log.event(Level::Warn, "sink_rotate_failed", Fields::io(&error));
             }
@@ -116,7 +116,7 @@ impl<T: Serialize + Send + 'static> Sink<T> {
         let file = Tail::new(file, last, metadata.len());
         Ok(Self::writing(
             file,
-            metadata.is_file().then_some(rotation),
+            (metadata.is_file() && !linked).then_some(rotation),
             prepare,
             log,
         ))
@@ -782,6 +782,45 @@ mod tests {
         Sink::<Value>::open(&path).await.unwrap();
 
         assert_eq!(files_in_order(&path), [path]);
+    }
+
+    #[tokio::test]
+    async fn a_symlinked_active_file_is_appended_to_through_the_link_and_never_renamed() {
+        // It keeps the link at the active path and writes every line to its target, however small the segment size
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("elsewhere.jsonl");
+        let path = dir.path().join("tap.jsonl");
+        std::fs::write(&target, "{\"earlier\":1}\n").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let sink = Sink::open_reporting(&path, tiny(20), Logger::default()).await.unwrap();
+
+        for number in 0..3 {
+            sink.write_reliable(json!({"number": number, "pad": "xxxxxx"})).await;
+        }
+        wait_for_lines(&target, 4).await;
+
+        assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+        assert_eq!(files_in_order(&path), std::slice::from_ref(&path));
+        assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[tokio::test]
+    async fn a_symlink_to_a_device_is_never_renamed() {
+        // It writes through a link to /dev/null without renaming the link
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tap.jsonl");
+        std::os::unix::fs::symlink("/dev/null", &path).unwrap();
+        let sink = Sink::open_reporting(&path, tiny(1), Logger::default()).await.unwrap();
+
+        for number in 0..3 {
+            assert!(sink.write_reliable(json!(number)).await);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+        assert_eq!(files_in_order(&path), std::slice::from_ref(&path));
+        assert_eq!(sink.dropped(), 0);
     }
 
     #[tokio::test]
