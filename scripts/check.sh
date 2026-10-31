@@ -12,6 +12,7 @@ run fmt cargo fmt --check
 run clippy cargo clippy --all-targets -- -D warnings
 run test cargo test
 run wrappers tests/wrappers/run.sh
+run service tests/service/run.sh
 
 if [ -n "$failed" ]; then
   echo "failed checks:$failed" >&2
