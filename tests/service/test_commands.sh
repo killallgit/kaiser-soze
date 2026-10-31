@@ -94,23 +94,27 @@ purge_lists_the_data_paths_then_deletes_the_data() {
   [ -e "$HOME/.config/soze/config.toml" ]
 }
 
-# purge_refused <env arguments>: uninstall --purge with HOME changed by env exits 2 and changes nothing
-purge_refused() {
+# refused_without_home <args...>: with HOME empty and with HOME unset, exits 2, calls no launchctl and changes nothing
+refused_without_home() {
   installed
   with_captures
+  printf '#!/bin/sh\ntouch "%s/launchctl.called"\n' "$HOME" > "$HOME/bin/launchctl"
   find "$HOME" | sort > "$HOME/before"
   code=0
-  env "$@" sh "$ROOT/scripts/service.sh" uninstall --purge > /dev/null 2>&1 || code=$?
-  eq "$code" 2 "exit status"
+  env HOME= sh "$ROOT/scripts/service.sh" "$@" > /dev/null 2>&1 || code=$?
+  eq "$code" 2 "exit status with an empty HOME"
+  code=0
+  env -u HOME sh "$ROOT/scripts/service.sh" "$@" > /dev/null 2>&1 || code=$?
+  eq "$code" 2 "exit status with no HOME"
   eq "$(find "$HOME" | sort)" "$(cat "$HOME/before")" "files"
 }
 
-purge_with_an_empty_home_deletes_nothing() {
-  purge_refused HOME=
+uninstall_without_a_home_changes_nothing() {
+  refused_without_home uninstall
 }
 
-purge_with_no_home_deletes_nothing() {
-  purge_refused -u HOME
+purge_without_a_home_deletes_nothing() {
+  refused_without_home uninstall --purge
 }
 
 extra_arguments_exit_2_and_call_nothing() {
@@ -133,7 +137,7 @@ case_run logs_follows_only_the_service_log logs_follows_only_the_service_log
 case_run uninstall_removes_the_service_and_keeps_the_data uninstall_removes_the_service_and_keeps_the_data
 case_run uninstall_succeeds_when_nothing_is_installed uninstall_succeeds_when_nothing_is_installed
 case_run purge_lists_the_data_paths_then_deletes_the_data purge_lists_the_data_paths_then_deletes_the_data
-case_run purge_with_an_empty_home_deletes_nothing purge_with_an_empty_home_deletes_nothing
-case_run purge_with_no_home_deletes_nothing purge_with_no_home_deletes_nothing
+case_run uninstall_without_a_home_changes_nothing uninstall_without_a_home_changes_nothing
+case_run purge_without_a_home_deletes_nothing purge_without_a_home_deletes_nothing
 case_run extra_arguments_exit_2_and_call_nothing extra_arguments_exit_2_and_call_nothing
 finish

@@ -28,15 +28,15 @@ show_status() {
     sed -n '/^  "/{s/,$//;s/^  "\([a-z_]*\)": /\1=/;s/="\(.*\)"$/=\1/;p;}' "$data/bin/install.json"
 }
 
+# an empty HOME would put the plist and the data dir under /
 uninstall() {
+  [ -n "$HOME" ] || { echo "HOME is empty: nothing changed" >&2; exit 2; }
   launchctl bootout "$domain/$label" 2>/dev/null || true
   rm -f "$plist" "$data/bin/soze" "$data/bin/install.json"
   rmdir "$data/bin" 2>/dev/null || true
 }
 
-# an empty HOME would turn the data dir into /.local/share/soze
 purge() {
-  [ -n "$HOME" ] || { echo "HOME is empty: nothing purged" >&2; exit 2; }
   uninstall
   [ ! -e "$data" ] || find "$data" -mindepth 1
   rm -rf "$data"
