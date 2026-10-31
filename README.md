@@ -77,7 +77,7 @@ stream = false
 
 Bare `--live` and `--stream` enable their setting; `--live=false` and `--stream=false` disable a configured value. Repeating a valued option uses its last value, so flags forwarded by `task dev -- ...` still override the script's defaults. An explicit log level wins over the stream-dependent default (`debug` with streaming, `info` otherwise); the log-format default is human on a terminal and JSON otherwise. The dev script's explicit capture paths, port and live flag take precedence over config files.
 
-Configuration is loaded once at startup. Live reload and configuration-schema versioning are separate planned work.
+Configuration is loaded at startup. SIGHUP reloads the live logging settings; every other key, including `[retention]`, takes effect on restart.
 
 ## The live view
 
@@ -100,7 +100,7 @@ Terminal stream detail has a budget of 20 records per one-second window; summari
 
 Every dev task also writes `target/dev/debug.jsonl` through a separate logger transport. It resets when the service starts, always selects debug metadata (even with terminal logging off), and does not apply the terminal rate filter. It includes full run/exchange ids, role counts, status/timing/loss counters, and adapter `decision` reasons. `endpoint` is a known API route or `other`; arbitrary paths and query values are excluded. New files are created with mode `0600`. The binary enables this transport with `--log-file <path>`; its parent directory must already exist. Starting a second service on an occupied port leaves the active debug file intact. A debug file cannot alias the tap or shape file, including through dangling symbolic links.
 
-The debug file stops accepting records at 16 MiB per run and reports `debug_file_limit` on stderr; it resumes after the next start resets the file. Open/write/flush failures also report safe diagnostics on stderr while the proxy keeps running. Its independent 256-record queue can drop under load, and abrupt shutdown may lose queued records. This is a disposable debug log, not a durable audit trail. Tap capture files continue to append across runs and are unaffected.
+The debug file stops accepting records at 16 MiB per run and reports `debug_file_limit` on stderr; it resumes after the next start resets the file. Open/write/flush failures also report safe diagnostics on stderr while the proxy keeps running. Its independent 256-record queue can drop under load, and abrupt shutdown may lose queued records. This is a disposable debug log, not a durable audit trail. The tap and shape files are bounded separately (see [The tap file](#the-tap-file)); the debug file and `soze.log` (launchd stderr, rotated one generation by the service install) are excluded from that retention.
 
 ```sh
 tail -f target/dev/debug.jsonl               # metadata only; safe to inspect while developing
@@ -110,7 +110,24 @@ Operational diagnostics go to stderr independently of the tap file. Disk open/wr
 
 ## The tap file
 
-Each line has `run_id`, `schema_version`, `sequence`, `exchange`, `adapter`, `event`, `mono_us`, `wall_ms`, `start`, `end` and `payload`. Credential headers are redacted before anything is written. Tap files append across runs; disk size and retention are currently unbounded.
+Each line has `run_id`, `schema_version`, `sequence`, `exchange`, `adapter`, `event`, `mono_us`, `wall_ms`, `start`, `end` and `payload`. Credential headers are redacted before anything is written.
+
+The tap file and the shape file are bounded on disk. A closed segment is named by inserting a six-digit index before the extension: `tap.jsonl` becomes `tap.000042.jsonl`. The first index is 1, the next is the highest existing index plus 1, and an index is never reused. The active file keeps its plain name and is created with mode `0600`.
+
+```toml
+[retention]
+segment_mib = 64
+capacity_mib = 1024
+max_age_days = 14
+```
+
+These keys apply to the tap, are read at startup only (not reloaded on SIGHUP), must be positive, and `capacity_mib` must be at least `segment_mib`. The values above are the defaults. The shape file uses fixed limits of 4 MiB per segment and 32 MiB in total, with the same 14 days, and has no keys.
+
+- **Rotation.** Only a regular file rotates. Before a line is written, if the active file is non-empty and the line would push it past the segment limit, the active file is closed as the next numbered segment and a new one is opened. Rotation also happens at every start when the active file is a non-empty regular file, so each closed tap segment holds one `run_id`, and `sequence` restarts at 1 in the new active file. If a rotation fails, soze logs `sink_rotate_failed` and keeps appending to the current file.
+- **Cleanup.** After each successful rotation, the oldest closed segments are deleted while the segments plus the active file exceed the capacity, or while the oldest segment is older than the maximum age. The active file is never deleted, and a pass stops at the first failed delete. Age is checked only at a rotation, not by a periodic sweep, so an idle proxy keeps its files. `retention_deleted` (Info, with `segments` deleted and the highest `segment` index) and `retention_delete_failed` (Warn, with `segment`) report each pass; they carry an error kind, never message content.
+- **Oversized history at start.** A previous run's file larger than the capacity is closed and then deleted in the same pass, so a first start with a smaller capacity discards it.
+- **Expired history.** Nothing in the file marks it. A reader lists the segments to find the oldest remaining one and sees a gap in `run_id` or `sequence`. The explicit resync marker belongs to the planned local stream.
+- **Guard.** Startup refuses a shape, debug or config path named like a closed segment of the tap or shape file in the same directory (`output_overlaps_segment`).
 
 - **Live events** are written as each chunk arrives: `conversation`, `block_start`, `block_delta`, `block_stop`, `usage`, `reply_end`, `error`.
 - **`record`** is one line per reply, written when it ends, with the whole conversation and reply. `incomplete` and `dropped` are set when events were lost or the stream was cut off.
