@@ -26,11 +26,11 @@ echo call >> "$HOME/claude.calls"
 } > "$HOME/seen.claude"
 cat > "$HOME/claude.stdin"
 echo synthetic-agent-output
-[ ! -e "$HOME/claude.hang" ] || exec sleep 30
 [ -e "$HOME/claude.nosession" ] || echo '{"session":"synthetic-new"}' >> "$HOME/.local/share/soze/tap.jsonl"
 [ ! -e "$HOME/claude.oldsession" ] || echo '{"session":"synthetic-old"}' >> "$HOME/.local/share/soze/tap.jsonl"
 [ ! -e "$HOME/claude.logfail" ] || echo connect_failed >> "$HOME/.local/share/soze/logs/soze.log"
 [ ! -e "$HOME/claude.fail" ] || exit 1
+[ ! -e "$HOME/claude.hang" ] || exec sleep 30
 FAKE
   chmod +x "$HOME/bin/claude"
 }
@@ -88,7 +88,10 @@ fails_when_the_agent_outlasts_the_watchdog() {
   ready
   touch "$HOME/claude.hang"
   SMOKE_TIMEOUT=1
+  started=$(date +%s)
   [ "$(smoke_code)" -ne 0 ]
+  [ $(($(date +%s) - started)) -lt 20 ]
+  eq "$(grep -c '^FAIL agent_call' "$HOME/out")" 1 "failed agent checks"
 }
 
 fails_when_the_tap_gains_no_new_session() {
@@ -107,6 +110,12 @@ fails_when_the_log_gains_a_connect_failure() {
   ready
   touch "$HOME/claude.logfail"
   [ "$(smoke_code)" -ne 0 ]
+}
+
+gives_the_agent_an_empty_stdin() {
+  ready
+  echo synthetic-input | sh "$ROOT/scripts/smoke.sh" > "$HOME/out" 2>&1
+  [ ! -s "$HOME/claude.stdin" ]
 }
 
 never_prints_the_agent_output() {
@@ -136,6 +145,7 @@ case_run fails_when_the_agent_outlasts_the_watchdog fails_when_the_agent_outlast
 case_run fails_when_the_tap_gains_no_new_session fails_when_the_tap_gains_no_new_session
 case_run fails_when_the_tap_only_repeats_an_old_session fails_when_the_tap_only_repeats_an_old_session
 case_run fails_when_the_log_gains_a_connect_failure fails_when_the_log_gains_a_connect_failure
+case_run gives_the_agent_an_empty_stdin gives_the_agent_an_empty_stdin
 case_run never_prints_the_agent_output never_prints_the_agent_output
 case_run calls_the_agent_through_the_proxy_without_inherited_settings calls_the_agent_through_the_proxy_without_inherited_settings
 finish

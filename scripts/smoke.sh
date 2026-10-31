@@ -15,8 +15,8 @@ pass() { echo "PASS $*"; }
 fail() { echo "FAIL $*"; failed=1; }
 
 sessions() { jq -r '.session // empty' "$tap" 2>/dev/null | sort -u; }
-records() { cat "$tap" 2>/dev/null | wc -l | tr -d ' '; }
-failures() { cat "$log" 2>/dev/null | grep -cE 'connect_failed|tunnel_copy_failed'; }
+records() { n=$(wc -l 2>/dev/null < "$tap"); echo "${n:-0}"; }
+failures() { n=$(grep -cE 'connect_failed|tunnel_copy_failed' "$log" 2>/dev/null); echo "${n:-0}"; }
 
 sh "$root/scripts/service.sh" status 2>/dev/null | grep -qx 'state=running' || { fail service_running; exit 1; }
 pass service_running
