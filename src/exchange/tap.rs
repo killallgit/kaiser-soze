@@ -224,11 +224,11 @@ impl TapTask {
                 }
             }
         }
+        // A project task that panicked or was cancelled has nothing more to write
+        let _ = start_edges.await;
         if let Some(record) = assembler.finish(dropped()) {
             recording.write_record(clock.stamp(), record).await;
         }
-        // A project task that panicked or was cancelled has nothing more to write
-        let _ = start_edges.await;
         let recorder = &recording.recorder;
         let end = Note::ExchangeEnd(stats.summary(recorder.output.sink.dropped()));
         recorder.write_reliable(clock.stamp(), Entry::Note(end)).await;

@@ -950,6 +950,36 @@ async fn a_start_edge_that_meets_a_full_sink_waits_for_room() {
 }
 
 #[tokio::test]
+async fn an_exchange_closed_before_its_reply_ends_writes_its_start_edges_before_its_incomplete_record() {
+    // Both start edges come before the final record, even when they wait behind exchange_start in a one-slot sink
+    let mut capture = Capture::with_room(1);
+    let tap = capture.begin(
+        &in_session_and_thread(),
+        None,
+        Emits {
+            events: open_reply(),
+            release: None,
+        },
+    );
+    tap.send(TapInput::ResponseEnd);
+    drop(tap);
+    let_the_tasks_run().await;
+
+    let lines = capture.ended(1).await;
+
+    let record = lines.iter().position(|line| line["event"] == "record").unwrap();
+    let start_edges: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| ["in_session", "in_thread"].contains(&line["payload"]["kind"].as_str().unwrap_or("")))
+        .map(|(position, _)| position)
+        .collect();
+    assert_eq!(start_edges.len(), 2);
+    assert!(start_edges.iter().all(|edge| *edge < record));
+    assert_eq!(record_of(&lines)["payload"]["incomplete"], true);
+}
+
+#[tokio::test]
 async fn a_later_exchange_of_a_thread_records_right_after_the_earlier_one_writes_its_step_edges() {
     // The later record comes after the earlier step's turn and continues edges, without waiting for the earlier exchange to end
     let who = Identifying(Identity {
