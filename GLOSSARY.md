@@ -13,11 +13,11 @@ The copy of the stream that is read and turned into events while the original by
 _Avoid_: log, capture output
 
 **Record**:
-One request and its reply, written as a single line of the tap file with its `event` key set to `record`; `incomplete` marks one that lost data: a cut stream, dropped input, an unparsed reply or a truncated one. It is not a live event, which is one line of a stream still in progress. Defined at `src/common/record.rs:6`.
+One request and its reply, written as a single line of the tap file with its `event` key set to `record`; `incomplete` marks one that lost data: a cut stream, dropped input, an unparsed reply or a truncated one. It is not a live event, which is one line of a stream still in progress. Defined at `src/common/record.rs`.
 _Avoid_: message
 
 **Step**:
-The n-th request and reply of an exchange: Claude Code is always step 1, a Codex socket numbers its requests. It is not an exchange. Defined at `src/graph/step.rs:7` and `docs/common-format.md` ("The graph").
+The n-th request and reply of an exchange: Claude Code is always step 1, a Codex socket numbers its requests. It is not an exchange. Defined at `src/graph/step.rs` and `docs/common-format.md` ("The graph").
 _Avoid_: round, call
 
 **Turn**:
@@ -32,9 +32,9 @@ An adapter taking a request, or a host, as its own so the proxy decrypts and par
 _Avoid_: match, accept
 
 **Project**:
-The git repository a session worked in. Its id is `host/owner/repo` from the origin remote; a repository with no origin remote, or a local-path remote, is named by its path. It is not a Cargo crate. Defined at `src/project/mod.rs:12` and, for the id, `src/project/id.rs`.
+The git repository a session worked in. Its id is `host/owner/repo` from the origin remote; a repository with no origin remote, or a local-path remote, is named by its path. It is not a Cargo crate. Defined at `src/project/mod.rs` and, for the id, `src/project/id.rs`.
 _Avoid_: workspace
 
 **Edge**:
-One typed relation of the graph between two nodes, such as `in_thread` or `continues`. An edge whose far end is unknown is left out. Defined at `src/graph/edge.rs:15` and `src/graph/mod.rs:38`.
+One typed relation of the graph between two nodes, such as `in_thread` or `continues`. An edge whose far end is unknown is left out. Defined at `src/graph/edge.rs` and `src/graph/mod.rs`.
 _Avoid_: link
