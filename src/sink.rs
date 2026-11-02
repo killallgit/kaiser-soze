@@ -50,7 +50,7 @@ impl Retention {
 }
 
 /// `tap.jsonl` -> `tap.000042.jsonl`; a name without an extension gets `.000042` appended.
-pub fn segment_path(active: &Path, index: u64) -> PathBuf {
+fn segment_path(active: &Path, index: u64) -> PathBuf {
     let mut name = active.file_stem().unwrap_or_default().to_os_string();
     name.push(format!(".{index:06}"));
     if let Some(extension) = active.extension() {
@@ -596,6 +596,95 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[1..], ["2", "3"]);
         assert_eq!(sink.dropped(), 1);
+    }
+
+    struct Stamped {
+        sequence: u64,
+        serialisable: bool,
+    }
+
+    impl Stamped {
+        fn new(serialisable: bool) -> Self {
+            Self {
+                sequence: 0,
+                serialisable,
+            }
+        }
+    }
+
+    impl Serialize for Stamped {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            if self.serialisable {
+                serializer.serialize_u64(self.sequence)
+            } else {
+                Err(S::Error::custom("synthetic"))
+            }
+        }
+    }
+
+    /// Sends the items to a sink writing into memory, and returns the sequences `prepare` saw, the sequences written and
+    /// the count of dropped items. It fails if the writer writes anything after the expected lines.
+    async fn stamp_and_write(items: Vec<Stamped>, expected_lines: usize) -> (Vec<u64>, Vec<u64>, u64) {
+        let (writer, reader) = tokio::io::duplex(1024);
+        let prepared = Arc::<std::sync::Mutex<Vec<u64>>>::default();
+        let seen = prepared.clone();
+        let sink = Sink::writing(
+            Tail::new(writer, None, 0),
+            None,
+            move |item: &mut Stamped, sequence| {
+                seen.lock().unwrap().push(sequence);
+                item.sequence = sequence;
+            },
+            Logger::default(),
+        );
+
+        for item in items {
+            sink.write_reliable(item).await;
+        }
+
+        let mut lines = tokio::io::AsyncBufReadExt::lines(tokio::io::BufReader::new(reader));
+        let mut written = Vec::new();
+        for _ in 0..expected_lines {
+            let line = tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            written.push(line.parse().unwrap());
+        }
+        let prepared = prepared.lock().unwrap().clone();
+        let dropped = sink.dropped();
+        drop(sink);
+        let after = tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after, None);
+        (prepared, written, dropped)
+    }
+
+    #[tokio::test]
+    async fn items_reach_prepare_and_the_writer_with_sequences_one_two_three() {
+        // It stamps each item before encoding it, numbering them from one
+        let items = (0..3).map(|_| Stamped::new(true)).collect();
+
+        let (prepared, written, dropped) = stamp_and_write(items, 3).await;
+
+        assert_eq!(prepared, [1, 2, 3]);
+        assert_eq!(written, [1, 2, 3]);
+        assert_eq!(dropped, 0);
+    }
+
+    #[tokio::test]
+    async fn an_item_that_cannot_be_serialised_consumes_no_sequence_number() {
+        // It counts the failed item as dropped, so the item after it takes the next contiguous sequence
+        let items = vec![Stamped::new(true), Stamped::new(false), Stamped::new(true)];
+
+        let (prepared, written, dropped) = stamp_and_write(items, 2).await;
+
+        assert_eq!(prepared, [1, 2, 2]);
+        assert_eq!(written, [1, 2]);
+        assert_eq!(dropped, 1);
     }
 
     #[tokio::test]
