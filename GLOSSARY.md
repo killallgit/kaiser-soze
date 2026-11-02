@@ -5,7 +5,7 @@ A local proxy between a coding agent and its model API. It forwards every byte a
 ## Language
 
 **Exchange**:
-One request an adapter claimed, with everything that follows on that connection; it holds one or more steps. Shown at `src/exchange/exchanges.rs:15` and `docs/common-format.md` ("The graph").
+One request an adapter claimed, and its reply; a WebSocket upgrade is one exchange for the whole socket, so an exchange holds one or more steps. A connection can carry many exchanges. Shown at `src/exchange/exchanges.rs:15` and `docs/common-format.md` ("The graph").
 _Avoid_: call, connection, request (a request is one step of it)
 
 **Tap**:
