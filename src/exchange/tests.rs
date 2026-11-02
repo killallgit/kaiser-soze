@@ -188,9 +188,14 @@ async fn a_dropped_websocket_chunk_stops_decoding_only_from_the_gap() {
     }
     release.send(()).unwrap();
     // The queue has room again once the parser has drained it, so this frame is queued, not refused
-    while messages_seen.lock().unwrap().len() < 256 {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let drained = async {
+        while messages_seen.lock().unwrap().len() < 256 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(WAIT, drained)
+        .await
+        .expect("the parser drains its queue");
     tap.send_ws_bytes(true, after_gap, Duration::ZERO);
     drop(tap);
     capture.ended(1).await;
