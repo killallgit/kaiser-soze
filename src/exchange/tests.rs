@@ -1,4 +1,3 @@
-use super::recorder::Tracking;
 use super::*;
 use crate::adapter::event::*;
 use crate::adapter::{Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
@@ -66,6 +65,25 @@ impl Capture {
     /// The lines written up to the `count`th `exchange_end` from now.
     async fn ended(&mut self, count: usize) -> Vec<Value> {
         drain_ended(&mut self.drained, count).await
+    }
+
+    /// The lines written from now up to the record of `exchange`.
+    async fn up_to_the_record_of(&mut self, exchange: u64) -> Vec<Value> {
+        let mut lines = Vec::new();
+        let recorded = async {
+            loop {
+                let line = serde_json::to_value(self.drained.recv().await.expect("the sink stays open")).unwrap();
+                let found = line["exchange"] == exchange && line["event"] == "record";
+                lines.push(line);
+                if found {
+                    break;
+                }
+            }
+        };
+        tokio::time::timeout(WAIT, recorded)
+            .await
+            .expect("the exchange writes its record");
+        lines
     }
 
     async fn wait_for_refusals(&self, count: u64) {
@@ -885,36 +903,6 @@ async fn a_lookup_that_finds_nothing_lets_the_record_go_without_waiting() {
 }
 
 #[tokio::test]
-async fn a_record_is_written_without_a_project_when_its_signal_is_dropped_unanswered() {
-    // It does not wait for a lookup that can no longer answer
-    let (output, mut drained) = TapOutput::detached(ROOM).unwrap();
-    let (recorder, signal) = Recorder::start(
-        output,
-        1,
-        "test",
-        Tracking {
-            identity: Identity::default(),
-            threads: None,
-        },
-    );
-    drop(signal);
-    let tap = ExchangeTap::spawn(
-        recorder,
-        Clock::start(),
-        Box::new(Emits {
-            events: closed_reply(),
-            release: None,
-        }),
-    );
-    tap.send(TapInput::ResponseEnd);
-    drop(tap);
-
-    let lines = drain_ended(&mut drained, 1).await;
-
-    assert!(record_of(&lines)["payload"].get("project").is_none());
-}
-
-#[tokio::test]
 async fn a_reliable_write_waits_for_room_in_a_full_queue() {
     // A one-slot sink still delivers the start, the start edge and the end, with nothing counted as dropped
     let mut capture = Capture::with_room(1);
@@ -932,6 +920,109 @@ async fn a_reliable_write_waits_for_room_in_a_full_queue() {
     let kinds: Vec<&str> = lines.iter().map(|line| line["event"].as_str().unwrap()).collect();
     assert_eq!(kinds, ["exchange_start", "edge", "exchange_end"]);
     assert_eq!(exchange_end_of(&lines)["payload"]["sink_dropped"], 0);
+}
+
+/// Lets every spawned task run until it waits; the single-threaded test runtime makes this deterministic.
+async fn let_the_tasks_run() {
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tokio::test]
+async fn a_start_edge_that_meets_a_full_sink_waits_for_room() {
+    // The start edge waits behind exchange_start in a one-slot sink nobody drains yet, and is written once it drains
+    let mut capture = Capture::with_room(1);
+
+    drop(capture.begin(
+        &on_thread("t1"),
+        None,
+        Emits {
+            events: Vec::new(),
+            release: None,
+        },
+    ));
+    let_the_tasks_run().await;
+    let lines = capture.ended(1).await;
+
+    let kinds: Vec<&str> = lines.iter().map(|line| line["event"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["exchange_start", "edge", "exchange_end"]);
+}
+
+#[tokio::test]
+async fn an_exchange_closed_before_its_reply_ends_writes_its_start_edges_before_its_incomplete_record() {
+    // Both start edges come before the final record, even when they wait behind exchange_start in a one-slot sink
+    let mut capture = Capture::with_room(1);
+    let tap = capture.begin(
+        &in_session_and_thread(),
+        None,
+        Emits {
+            events: open_reply(),
+            release: None,
+        },
+    );
+    tap.send(TapInput::ResponseEnd);
+    drop(tap);
+    let_the_tasks_run().await;
+
+    let lines = capture.ended(1).await;
+
+    let record = lines.iter().position(|line| line["event"] == "record").unwrap();
+    let start_edges: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| ["in_session", "in_thread"].contains(&line["payload"]["kind"].as_str().unwrap_or("")))
+        .map(|(position, _)| position)
+        .collect();
+    assert_eq!(start_edges.len(), 2);
+    assert!(start_edges.iter().all(|edge| *edge < record));
+    assert_eq!(record_of(&lines)["payload"]["incomplete"], true);
+}
+
+#[tokio::test]
+async fn a_later_exchange_of_a_thread_records_right_after_the_earlier_one_writes_its_step_edges() {
+    // The later record comes after the earlier step's turn and continues edges, without waiting for the earlier exchange to end
+    let who = Identifying(Identity {
+        thread: Some("t1".into()),
+        turn: Some("u1".into()),
+        ..Identity::default()
+    });
+    let mut capture = Capture::with_room(1);
+    capture.run(&who, None, closed_reply()).await;
+    let earlier = capture.begin(
+        &who,
+        None,
+        Emits {
+            events: closed_reply(),
+            release: None,
+        },
+    );
+    let later = capture.begin(
+        &who,
+        None,
+        Emits {
+            events: closed_reply(),
+            release: None,
+        },
+    );
+    earlier.send(TapInput::ResponseEnd);
+    let_the_tasks_run().await;
+
+    later.send(TapInput::ResponseEnd);
+    let started = Instant::now();
+    let lines = capture.up_to_the_record_of(later.exchange_id()).await;
+    let waited = started.elapsed();
+
+    let position = |exchange: u64, kind: &str| {
+        lines
+            .iter()
+            .position(|line| line["exchange"] == exchange && (line["event"] == kind || line["payload"]["kind"] == kind))
+            .unwrap()
+    };
+    let later_record = position(later.exchange_id(), "record");
+    assert!(position(earlier.exchange_id(), "turn") < later_record);
+    assert!(position(earlier.exchange_id(), "continues") < later_record);
+    assert!(waited < Duration::from_secs(1));
 }
 
 #[tokio::test]

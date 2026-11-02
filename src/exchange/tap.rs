@@ -1,4 +1,5 @@
 use super::clock::{Clock, Stamp};
+use super::project_task::Project;
 use super::recorder::Recorder;
 use super::stats::Stats;
 use super::ws::WsDecoder;
@@ -15,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 const TAP_QUEUE: usize = 256;
 
@@ -41,16 +43,22 @@ impl ExchangeTap {
     pub fn exchange_id(&self) -> u64 {
         self.recorder.exchange
     }
-    pub(crate) fn spawn(recorder: Recorder, clock: Clock, parser: Box<dyn ExchangeParser>) -> Self {
+    /// Spawns the tap task; it writes `exchange_end` only once `start_edges` resolves.
+    pub(super) fn spawn(
+        recording: Recording,
+        clock: Clock,
+        parser: Box<dyn ExchangeParser>,
+        start_edges: JoinHandle<()>,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(TAP_QUEUE);
         let stats = Arc::new(Stats::new());
-        let steps = Steps::join(recorder.threads.as_ref(), recorder.exchange, &recorder.identity);
+        let recorder = recording.recorder.clone();
         tokio::spawn(
             TapTask {
                 rx,
                 parser,
-                steps,
-                recorder: recorder.clone(),
+                recording,
+                start_edges,
                 clock,
                 stats: stats.clone(),
             }
@@ -65,7 +73,7 @@ impl ExchangeTap {
         }
     }
 
-    pub(super) fn note(&self, note: Note) {
+    fn note(&self, note: Note) {
         self.recorder.write(self.clock.stamp(), Entry::Note(note), (0, 0), None);
     }
 
@@ -138,11 +146,32 @@ impl ExchangeTap {
     }
 }
 
+/// What an exchange's records are written with: its recorder, its steps and the project they wait for.
+pub(super) struct Recording {
+    pub recorder: Recorder,
+    pub steps: Steps,
+    pub project: Project,
+}
+
+impl Recording {
+    /// Writes a record once its project is settled and the earlier exchanges of its thread have written
+    /// theirs, then the edges of its step, then lets the later exchanges of the thread go ahead.
+    async fn write_record(&self, stamp: Stamp, mut record: Record) {
+        let project = self.project.settled().await;
+        let edges = self.steps.link(&mut record).await;
+        self.recorder.write_record(stamp, record, project).await;
+        for edge in edges {
+            self.recorder.write_edge(stamp, edge).await;
+        }
+        self.steps.leave();
+    }
+}
+
 struct TapTask {
     rx: mpsc::Receiver<(Stamp, Msg)>,
     parser: Box<dyn ExchangeParser>,
-    steps: Steps,
-    recorder: Recorder,
+    recording: Recording,
+    start_edges: JoinHandle<()>,
     clock: Clock,
     stats: Arc<Stats>,
 }
@@ -152,14 +181,14 @@ impl TapTask {
         let Self {
             mut rx,
             mut parser,
-            mut steps,
-            recorder,
+            mut recording,
+            start_edges,
             clock,
             stats,
         } = self;
         let mut decoders = [WsDecoder::default(), WsDecoder::default()];
         let mut assembler = Assembler::default();
-        let dropped = || stats.dropped.load(Ordering::Relaxed) + recorder.refused();
+        let dropped = || stats.dropped.load(Ordering::Relaxed) + recording.recorder.refused();
         while let Some((stamp, msg)) = rx.recv().await {
             let inputs = match msg {
                 Msg::Input(input) => vec![input],
@@ -185,30 +214,23 @@ impl TapTask {
                 }
             };
             for event in inputs.into_iter().flat_map(|input| parser.feed(input)) {
-                let step = steps.of_line(&event.event);
+                let step = recording.steps.of_line(&event.event);
                 let records = assembler.push(&event.event, dropped());
-                recorder.write(stamp, Entry::Event(event.event), (event.start, event.end), step);
+                recording
+                    .recorder
+                    .write(stamp, Entry::Event(event.event), (event.start, event.end), step);
                 for record in records {
-                    write_record(&recorder, &steps, stamp, record).await;
+                    recording.write_record(stamp, record).await;
                 }
             }
         }
+        // A project task that panicked or was cancelled has nothing more to write
+        let _ = start_edges.await;
         if let Some(record) = assembler.finish(dropped()) {
-            write_record(&recorder, &steps, clock.stamp(), record).await;
+            recording.write_record(clock.stamp(), record).await;
         }
+        let recorder = &recording.recorder;
         let end = Note::ExchangeEnd(stats.summary(recorder.output.sink.dropped()));
         recorder.write_reliable(clock.stamp(), Entry::Note(end)).await;
     }
-}
-
-/// Writes a record once its project is settled and the earlier exchanges of its thread have written
-/// theirs, then the edges of its step, then lets the later exchanges of the thread go ahead.
-async fn write_record(recorder: &Recorder, steps: &Steps, stamp: Stamp, mut record: Record) {
-    let project = recorder.settled_project().await;
-    let edges = steps.link(&mut record).await;
-    recorder.write_record(stamp, record, project).await;
-    for edge in edges {
-        recorder.write_edge(stamp, edge).await;
-    }
-    steps.leave();
 }
