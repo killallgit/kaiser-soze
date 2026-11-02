@@ -13,7 +13,6 @@ use std::sync::Arc;
 use step::Step;
 
 pub use edge::{Edge, EdgeKind};
-pub use step::named_turn;
 pub(crate) use steps::{Steps, Tracker};
 
 /// Whether a thread is the main agent or a subagent; `Unknown` unless the headers say so outright.

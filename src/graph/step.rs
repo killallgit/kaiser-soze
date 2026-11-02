@@ -45,11 +45,6 @@ pub(super) fn claimed_step(conversation: &Conversation) -> u64 {
     conversation.step.unwrap_or(1)
 }
 
-/// The turn a request names; an empty id, as a warm-up request sends, names none.
-pub fn named_turn(turn: Option<&str>) -> Option<String> {
-    turn.filter(|turn| !turn.is_empty()).map(String::from)
-}
-
 /// The call ids of the `tool_result` blocks in a request.
 fn result_ids(conversation: &Conversation) -> Vec<String> {
     conversation
@@ -107,13 +102,6 @@ mod tests {
             turn: turn.map(Into::into),
             ..Identity::default()
         }
-    }
-
-    #[test]
-    fn an_empty_turn_id_is_no_turn() {
-        assert_eq!(named_turn(Some("")), None);
-        assert_eq!(named_turn(None), None);
-        assert_eq!(named_turn(Some("u1")).as_deref(), Some("u1"));
     }
 
     #[test]

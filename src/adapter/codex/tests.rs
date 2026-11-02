@@ -977,3 +977,10 @@ fn a_message_is_sized_as_the_bytes_it_writes() {
 
     assert_eq!(size, serde_json::to_value(&message).unwrap().to_string().len());
 }
+
+#[test]
+fn an_empty_turn_id_is_no_turn() {
+    assert_eq!(named_turn(Some("")), None);
+    assert_eq!(named_turn(None), None);
+    assert_eq!(named_turn(Some("u1")).as_deref(), Some("u1"));
+}
