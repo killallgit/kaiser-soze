@@ -9,7 +9,7 @@ One request an adapter claimed, and its reply; a WebSocket upgrade is one exchan
 _Avoid_: call, connection, request (a request is one step of it)
 
 **Tap**:
-The copy of the stream that is read and turned into events while the original bytes go on to the agent untouched; what it writes is the tap file. Shown at `src/exchange/tap.rs:33` and `docs/objective.md` ("Robust").
+The copy of the stream that is read and turned into events while the original bytes go on to the agent untouched; what it writes is the tap file. Shown at `docs/objective.md` ("Robust").
 _Avoid_: log, capture output
 
 **Record**:
@@ -21,11 +21,11 @@ The n-th request and reply of an exchange: Claude Code is always step 1, a Codex
 _Avoid_: request, round, call
 
 **Turn**:
-The steps that answer one user prompt, named by the harness; a warm-up request names none. It is not one model reply. Shown at `src/adapter/codex/mod.rs:15` and `docs/common-format.md` ("The graph", `turn` row).
+The steps that answer one user prompt, named by the harness; a warm-up request names none. It is not one model reply. Shown at `docs/common-format.md` ("The graph", `turn` row).
 _Avoid_: prompt, message
 
 **Thread**:
-One agent's conversation inside a session: the main agent or a subagent. It is not a session, which a subagent shares with its parent. Defined at `src/graph/mod.rs:28` and `docs/common-format.md` ("The graph").
+One agent's conversation inside a session: the main agent or a subagent. It is not a session, which a subagent shares with its parent. Defined at `docs/common-format.md` ("The graph").
 _Avoid_: session, conversation, agent
 
 **Claim**:
@@ -37,5 +37,5 @@ The git repository a session worked in, named from its origin remote as `host/ow
 _Avoid_: repo, workspace
 
 **Edge**:
-One typed relation of the graph between two nodes, such as `in_thread` or `continues`. It is not a message link; edges whose far end is unknown are left out. Defined at `src/graph/edge.rs:15` and `src/graph/mod.rs:38`.
-_Avoid_: link, relation
+One typed relation of the graph between two nodes, such as `in_thread` or `continues`. An edge whose far end is unknown is left out. Defined at `src/graph/edge.rs:15` and `src/graph/mod.rs:38`.
+_Avoid_: link
