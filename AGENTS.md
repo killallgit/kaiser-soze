@@ -58,6 +58,10 @@ committed.
 Integrate by rebasing the lane onto `main`, running the gate, and opening a pull request. Merge
 only after all CI checks pass. Nothing is pushed without the user's request.
 
+Review each open pull request with the `independent-review` skill
+(`killall-skills:independent-review`): it falls back to a fresh local reviewer when CodeRabbit is
+rate limited or skipped, so a review never waits on CodeRabbit.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:46cd31e7 -->
 ## Beads Issue Tracker
 

@@ -1,16 +1,112 @@
-use super::recorder::{ProjectSignal, Tracking};
+use super::recorder::Tracking;
 use super::*;
 use crate::adapter::event::*;
 use crate::adapter::{Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
-use crate::graph::{self, EdgeKind, Identity, Threads};
-use crate::line::Entry;
+use crate::graph::Identity;
+use crate::line::Line;
 use crate::note::{self, Label, Note};
-use crate::project::{ProjectCache, ProjectLookups};
+use crate::project::{self, ProjectCache, ProjectLookups};
 use bytes::Bytes;
 use serde_json::{json, Value};
+use std::path::Path;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+
+const ROOM: usize = 4096;
+const WAIT: Duration = Duration::from_secs(10);
+
+/// Exchanges writing to a sink nobody has to poll: `ended` reads the lines as they are written.
+struct Capture {
+    exchanges: Exchanges,
+    drained: mpsc::Receiver<Line>,
+    output: TapOutput,
+}
+
+impl Capture {
+    fn new() -> Self {
+        Self::finding_projects(ProjectLookups::new(ProjectCache::default()))
+    }
+
+    fn finding_projects(projects: ProjectLookups) -> Self {
+        Self::holding(ROOM, projects)
+    }
+
+    fn with_room(room: usize) -> Self {
+        Self::holding(room, ProjectLookups::new(ProjectCache::default()))
+    }
+
+    fn holding(room: usize, projects: ProjectLookups) -> Self {
+        let (output, drained) = TapOutput::detached(room).unwrap();
+        Self {
+            exchanges: Exchanges::new(output.clone(), None, projects),
+            drained,
+            output,
+        }
+    }
+
+    fn begin(
+        &self,
+        adapter: &dyn Adapter,
+        label: Option<&Label>,
+        parser: impl ExchangeParser + 'static,
+    ) -> ExchangeTap {
+        begin_with(&self.exchanges, adapter, label, Box::new(parser))
+    }
+
+    /// Begins an exchange whose reply ends with `events`, ends it, and returns the lines up to its `exchange_end`.
+    async fn run(&mut self, adapter: &dyn Adapter, label: Option<&Label>, events: Vec<TapEvent>) -> Vec<Value> {
+        let tap = self.begin(adapter, label, Emits { events, release: None });
+        tap.send(TapInput::ResponseEnd);
+        drop(tap);
+        self.ended(1).await
+    }
+
+    /// The lines written up to the `count`th `exchange_end` from now.
+    async fn ended(&mut self, count: usize) -> Vec<Value> {
+        drain_ended(&mut self.drained, count).await
+    }
+
+    async fn wait_for_refusals(&self, count: u64) {
+        let refused = async {
+            while self.output.sink.dropped() < count {
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::time::timeout(WAIT, refused)
+            .await
+            .expect("the sink refuses a line");
+    }
+}
+
+async fn drain_ended(drained: &mut mpsc::Receiver<Line>, count: usize) -> Vec<Value> {
+    let mut lines = Vec::new();
+    let mut ends = 0;
+    let all_ended = async {
+        while ends < count {
+            let line = drained.recv().await.expect("the sink stays open");
+            ends += usize::from(line.entry.event() == "exchange_end");
+            lines.push(serde_json::to_value(&line).unwrap());
+        }
+    };
+    tokio::time::timeout(WAIT, all_ended)
+        .await
+        .expect("every exchange ends");
+    lines
+}
+
+async fn run_to_the_end(adapter: &dyn Adapter, events: Vec<TapEvent>) -> Vec<Value> {
+    Capture::new().run(adapter, None, events).await
+}
+
+fn record_of(lines: &[Value]) -> &Value {
+    lines.iter().find(|line| line["event"] == "record").unwrap()
+}
+
+fn exchange_end_of(lines: &[Value]) -> &Value {
+    lines.iter().find(|line| line["event"] == "exchange_end").unwrap()
+}
 
 struct BlocksUntilReleased {
     release: Receiver<()>,
@@ -31,20 +127,14 @@ impl ExchangeParser for BlocksUntilReleased {
 }
 
 struct Fixture {
+    capture: Capture,
     tap: ExchangeTap,
     release: std::sync::mpsc::Sender<()>,
     messages_seen: Arc<Mutex<Vec<String>>>,
-    tap_file: std::path::PathBuf,
-    _dir: tempfile::TempDir,
 }
 
-async fn blocked_tap() -> Fixture {
-    let dir = tempfile::tempdir().unwrap();
-    let tap_file = dir.path().join("tap.jsonl");
-    let output = TapOutput::open(&tap_file, crate::logging::Logger::default())
-        .await
-        .unwrap();
-    let recorder = Recorder::new(output, 1, "test");
+fn blocked_tap() -> Fixture {
+    let capture = Capture::new();
     let (release, receiver) = std::sync::mpsc::channel();
     let messages_seen = Arc::<Mutex<Vec<String>>>::default();
     let parser = BlocksUntilReleased {
@@ -52,66 +142,44 @@ async fn blocked_tap() -> Fixture {
         blocked: false,
         messages_seen: messages_seen.clone(),
     };
-    let tap = ExchangeTap::spawn(recorder, Clock::start(), Box::new(parser));
+    let tap = capture.begin(&nobody(), None, parser);
     Fixture {
+        capture,
         tap,
         release,
         messages_seen,
-        tap_file,
-        _dir: dir,
     }
-}
-
-async fn wait_for_exchange_end(tap_file: &std::path::Path) {
-    wait_for_exchange_ends(tap_file, 1).await;
-}
-
-async fn wait_for_exchange_ends(tap_file: &std::path::Path, count: usize) {
-    for _ in 0..50 {
-        let text = std::fs::read_to_string(tap_file).unwrap_or_default();
-        if text.matches("exchange_end").count() >= count {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    panic!("exchange never ended");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stalled_parser_drops_and_counts_instead_of_blocking_the_sender() {
     // It counts what the full queue refused while the parser is blocked
-    let fixture = blocked_tap().await;
-
-    for _ in 0..1000 {
-        fixture.tap.send(TapInput::ResponseBody(Bytes::from_static(b"x")));
-    }
-
     let Fixture {
+        mut capture,
         tap,
         release,
-        tap_file,
-        _dir,
         ..
-    } = fixture;
+    } = blocked_tap();
+
+    for _ in 0..1000 {
+        tap.send(TapInput::ResponseBody(Bytes::from_static(b"x")));
+    }
     release.send(()).unwrap();
     drop(tap);
-    wait_for_exchange_end(&tap_file).await;
 
-    let lines = lines(&tap_file);
-    let end = lines.iter().find(|line| line["event"] == "exchange_end").unwrap();
-    assert!(end["payload"]["tap_dropped"].as_u64().unwrap() > 0);
+    let lines = capture.ended(1).await;
+    assert!(exchange_end_of(&lines)["payload"]["tap_dropped"].as_u64().unwrap() > 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dropped_websocket_chunk_stops_decoding_only_from_the_gap() {
     // It decodes every chunk queued before the drop and none after it
     let Fixture {
+        mut capture,
         tap,
         release,
         messages_seen,
-        tap_file,
-        _dir,
-    } = blocked_tap().await;
+    } = blocked_tap();
     let before_gap = Bytes::from_static(&[0x81, 0x01, b'a']);
     let after_gap = Bytes::from_static(&[0x81, 0x01, b'b']);
 
@@ -120,12 +188,17 @@ async fn a_dropped_websocket_chunk_stops_decoding_only_from_the_gap() {
     }
     release.send(()).unwrap();
     // The queue has room again once the parser has drained it, so this frame is queued, not refused
-    while messages_seen.lock().unwrap().len() < 256 {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let drained = async {
+        while messages_seen.lock().unwrap().len() < 256 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(WAIT, drained)
+        .await
+        .expect("the parser drains its queue");
     tap.send_ws_bytes(true, after_gap, Duration::ZERO);
     drop(tap);
-    wait_for_exchange_end(&tap_file).await;
+    capture.ended(1).await;
 
     // The queue holds 256, plus the one the blocked parser had already taken
     let seen = messages_seen.lock().unwrap();
@@ -136,37 +209,22 @@ async fn a_dropped_websocket_chunk_stops_decoding_only_from_the_gap() {
 #[tokio::test]
 async fn exchange_end_reports_records_the_sink_had_to_drop() {
     // It reports a non-zero sink_dropped when the sink queue overflowed
-    let dir = tempfile::tempdir().unwrap();
-    let tap_file = dir.path().join("tap.jsonl");
-    let output = TapOutput::open(&tap_file, crate::logging::Logger::default())
-        .await
-        .unwrap();
-    let recorder = Recorder::new(output, 1, "test");
-    let (_release, receiver) = std::sync::mpsc::channel();
-    let parser = BlocksUntilReleased {
-        release: receiver,
-        blocked: true,
-        messages_seen: Arc::default(),
-    };
-    let tap = ExchangeTap::spawn(recorder.clone(), Clock::start(), Box::new(parser));
-    for _ in 0..5000 {
-        recorder.write(Clock::start().stamp(), filler(), (0, 0), None);
-    }
-
+    let mut capture = Capture::with_room(1);
+    let tap = capture.begin(
+        &nobody(),
+        None,
+        Emits {
+            events: closed_reply(),
+            release: None,
+        },
+    );
+    tap.send(TapInput::ResponseEnd);
+    capture.wait_for_refusals(1).await;
     drop(tap);
-    wait_for_exchange_end(&tap_file).await;
 
-    let text = std::fs::read_to_string(&tap_file).unwrap();
-    let end: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
-    assert!(end["payload"]["sink_dropped"].as_u64().unwrap() > 0);
-}
+    let lines = capture.ended(1).await;
 
-fn filler() -> Entry {
-    Entry::Note(Note::Tunnel(note::Tunnel {
-        host: "filler".into(),
-        label: None,
-        port: 443,
-    }))
+    assert!(exchange_end_of(&lines)["payload"]["sink_dropped"].as_u64().unwrap() > 0);
 }
 
 struct Emits {
@@ -213,112 +271,41 @@ fn closed_reply() -> Vec<TapEvent> {
     events
 }
 
-fn lines(tap_file: &std::path::Path) -> Vec<Value> {
+fn lines(tap_file: &Path) -> Vec<Value> {
     let text = std::fs::read_to_string(tap_file).unwrap();
     text.lines().map(|line| serde_json::from_str(line).unwrap()).collect()
 }
 
-async fn run_to_the_end(events: Vec<TapEvent>) -> Vec<Value> {
-    run_recorded(events, |recorder| recorder).await
-}
-
-struct Recording {
-    exchange: u64,
-    identity: Identity,
-    threads: Option<Arc<Mutex<Threads>>>,
-    resolve_project: Option<Box<dyn FnOnce(ProjectSignal)>>,
-}
-
-impl Default for Recording {
-    fn default() -> Self {
-        Self {
-            exchange: 1,
-            identity: Identity::default(),
-            threads: None,
-            resolve_project: None,
-        }
-    }
-}
-
-async fn run_recorded(events: Vec<TapEvent>, configure: impl FnOnce(Recording) -> Recording) -> Vec<Value> {
-    let dir = tempfile::tempdir().unwrap();
-    let tap_file = dir.path().join("tap.jsonl");
-    let recording = configure(Recording::default());
-    let output = TapOutput::open(&tap_file, crate::logging::Logger::default())
-        .await
-        .unwrap();
-    let (recorder, signal) = Recorder::start(
-        output,
-        recording.exchange,
-        "test",
-        Tracking {
-            identity: recording.identity,
-            threads: recording.threads,
-        },
-    );
-    match recording.resolve_project {
-        Some(resolve) => resolve(signal),
-        None => drop(signal),
-    }
-    let tap = ExchangeTap::spawn(recorder, Clock::start(), Box::new(Emits { events, release: None }));
-
-    tap.send(TapInput::ResponseEnd);
-    drop(tap);
-    wait_for_exchange_end(&tap_file).await;
-
-    lines(&tap_file)
-}
-
 #[tokio::test]
-async fn starting_a_recorder_pairs_tracking_with_owned_project_release() {
-    let dir = tempfile::tempdir().unwrap();
-    let tap_file = dir.path().join("tap.jsonl");
-    let output = TapOutput::open(&tap_file, crate::logging::Logger::default())
-        .await
-        .unwrap();
-    let (recorder, signal) = Recorder::start(
-        output,
-        1,
-        "test",
-        Tracking {
-            identity: Identity {
-                session: Some("s1".into()),
-                thread: Some("t1".into()),
-                turn: Some("u1".into()),
-                ..Identity::default()
-            },
-            threads: Some(Arc::default()),
-        },
-    );
-    let tap = ExchangeTap::spawn(
-        recorder,
-        Clock::start(),
-        Box::new(Emits {
-            events: closed_reply(),
-            release: None,
-        }),
-    );
+async fn a_record_of_an_exchange_without_a_label_carries_its_ids_and_no_project() {
+    // It has no directory to find a project in, so the record names session, thread and turn only
+    let who = Identifying(Identity {
+        session: Some("s1".into()),
+        thread: Some("t1".into()),
+        turn: Some("u1".into()),
+        ..Identity::default()
+    });
 
-    tap.send(TapInput::ResponseEnd);
-    drop(signal);
-    drop(tap);
-    wait_for_exchange_end(&tap_file).await;
+    let lines = run_to_the_end(&who, closed_reply()).await;
 
-    let lines = lines(&tap_file);
-    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
-    assert_eq!(record["payload"]["session"], "s1");
-    assert_eq!(record["payload"]["thread"], "t1");
-    assert_eq!(record["payload"]["turn"], "u1");
-    assert!(record["payload"].get("project").is_none());
-    assert_eq!(written_edges(&lines), [edge("turn", "step:1.1", "turn:u1")]);
+    let record = &record_of(&lines)["payload"];
+    assert_eq!(record["session"], "s1");
+    assert_eq!(record["thread"], "t1");
+    assert_eq!(record["turn"], "u1");
+    assert!(record.get("project").is_none());
+    assert_eq!(step_edges(&lines), [edge("turn", "step:1.1", "turn:u1")]);
 }
 
 #[tokio::test]
 async fn live_lines_come_before_one_record_before_exchange_end() {
     // It writes each live event, then the record when the reply ends
-    let lines = run_to_the_end(closed_reply()).await;
+    let lines = run_to_the_end(&nobody(), closed_reply()).await;
 
-    let kinds: Vec<&str> = lines.iter().map(|line| line["event"].as_str().unwrap()).collect();
+    let kinds: Vec<&str> = lines
+        .iter()
+        .map(|line| line["event"].as_str().unwrap())
+        .filter(|kind| *kind != "exchange_start")
+        .collect();
     assert_eq!(
         kinds,
         [
@@ -332,25 +319,39 @@ async fn live_lines_come_before_one_record_before_exchange_end() {
             "exchange_end"
         ]
     );
-    assert_eq!(lines[6]["payload"]["incomplete"], false);
-    assert_eq!(lines[6]["payload"]["dropped"], 0);
+    assert_eq!(record_of(&lines)["payload"]["incomplete"], false);
+    assert_eq!(record_of(&lines)["payload"]["dropped"], 0);
+}
+
+fn repository_with_origin(dir: &tempfile::TempDir) -> Label {
+    let root = dir.path().join("repo");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(
+        root.join(".git/config"),
+        "[remote \"origin\"]\n\turl = https://host/owner/repo.git\n",
+    )
+    .unwrap();
+    labelled(&root.display().to_string())
+}
+
+fn locating_after(delay: Duration) -> ProjectLookups {
+    let cache = ProjectCache::locating_with(move |dir| {
+        std::thread::sleep(delay);
+        project::locate(dir)
+    });
+    ProjectLookups::new(cache).with_wait(Duration::from_secs(5))
 }
 
 #[tokio::test]
-async fn a_record_carries_the_ids_the_recorder_knows() {
-    // It adds project, session and thread to the record and to no other line
-    let known = Identity {
-        session: Some("s1".into()),
-        thread: Some("t1".into()),
-        ..Identity::default()
-    };
+async fn a_record_carries_the_ids_the_exchange_knows() {
+    // It adds project, session and thread to the record and to no other line's payload
+    let dir = tempfile::tempdir().unwrap();
+    let label = repository_with_origin(&dir);
 
-    let lines = run_recorded(closed_reply(), |mut recording| {
-        recording.identity = known;
-        recording.resolve_project = Some(Box::new(|signal| signal.settle(Some("host/owner/repo".into()))));
-        recording
-    })
-    .await;
+    let lines = Capture::finding_projects(locating_after(Duration::ZERO))
+        .run(&in_session_and_thread(), Some(&label), closed_reply())
+        .await;
 
     let ids = |line: &Value| {
         [
@@ -360,8 +361,10 @@ async fn a_record_carries_the_ids_the_recorder_knows() {
         ]
         .map(Value::clone)
     };
-    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
-    assert_eq!(ids(record), [json!("host/owner/repo"), json!("s1"), json!("t1")]);
+    assert_eq!(
+        ids(record_of(&lines)),
+        [json!("host/owner/repo"), json!("s1"), json!("t1")]
+    );
     let others = lines.iter().filter(|line| line["event"] != "record");
     assert!(others.map(ids).all(|ids| ids.iter().all(Value::is_null)));
 }
@@ -392,7 +395,7 @@ async fn live_lines_carry_the_step_of_the_record_they_are_folded_into() {
     events[0].event.conversation_mut().step = Some(1);
     events.extend(second);
 
-    let lines = run_to_the_end(events).await;
+    let lines = run_to_the_end(&nobody(), events).await;
 
     let mut live_steps = Vec::new();
     let mut record_steps = Vec::new();
@@ -415,7 +418,7 @@ async fn live_lines_carry_the_step_of_the_record_they_are_folded_into() {
 #[tokio::test]
 async fn a_conversation_with_no_step_gives_its_live_lines_step_one() {
     // A Claude request names no step, so the record is step 1 and so are its live lines
-    let lines = run_to_the_end(closed_reply()).await;
+    let lines = run_to_the_end(&nobody(), closed_reply()).await;
 
     assert_eq!(steps_of_live_lines(&lines), [Some(1); 6]);
 }
@@ -423,11 +426,10 @@ async fn a_conversation_with_no_step_gives_its_live_lines_step_one() {
 #[tokio::test]
 async fn a_reply_with_no_conversation_has_no_step_anywhere() {
     // No request means no step, on the live lines and on the record
-    let lines = run_to_the_end(closed_reply().split_off(1)).await;
+    let lines = run_to_the_end(&nobody(), closed_reply().split_off(1)).await;
 
     assert!(steps_of_live_lines(&lines).iter().all(Option::is_none));
-    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
-    assert!(record["payload"]["step"].is_null());
+    assert!(record_of(&lines)["payload"]["step"].is_null());
 }
 
 #[tokio::test]
@@ -439,31 +441,20 @@ async fn a_new_conversation_leaves_the_open_reply_on_its_old_step() {
     next[0].event.conversation_mut().step = Some(2);
     events.extend(next);
 
-    let lines = run_to_the_end(events).await;
+    let lines = run_to_the_end(&nobody(), events).await;
 
     let steps = steps_of_live_lines(&lines);
     assert_eq!(&steps[..3], [Some(1); 3]);
     assert_eq!(&steps[3..], [Some(2); 6]);
-    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
-    assert_eq!(record["payload"]["step"], 1);
-    assert_eq!(record["payload"]["incomplete"], true);
+    assert_eq!(record_of(&lines)["payload"]["step"], 1);
+    assert_eq!(record_of(&lines)["payload"]["incomplete"], true);
 }
 
 #[tokio::test]
 async fn every_line_of_an_identified_exchange_carries_its_session_and_thread() {
     // It puts the ids at the top of each line, and leaves the keys out when the exchange has none
-    let known = Identity {
-        session: Some("s1".into()),
-        thread: Some("t1".into()),
-        ..Identity::default()
-    };
-
-    let identified = run_recorded(closed_reply(), |mut recording| {
-        recording.identity = known;
-        recording
-    })
-    .await;
-    let anonymous = run_to_the_end(closed_reply()).await;
+    let identified = run_to_the_end(&in_session_and_thread(), closed_reply()).await;
+    let anonymous = run_to_the_end(&nobody(), closed_reply()).await;
 
     assert!(identified
         .iter()
@@ -476,19 +467,14 @@ async fn every_line_of_an_identified_exchange_carries_its_session_and_thread() {
 #[tokio::test]
 async fn a_record_carries_the_turn_its_exchange_belongs_to() {
     // It groups replies of one user turn without saying the turn ended
-    let known = Identity {
+    let who = Identifying(Identity {
         turn: Some("p1".into()),
         ..Identity::default()
-    };
+    });
 
-    let lines = run_recorded(closed_reply(), |mut recording| {
-        recording.identity = known;
-        recording
-    })
-    .await;
+    let lines = run_to_the_end(&who, closed_reply()).await;
 
-    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
-    assert_eq!(record["payload"]["turn"], "p1");
+    assert_eq!(record_of(&lines)["payload"]["turn"], "p1");
     assert!(lines
         .iter()
         .filter(|line| line["event"] != "record")
@@ -498,76 +484,44 @@ async fn a_record_carries_the_turn_its_exchange_belongs_to() {
 #[tokio::test]
 async fn a_record_takes_its_step_and_turn_from_its_own_request() {
     // A later Codex step names its own turn; a request that names none is step 1 of the header turn
-    let known = Identity {
+    let who = Identifying(Identity {
         turn: Some("u1".into()),
         ..Identity::default()
-    };
+    });
     let mut later = closed_reply();
     later[0].event.conversation_mut().step = Some(2);
     later[0].event.conversation_mut().turn = Some("u2".into());
 
-    let stepped = run_recorded(later, |mut recording| {
-        recording.identity = known.clone();
-        recording
-    })
-    .await;
-    let plain = run_recorded(closed_reply(), |mut recording| {
-        recording.identity = known;
-        recording
-    })
-    .await;
+    let stepped = run_to_the_end(&who, later).await;
+    let plain = run_to_the_end(&who, closed_reply()).await;
 
-    let record = |lines: &[Value]| lines.iter().find(|line| line["event"] == "record").unwrap()["payload"].clone();
-    assert_eq!(
-        (record(&stepped)["step"].clone(), record(&stepped)["turn"].clone()),
-        (json!(2), json!("u2"))
-    );
-    assert_eq!(
-        (record(&plain)["step"].clone(), record(&plain)["turn"].clone()),
-        (json!(1), json!("u1"))
-    );
+    let step_and_turn = |lines: &[Value]| {
+        let record = &record_of(lines)["payload"];
+        (record["step"].clone(), record["turn"].clone())
+    };
+    assert_eq!(step_and_turn(&stepped), (json!(2), json!("u2")));
+    assert_eq!(step_and_turn(&plain), (json!(1), json!("u1")));
 }
 
 #[tokio::test]
 async fn a_record_writes_the_turn_and_continues_edges_of_its_step() {
     // A second exchange on the same thread continues the first, and both name their turn
-    let known = |turn: &str| Identity {
+    let who = Identifying(Identity {
         thread: Some("t1".into()),
-        turn: Some(turn.into()),
+        turn: Some("u1".into()),
         ..Identity::default()
-    };
-    let threads = Arc::new(Mutex::new(Threads::default()));
-    let edges = |lines: &[Value]| -> Vec<(String, String, String)> {
-        lines
-            .iter()
-            .filter(|line| {
-                line["event"] == "edge" && ["turn", "continues"].contains(&line["payload"]["kind"].as_str().unwrap())
-            })
-            .map(|line| ["kind", "from", "to"].map(|key| line["payload"][key].as_str().unwrap().to_string()))
-            .map(|[kind, from, to]| (kind, from, to))
-            .collect()
-    };
+    });
+    let mut capture = Capture::new();
 
-    let first = run_recorded(closed_reply(), |mut recording| {
-        recording.identity = known("u1");
-        recording.threads = Some(threads.clone());
-        recording
-    })
-    .await;
-    let second = run_recorded(closed_reply(), |mut recording| {
-        recording.exchange = 2;
-        recording.identity = known("u1");
-        recording.threads = Some(threads.clone());
-        recording
-    })
-    .await;
+    let first = capture.run(&who, None, closed_reply()).await;
+    let second = capture.run(&who, None, closed_reply()).await;
 
-    assert_eq!(edges(&first), [("turn".into(), "step:1.1".into(), "turn:u1".into())]);
+    assert_eq!(step_edges(&first), [edge("turn", "step:1.1", "turn:u1")]);
     assert_eq!(
-        edges(&second),
+        step_edges(&second),
         [
-            ("turn".into(), "step:2.1".into(), "turn:u1".into()),
-            ("continues".into(), "step:2.1".into(), "step:1.1".into())
+            edge("turn", "step:2.1", "turn:u1"),
+            edge("continues", "step:2.1", "step:1.1")
         ]
     );
 }
@@ -575,22 +529,16 @@ async fn a_record_writes_the_turn_and_continues_edges_of_its_step() {
 #[tokio::test]
 async fn a_later_step_that_names_no_turn_does_not_take_the_header_turn() {
     // The header turn belongs to the first request of a socket; a later step may be a new turn
-    let known = Identity {
+    let who = Identifying(Identity {
         turn: Some("u1".into()),
         ..Identity::default()
-    };
+    });
     let mut later = closed_reply();
     later[0].event.conversation_mut().step = Some(2);
 
-    let lines = run_recorded(later, |mut recording| {
-        recording.identity = known;
-        recording.threads = Some(Arc::default());
-        recording
-    })
-    .await;
+    let lines = run_to_the_end(&who, later).await;
 
-    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
-    assert!(record["payload"].get("turn").is_none());
+    assert!(record_of(&lines)["payload"].get("turn").is_none());
     assert!(lines.iter().all(|line| line["payload"]["kind"] != "turn"));
 }
 
@@ -624,11 +572,6 @@ async fn a_result_in_a_later_request_writes_one_calls_edge_for_its_call() {
         );
         events
     };
-    let threads = Arc::new(Mutex::new(Threads::default()));
-    let known = Identity {
-        thread: Some("t1".into()),
-        ..Identity::default()
-    };
     let calls = |lines: &[Value]| -> Vec<(String, String)> {
         lines
             .iter()
@@ -639,19 +582,12 @@ async fn a_result_in_a_later_request_writes_one_calls_edge_for_its_call() {
             })
             .collect()
     };
-    let run = |exchange: u64, events: Vec<TapEvent>| {
-        let (known, threads) = (known.clone(), threads.clone());
-        run_recorded(events, move |mut recording| {
-            recording.exchange = exchange;
-            recording.identity = known;
-            recording.threads = Some(threads);
-            recording
-        })
-    };
+    let mut capture = Capture::new();
+    let who = on_thread("t1");
 
-    let first = run(1, calling).await;
-    let second = run(2, answering("a")).await;
-    let third = run(3, answering("b")).await;
+    let first = capture.run(&who, None, calling).await;
+    let second = capture.run(&who, None, answering("a")).await;
+    let third = capture.run(&who, None, answering("b")).await;
 
     assert!(calls(&first).is_empty());
     assert_eq!(calls(&second), [("call:c1".to_string(), "result:c1".to_string())]);
@@ -688,37 +624,21 @@ async fn a_claude_and_a_codex_exchange_write_these_exact_records_and_edges() {
     codex[0].event.conversation_mut().step = Some(2);
     codex[0].event.conversation_mut().turn = Some("u2".into());
     codex[0].event.conversation_mut().previous_message_id = Some("m1".into());
-    let threads = Arc::new(Mutex::new(Threads::default()));
-    let known = Identity {
+    let who = Identifying(Identity {
         session: Some("s1".into()),
         thread: Some("t1".into()),
         turn: Some("u1".into()),
         ..Identity::default()
-    };
-    let run = |exchange: u64, events: Vec<TapEvent>| {
-        let (known, threads) = (known.clone(), threads.clone());
-        run_recorded(events, move |mut recording| {
-            recording.exchange = exchange;
-            recording.identity = known;
-            recording.threads = Some(threads);
-            recording
-        })
-    };
-    let payloads = |lines: &[Value], event: &str| -> Vec<Value> {
-        lines
-            .iter()
-            .filter(|line| line["event"] == event)
-            .map(|line| line["payload"].clone())
-            .collect()
-    };
+    });
     let no_usage = json!({"input": null, "output": null, "cache_read": null, "cache_write": null, "reasoning": null});
+    let mut capture = Capture::new();
 
-    let first = run(1, claude).await;
-    let second = run(2, codex).await;
+    let first = capture.run(&who, None, claude).await;
+    let second = capture.run(&who, None, codex).await;
 
     assert_eq!(
-        payloads(&first, "record"),
-        [json!({
+        record_of(&first)["payload"],
+        json!({
             "conversation": {"system": "sys", "tools": [], "messages": [
                 {"role": "user", "blocks": [{"kind": "text", "text": "hi"}]}
             ]},
@@ -736,15 +656,15 @@ async fn a_claude_and_a_codex_exchange_write_these_exact_records_and_edges() {
             "turn": "u1",
             "session": "s1",
             "thread": "t1",
-        })]
+        })
     );
     assert_eq!(
-        payloads(&first, "edge"),
+        step_edge_payloads(&first),
         [json!({"kind": "turn", "from": "step:1.1", "to": "turn:u1"})]
     );
     assert_eq!(
-        payloads(&second, "record"),
-        [json!({
+        record_of(&second)["payload"],
+        json!({
             "conversation": {
                 "system": "sys",
                 "tools": [],
@@ -766,10 +686,10 @@ async fn a_claude_and_a_codex_exchange_write_these_exact_records_and_edges() {
             "turn": "u2",
             "session": "s1",
             "thread": "t1",
-        })]
+        })
     );
     assert_eq!(
-        payloads(&second, "edge"),
+        step_edge_payloads(&second),
         [
             json!({"kind": "turn", "from": "step:2.2", "to": "turn:u2"}),
             json!({"kind": "continues", "from": "step:2.2", "to": "step:1.1"}),
@@ -784,59 +704,51 @@ fn edge(kind: &str, from: &str, to: &str) -> Edge {
     (kind.into(), from.into(), to.into())
 }
 
-/// The edges written, sorted, so they say which edges were written and not in what order.
-fn written_edges(lines: &[Value]) -> Vec<Edge> {
-    let mut edges: Vec<Edge> = lines
+/// The edges of a step, in the order they were written; the start edges are left out, as they race the record.
+fn step_edge_payloads(lines: &[Value]) -> Vec<Value> {
+    lines
         .iter()
         .filter(|line| line["event"] == "edge")
-        .map(|line| ["kind", "from", "to"].map(|key| line["payload"][key].as_str().unwrap().to_string()))
+        .map(|line| line["payload"].clone())
+        .filter(|payload| ["turn", "continues", "calls"].contains(&payload["kind"].as_str().unwrap()))
+        .collect()
+}
+
+fn step_edges(lines: &[Value]) -> Vec<Edge> {
+    step_edge_payloads(lines)
+        .iter()
+        .map(|payload| ["kind", "from", "to"].map(|key| payload[key].as_str().unwrap().to_string()))
         .map(|[kind, from, to]| (kind, from, to))
-        .collect();
+        .collect()
+}
+
+/// The step edges, sorted, so they say which edges were written and not in what order.
+fn written_edges(lines: &[Value]) -> Vec<Edge> {
+    let mut edges = step_edges(lines);
     edges.sort();
     edges
 }
 
-/// Runs one exchange of thread `t1` per entry of `replies` at once, all recording through one `Threads`.
-/// The exchange numbered `late` (counting from 0) has its record held back briefly, so either order can win.
+/// Begins one exchange of thread `t1` per entry of `replies` at once, all recording through one `Exchanges`.
+/// The exchange numbered `late` (counting from 0) has its project lookup held back briefly, so either order can win.
 async fn race_one_thread(replies: Vec<Vec<TapEvent>>, late: Option<usize>) -> Vec<Edge> {
-    let dir = tempfile::tempdir().unwrap();
-    let tap_file = dir.path().join("tap.jsonl");
-    let output = TapOutput::open(&tap_file, crate::logging::Logger::default())
-        .await
-        .unwrap();
-    let threads = Arc::new(Mutex::new(Threads::default()));
-    let known = Identity {
-        thread: Some("t1".into()),
-        ..Identity::default()
-    };
+    let slow_lookup = ProjectCache::locating_with(|_| {
+        std::thread::sleep(Duration::from_millis(2));
+        None
+    });
+    let mut capture = Capture::finding_projects(ProjectLookups::new(slow_lookup));
+    let who = on_thread("t1");
     let count = replies.len();
     let mut taps = Vec::new();
     for (index, events) in replies.into_iter().enumerate() {
-        let (recorder, signal) = Recorder::start(
-            output.clone(),
-            index as u64 + 1,
-            "test",
-            Tracking {
-                identity: known.clone(),
-                threads: Some(threads.clone()),
-            },
-        );
-        if late == Some(index) {
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(2)).await;
-                signal.settle(None);
-            });
-        } else {
-            drop(signal);
-        }
-        let tap = ExchangeTap::spawn(recorder, Clock::start(), Box::new(Emits { events, release: None }));
+        let label = (late == Some(index)).then(|| labelled("/late"));
+        let tap = capture.begin(&who, label.as_ref(), Emits { events, release: None });
         tap.send(TapInput::ResponseEnd);
         taps.push(tap);
     }
     drop(taps);
-    wait_for_exchange_ends(&tap_file, count).await;
 
-    written_edges(&lines(&tap_file))
+    written_edges(&capture.ended(count).await)
 }
 
 fn which_exchange_is_late(run: usize, exchanges: usize) -> Option<usize> {
@@ -901,141 +813,76 @@ async fn codex_exchanges_of_one_thread_form_one_chain_in_the_order_their_exchang
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_exchange_that_ends_without_a_record_does_not_hold_back_its_threads_later_exchanges() {
     // It lets the later exchange write its record, which continues nothing as no step came before it
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let edges = race_one_thread(vec![Vec::new(), closed_reply()], None).await;
 
     assert!(edges.is_empty());
     assert!(started.elapsed() < Duration::from_millis(1500));
 }
 
+async fn project_of_the_record_after_a_lookup_of(delay: Duration) -> Value {
+    let dir = tempfile::tempdir().unwrap();
+    let label = repository_with_origin(&dir);
+
+    let lines = Capture::finding_projects(locating_after(delay))
+        .run(&nobody(), Some(&label), closed_reply())
+        .await;
+
+    record_of(&lines)["payload"]["project"].clone()
+}
+
 #[tokio::test]
 async fn a_record_waits_for_a_lookup_that_finishes_after_the_reply() {
     // It carries the project found while the record was already due
-    let lines = run_recorded(closed_reply(), |mut recording| {
-        recording.resolve_project = Some(Box::new(|signal| {
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                signal.settle(Some("host/owner/repo".into()));
-            });
-        }));
-        recording
-    })
-    .await;
+    let project = project_of_the_record_after_a_lookup_of(Duration::from_millis(100)).await;
 
-    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
-    assert_eq!(record["payload"]["project"], "host/owner/repo");
+    assert_eq!(project, "host/owner/repo");
 }
 
 #[tokio::test]
 async fn a_record_waits_for_as_long_as_its_lookup_takes() {
     // It carries a project that was settled long after the reply, as the lookup's own wait is the only bound
-    let lines = run_recorded(closed_reply(), |mut recording| {
-        recording.resolve_project = Some(Box::new(|signal| {
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                signal.settle(Some("host/owner/repo".into()));
-            });
-        }));
-        recording
-    })
-    .await;
+    let project = project_of_the_record_after_a_lookup_of(Duration::from_millis(300)).await;
 
-    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
-    assert_eq!(record["payload"]["project"], "host/owner/repo");
+    assert_eq!(project, "host/owner/repo");
 }
 
 #[tokio::test]
-async fn a_record_is_written_without_a_project_when_its_signal_is_dropped_unanswered() {
-    // It does not wait for a lookup that can no longer answer
-    let lines = run_recorded(closed_reply(), |mut recording| {
-        recording.resolve_project = Some(Box::new(drop));
-        recording
-    })
-    .await;
-
-    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
-    assert!(record["payload"].get("project").is_none());
-}
-
-#[tokio::test]
-async fn dropping_a_settled_signal_keeps_the_project() {
+async fn a_record_carries_a_project_the_lookup_found_at_once() {
     // It leaves the answer alone once the lookup gave one
-    let lines = run_recorded(closed_reply(), |mut recording| {
-        recording.resolve_project = Some(Box::new(|signal| signal.settle(Some("host/owner/repo".into()))));
-        recording
-    })
-    .await;
+    let project = project_of_the_record_after_a_lookup_of(Duration::ZERO).await;
 
-    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
-    assert_eq!(record["payload"]["project"], "host/owner/repo");
+    assert_eq!(project, "host/owner/repo");
 }
 
 #[tokio::test]
 async fn a_lookup_that_finds_nothing_lets_the_record_go_without_waiting() {
     // It does not wait out the bound once the lookup has answered
     let started = Instant::now();
+    let lookups = ProjectLookups::new(ProjectCache::locating_with(|_| None)).with_wait(Duration::from_secs(5));
 
-    let lines = run_recorded(closed_reply(), |mut recording| {
-        recording.resolve_project = Some(Box::new(|signal| signal.settle(None)));
-        recording
-    })
-    .await;
+    let lines = Capture::finding_projects(lookups)
+        .run(&nobody(), Some(&labelled("/nowhere")), closed_reply())
+        .await;
 
-    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
-    assert!(record["payload"].get("project").is_none());
-    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(record_of(&lines)["payload"].get("project").is_none());
+    assert!(started.elapsed() < Duration::from_secs(2));
 }
 
 #[tokio::test]
-async fn a_reliable_write_waits_for_room_in_a_full_queue() {
-    // It delivers the line once the queue drains, where a plain write would drop it
-    let (output, mut drained) = TapOutput::detached(1).unwrap();
-    let recorder = Recorder::new(output, 1, "test");
-    recorder.write(Clock::start().stamp(), filler(), (0, 0), None);
-    let writer = recorder.clone();
-    let edge = Entry::Edge(graph::Edge::new(EdgeKind::InThread, "exchange:1", "thread:t1"));
-    let written = tokio::spawn(async move { writer.write_reliable(Clock::start().stamp(), edge).await });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let mut kinds = Vec::new();
-    while let Ok(Some(line)) = tokio::time::timeout(Duration::from_secs(2), drained.recv()).await {
-        kinds.push(line.entry.event().to_string());
-        if line.entry.event() == "edge" {
-            break;
-        }
-    }
-
-    written.await.unwrap();
-    assert_eq!(kinds, ["tunnel", "edge"]);
-}
-
-#[tokio::test]
-async fn a_record_omits_the_ids_nobody_knows() {
-    // It leaves the keys out instead of writing nulls
-    let lines = run_to_the_end(closed_reply()).await;
-
-    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
-    for key in ["project", "session", "thread"] {
-        assert!(record["payload"].get(key).is_none());
-    }
-}
-
-#[tokio::test]
-async fn closing_before_the_reply_ends_writes_one_incomplete_record() {
-    // It keeps the assembled part and flags it
-    let lines = run_to_the_end(open_reply()).await;
-
-    let records: Vec<&Value> = lines.iter().filter(|line| line["event"] == "record").collect();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["payload"]["incomplete"], true);
-    assert_eq!(records[0]["payload"]["reply"]["message"]["blocks"][0]["text"], "ok");
-}
-
-#[tokio::test]
-async fn a_record_is_written_when_the_sink_refuses_live_lines_and_counts_them() {
-    // It waits for room, so the record is not lost, and reports the refused live lines
-    let (output, mut drained) = TapOutput::detached(3).unwrap();
-    let recorder = Recorder::new(output, 1, "test");
+async fn a_record_is_written_without_a_project_when_its_signal_is_dropped_unanswered() {
+    // It does not wait for a lookup that can no longer answer
+    let (output, mut drained) = TapOutput::detached(ROOM).unwrap();
+    let (recorder, signal) = Recorder::start(
+        output,
+        1,
+        "test",
+        Tracking {
+            identity: Identity::default(),
+            threads: None,
+        },
+    );
+    drop(signal);
     let tap = ExchangeTap::spawn(
         recorder,
         Clock::start(),
@@ -1047,77 +894,102 @@ async fn a_record_is_written_when_the_sink_refuses_live_lines_and_counts_them() 
     tap.send(TapInput::ResponseEnd);
     drop(tap);
 
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    let mut written = Vec::new();
-    while let Some(line) = drained.recv().await {
-        let last = line.entry.event() == "exchange_end";
-        written.push(line);
-        if last {
-            break;
-        }
-    }
+    let lines = drain_ended(&mut drained, 1).await;
 
-    let record = written.iter().find(|line| line.entry.event() == "record").unwrap();
-    let Entry::Record(record) = &record.entry else {
-        panic!("a record is typed");
-    };
-    assert!(record.dropped > 0);
-    assert!(record.incomplete);
+    assert!(record_of(&lines)["payload"].get("project").is_none());
+}
 
-    // These accepted lines have incomplete capture even though their emitted cursors are contiguous.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tap.jsonl");
-    let sink = TapOutput::open(&path, crate::logging::Logger::default())
-        .await
-        .unwrap()
-        .sink;
-    let count = written.len();
-    for line in written {
-        assert!(sink.write_reliable(line).await);
+#[tokio::test]
+async fn a_reliable_write_waits_for_room_in_a_full_queue() {
+    // A one-slot sink still delivers the start, the start edge and the end, with nothing counted as dropped
+    let mut capture = Capture::with_room(1);
+
+    drop(capture.begin(
+        &on_thread("t1"),
+        None,
+        Emits {
+            events: Vec::new(),
+            release: None,
+        },
+    ));
+    let lines = capture.ended(1).await;
+
+    let kinds: Vec<&str> = lines.iter().map(|line| line["event"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["exchange_start", "edge", "exchange_end"]);
+    assert_eq!(exchange_end_of(&lines)["payload"]["sink_dropped"], 0);
+}
+
+#[tokio::test]
+async fn a_record_omits_the_ids_nobody_knows() {
+    // It leaves the keys out instead of writing nulls
+    let lines = run_to_the_end(&nobody(), closed_reply()).await;
+
+    for key in ["project", "session", "thread"] {
+        assert!(record_of(&lines)["payload"].get(key).is_none());
     }
-    wait_for_exchange_end(&path).await;
-    let emitted = lines(&path);
-    assert_eq!(emitted.len(), count);
-    for (index, line) in emitted.iter().enumerate() {
-        assert_eq!(line["sequence"].as_u64(), Some(index as u64 + 1));
-    }
+}
+
+#[tokio::test]
+async fn closing_before_the_reply_ends_writes_one_incomplete_record() {
+    // It keeps the assembled part and flags it
+    let lines = run_to_the_end(&nobody(), open_reply()).await;
+
+    let records: Vec<&Value> = lines.iter().filter(|line| line["event"] == "record").collect();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["payload"]["incomplete"], true);
+    assert_eq!(records[0]["payload"]["reply"]["message"]["blocks"][0]["text"], "ok");
+}
+
+#[tokio::test]
+async fn a_record_is_written_when_the_sink_refuses_live_lines_and_counts_them() {
+    // It waits for room, so the record is not lost, and reports the refused live lines
+    let mut capture = Capture::with_room(1);
+    let tap = capture.begin(
+        &nobody(),
+        None,
+        Emits {
+            events: closed_reply(),
+            release: None,
+        },
+    );
+    tap.send(TapInput::ResponseEnd);
+    capture.wait_for_refusals(1).await;
+    drop(tap);
+
+    let lines = capture.ended(1).await;
+
+    let record = &record_of(&lines)["payload"];
+    assert!(record["dropped"].as_u64().unwrap() > 0);
+    assert_eq!(record["incomplete"], true);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stalled_parser_gives_an_incomplete_record_that_counts_the_dropped_input() {
     // It adds the inputs the full queue refused to the record's dropped count
-    let dir = tempfile::tempdir().unwrap();
-    let tap_file = dir.path().join("tap.jsonl");
-    let recorder = Recorder::new(
-        TapOutput::open(&tap_file, crate::logging::Logger::default())
-            .await
-            .unwrap(),
-        1,
-        "test",
-    );
+    let mut capture = Capture::new();
     let (release, receiver) = std::sync::mpsc::channel();
-    let tap = ExchangeTap::spawn(
-        recorder,
-        Clock::start(),
-        Box::new(Emits {
+    let tap = capture.begin(
+        &nobody(),
+        None,
+        Emits {
             events: closed_reply(),
             release: Some(receiver),
-        }),
+        },
     );
 
     for _ in 0..1000 {
         tap.send(TapInput::ResponseBody(Bytes::from_static(b"x")));
     }
     release.send(()).unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     tap.send(TapInput::ResponseEnd);
     drop(tap);
-    wait_for_exchange_end(&tap_file).await;
 
-    let lines = lines(&tap_file);
-    let record = lines.iter().find(|line| line["event"] == "record").unwrap();
-    assert!(record["payload"]["dropped"].as_u64().unwrap() > 0);
-    assert_eq!(record["payload"]["incomplete"], true);
+    let lines = capture.ended(1).await;
+
+    let record = &record_of(&lines)["payload"];
+    assert!(record["dropped"].as_u64().unwrap() > 0);
+    assert_eq!(record["incomplete"], true);
 }
 
 pub(super) struct Identifying(Identity);
@@ -1145,6 +1017,13 @@ fn in_session_and_thread() -> Identifying {
     })
 }
 
+fn on_thread(thread: &str) -> Identifying {
+    Identifying(Identity {
+        thread: Some(thread.into()),
+        ..Identity::default()
+    })
+}
+
 pub(super) fn nobody() -> Identifying {
     Identifying(Identity::default())
 }
@@ -1156,7 +1035,12 @@ fn labelled(dir: &str) -> Label {
     }
 }
 
-pub(super) fn begin(exchanges: &Exchanges, adapter: &dyn Adapter, label: Option<&Label>) -> ExchangeTap {
+fn begin_with(
+    exchanges: &Exchanges,
+    adapter: &dyn Adapter,
+    label: Option<&Label>,
+    parser: Box<dyn ExchangeParser>,
+) -> ExchangeTap {
     let head = RequestHead {
         method: "POST".into(),
         host: "example.com".into(),
@@ -1166,14 +1050,19 @@ pub(super) fn begin(exchanges: &Exchanges, adapter: &dyn Adapter, label: Option<
     exchanges.begin(Opening {
         adapter,
         head: &head,
-        parser: Box::new(Emits {
-            events: Vec::new(),
-            release: None,
-        }),
+        parser,
         label,
         http_version: hyper::Version::HTTP_11,
         upgrade: false,
     })
+}
+
+pub(super) fn begin(exchanges: &Exchanges, adapter: &dyn Adapter, label: Option<&Label>) -> ExchangeTap {
+    let parser = Emits {
+        events: Vec::new(),
+        release: None,
+    };
+    begin_with(exchanges, adapter, label, Box::new(parser))
 }
 
 async fn exchanges_writing_to(dir: &tempfile::TempDir, projects: ProjectLookups) -> Exchanges {
@@ -1316,28 +1205,14 @@ struct NotedHead {
 }
 
 async fn note_response_head(response: hyper::Response<()>) -> NotedHead {
-    let dir = tempfile::tempdir().unwrap();
-    let tap_file = dir.path().join("tap.jsonl");
-    let recorder = Recorder::new(
-        TapOutput::open(&tap_file, crate::logging::Logger::default())
-            .await
-            .unwrap(),
-        1,
-        "test",
-    );
+    let mut capture = Capture::new();
     let heard = Arc::default();
-    let tap = ExchangeTap::spawn(
-        recorder,
-        Clock::start(),
-        Box::new(ReadsResponseHeads(Arc::clone(&heard))),
-    );
+    let tap = capture.begin(&nobody(), None, ReadsResponseHeads(Arc::clone(&heard)));
     tap.note_response_head(&response);
     drop(tap);
-    wait_for_exchange_end(&tap_file).await;
 
-    let captured = lines(&tap_file);
-    let head_marked_arrived =
-        captured.iter().find(|line| line["event"] == "exchange_end").unwrap()["payload"]["response_head_us"].is_u64();
+    let captured = capture.ended(1).await;
+    let head_marked_arrived = exchange_end_of(&captured)["payload"]["response_head_us"].is_u64();
     let line = captured
         .into_iter()
         .find(|line| line["event"] == "response_head")
