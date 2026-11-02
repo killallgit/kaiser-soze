@@ -622,7 +622,8 @@ mod tests {
         }
     }
 
-    /// Sends the items to a sink writing into memory, and returns the sequences `prepare` saw and the sequences written.
+    /// Sends the items to a sink writing into memory, and returns the sequences `prepare` saw, the sequences written and
+    /// the count of dropped items. It fails if the writer writes anything after the expected lines.
     async fn stamp_and_write(items: Vec<Stamped>, expected_lines: usize) -> (Vec<u64>, Vec<u64>, u64) {
         let (writer, reader) = tokio::io::duplex(1024);
         let prepared = Arc::<std::sync::Mutex<Vec<u64>>>::default();
@@ -652,12 +653,19 @@ mod tests {
             written.push(line.parse().unwrap());
         }
         let prepared = prepared.lock().unwrap().clone();
-        (prepared, written, sink.dropped())
+        let dropped = sink.dropped();
+        drop(sink);
+        let after = tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after, None);
+        (prepared, written, dropped)
     }
 
     #[tokio::test]
-    async fn items_reach_prepare_and_the_writer_with_sequences_one_two_three_in_arrival_order() {
-        // It stamps each item before encoding it and writes the lines in the order the items arrived
+    async fn items_reach_prepare_and_the_writer_with_sequences_one_two_three() {
+        // It stamps each item before encoding it, numbering them from one
         let items = (0..3).map(|_| Stamped::new(true)).collect();
 
         let (prepared, written, dropped) = stamp_and_write(items, 3).await;
