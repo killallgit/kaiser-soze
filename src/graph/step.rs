@@ -6,55 +6,43 @@ use serde_json::Value;
 
 /// One request and its reply: the unit `turn` and `continues` link.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Step {
-    pub thread: Option<String>,
-    pub exchange: u64,
-    pub n: u64,
-    pub turn: Option<String>,
-    pub previous_message_id: Option<String>,
-    pub message_id: Option<String>,
+pub(super) struct Step {
+    pub(super) thread: Option<String>,
+    pub(super) exchange: u64,
+    pub(super) n: u64,
+    pub(super) turn: Option<String>,
+    pub(super) previous_message_id: Option<String>,
+    pub(super) message_id: Option<String>,
     /// Call ids of the `tool_result` blocks in the request.
-    pub results: Vec<String>,
+    pub(super) results: Vec<String>,
     /// Ids of the `tool_call` blocks in the reply.
-    pub calls: Vec<String>,
+    pub(super) calls: Vec<String>,
 }
 
 impl Step {
-    /// The step a finished record describes, or none when the record names no step. A first step
+    /// The step a finished record describes, or none when the record has no request. A first step
     /// that names no turn is in the header turn; a later one may be in a new turn, so it has none.
-    pub fn of_record(record: &Record, identity: &Identity, exchange: u64) -> Option<Step> {
-        let n = record.step?;
+    pub(super) fn of_record(record: &Record, identity: &Identity, exchange: u64) -> Option<Step> {
+        let conversation = record.conversation.as_ref()?;
+        let n = claimed_step(conversation);
         let text = |value: &Value| value.as_str().map(String::from);
-        let header_turn = (record.turn.is_none() && n == 1)
-            .then(|| identity.turn.clone())
-            .flatten();
-        let conversation = record.conversation.as_ref();
+        let header_turn = (n == 1).then(|| identity.turn.clone()).flatten();
         Some(Step {
             thread: identity.thread.clone(),
             exchange,
             n,
-            turn: record.turn.clone().or(header_turn),
-            previous_message_id: conversation.and_then(|conversation| conversation.previous_message_id.clone()),
+            turn: conversation.turn.clone().or(header_turn),
+            previous_message_id: conversation.previous_message_id.clone(),
             message_id: record.reply.message_id.as_ref().and_then(text),
-            results: conversation.map_or_else(Vec::new, result_ids),
+            results: result_ids(conversation),
             calls: call_ids(&record.reply.message),
         })
     }
 }
 
-/// The step and turn a request states for itself.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Claimed {
-    pub step: u64,
-    pub turn: Option<String>,
-}
-
-/// What a request claims. A Claude exchange is one request, so it is step 1.
-pub fn claimed(conversation: &Conversation) -> Claimed {
-    Claimed {
-        step: conversation.step.unwrap_or(1),
-        turn: conversation.turn.clone(),
-    }
+/// The step a request states. A Claude exchange is one request, so it is step 1.
+pub(super) fn claimed_step(conversation: &Conversation) -> u64 {
+    conversation.step.unwrap_or(1)
 }
 
 /// The turn a request names; an empty id, as a warm-up request sends, names none.
@@ -102,9 +90,13 @@ mod tests {
     }
 
     fn step_record(step: u64, turn: Option<&str>) -> Record {
-        Record {
+        let conversation = Conversation {
             step: Some(step),
             turn: turn.map(Into::into),
+            ..Conversation::new(Value::Null, Value::Null, Vec::new())
+        };
+        Record {
+            conversation: Some(conversation),
             ..Record::empty()
         }
     }
@@ -154,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn a_record_that_names_no_step_gives_no_step() {
+    fn a_record_without_a_request_gives_no_step() {
         // A reply with no request in front of it cannot be linked
         assert_eq!(Step::of_record(&Record::empty(), &identity(Some("h1")), 7), None);
     }
@@ -189,27 +181,6 @@ mod tests {
         assert_eq!(step.message_id.as_deref(), Some("m2"));
         assert_eq!(step.results, ["c1", "c2"]);
         assert_eq!(step.calls, ["c3"]);
-    }
-
-    #[test]
-    fn a_conversation_that_states_no_step_claims_step_one() {
-        // A Claude request states no step, a Codex one states its own
-        let bare = Conversation::new(Value::Null, Value::Null, Vec::new());
-        let claude = claimed(&bare);
-        let codex = claimed(&Conversation {
-            step: Some(3),
-            turn: Some("u2".into()),
-            ..bare
-        });
-
-        assert_eq!(claude, Claimed { step: 1, turn: None });
-        assert_eq!(
-            codex,
-            Claimed {
-                step: 3,
-                turn: Some("u2".into())
-            }
-        );
     }
 
     #[test]

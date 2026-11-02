@@ -1,15 +1,11 @@
 use super::clock::Stamp;
 use super::TapOutput;
-use crate::graph::{Edge, Identity, Place, Step, Threads};
+use crate::graph::{Edge, Identity, Tracker};
 use crate::line::{Entry, Line};
 use crate::record::Record;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::sync::Arc;
 use tokio::sync::watch;
-
-/// How long a record waits for the earlier exchanges of its thread before it goes ahead regardless.
-const TURN_WAIT: Duration = Duration::from_secs(2);
 
 /// `None` while the lookup runs; then `Some` of what it found.
 type ProjectLookup = Option<Option<String>>;
@@ -20,17 +16,16 @@ pub(crate) struct Recorder {
     pub(super) exchange: u64,
     adapter: &'static str,
     refused: Arc<AtomicU64>,
-    identity: Identity,
+    pub(super) identity: Identity,
     session: Option<Arc<str>>,
     thread: Option<Arc<str>>,
     project: Arc<watch::Sender<ProjectLookup>>,
-    threads: Option<Arc<Mutex<Threads>>>,
-    place: Option<Arc<Place>>,
+    pub(super) threads: Option<Tracker>,
 }
 
 pub(super) struct Tracking {
     pub identity: Identity,
-    pub threads: Option<Arc<Mutex<Threads>>>,
+    pub threads: Option<Tracker>,
 }
 
 impl Recorder {
@@ -45,7 +40,6 @@ impl Recorder {
             thread: None,
             project: Arc::new(watch::channel(Some(None)).0),
             threads: None,
-            place: None,
         }
     }
 
@@ -60,32 +54,22 @@ impl Recorder {
         recorder.session = tracking.identity.session.as_deref().map(Arc::from);
         recorder.thread = tracking.identity.thread.as_deref().map(Arc::from);
         recorder.identity = tracking.identity;
-        if let (Some(thread), Some(threads)) = (&recorder.identity.thread, &tracking.threads) {
-            let joined = threads
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .join(thread, exchange);
-            recorder.place = Some(Arc::new(joined));
-        }
         recorder.threads = tracking.threads;
         recorder.project.send_replace(None);
         let signal = ProjectSignal(recorder.clone());
         (recorder, signal)
     }
 
-    async fn settled_project(&self) -> Option<String> {
+    pub(super) async fn settled_project(&self) -> Option<String> {
         let mut lookup = self.project.subscribe();
         let found = lookup.wait_for(Option::is_some).await.ok()?.clone();
         found.flatten()
     }
 
-    fn with_ids(&self, mut record: Record, project: Option<String>, step: Option<&Step>) -> Record {
+    fn with_ids(&self, mut record: Record, project: Option<String>) -> Record {
         record.project = project;
         record.session = self.identity.session.clone();
         record.thread = self.identity.thread.clone();
-        if let Some(turn) = step.and_then(|step| step.turn.as_ref()) {
-            record.turn = Some(turn.clone());
-        }
         record
     }
 
@@ -132,28 +116,9 @@ impl Recorder {
         self.write_reliable(stamp, Entry::Edge(edge)).await;
     }
 
-    pub(super) async fn write_record(&self, stamp: Stamp, record: Record) {
-        let project = self.settled_project().await;
-        if let Some(place) = &self.place {
-            place.wait_for_turn(TURN_WAIT).await;
-        }
-        let step = Step::of_record(&record, &self.identity, self.exchange);
-        let record = self.with_ids(record, project, step.as_ref());
-        let edges = self.step_edges(step.as_ref());
+    pub(super) async fn write_record(&self, stamp: Stamp, record: Record, project: Option<String>) {
+        let record = self.with_ids(record, project);
         self.write_reliable(stamp, Entry::Record(Box::new(record))).await;
-        for edge in edges {
-            self.write_edge(stamp, edge).await;
-        }
-        if let Some(place) = &self.place {
-            place.leave();
-        }
-    }
-
-    fn step_edges(&self, step: Option<&Step>) -> Vec<Edge> {
-        let (Some(threads), Some(step)) = (&self.threads, step) else {
-            return Vec::new();
-        };
-        threads.lock().unwrap_or_else(PoisonError::into_inner).edges(step)
     }
 }
 

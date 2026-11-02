@@ -1,14 +1,14 @@
 use super::recorder::{ProjectSignal, Tracking};
 use super::{Clock, ExchangeTap, Recorder, TapOutput};
 use crate::adapter::{Adapter, ExchangeParser, RequestHead};
-use crate::graph::{self, Identity, Threads};
+use crate::graph::{self, Identity, Tracker};
 use crate::line::Entry;
 use crate::note::{ExchangeStart, Label, Note};
 use crate::project::ProjectLookups;
 use crate::shape::{ShapeLog, ShapedParser};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// One request an adapter claimed, as `Exchanges::begin` takes it.
 pub struct Opening<'a> {
@@ -26,7 +26,7 @@ pub struct Exchanges {
     clock: Clock,
     output: TapOutput,
     shapes: Option<Arc<ShapeLog>>,
-    threads: Arc<Mutex<Threads>>,
+    threads: Tracker,
     projects: ProjectLookups,
 }
 
@@ -37,7 +37,7 @@ impl Exchanges {
             clock: Clock::start(),
             output,
             shapes,
-            threads: Arc::default(),
+            threads: Tracker::default(),
             projects,
         }
     }

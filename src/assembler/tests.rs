@@ -283,22 +283,8 @@ fn a_reply_end_that_carries_a_null_message_id_names_no_message() {
 }
 
 #[test]
-fn a_record_without_a_request_names_no_step() {
-    // An unparsed request leaves no step, so it cannot collide with the real first one
-    let mut assembler = Assembler::default();
-    let events = vec![
-        unparsed(Side::Request),
-        reply_end_of_message(json!("end_turn"), Value::Null),
-    ];
-
-    let records = feed(&mut assembler, events, 0);
-
-    assert_eq!(records[0].step, None);
-}
-
-#[test]
-fn a_request_that_states_its_step_and_turn_gives_them_to_the_record() {
-    // It copies the step and turn of the conversation onto the record
+fn a_record_keeps_the_step_and_turn_its_request_states_for_steps_to_read() {
+    // It leaves the record's own step and turn unset; the request it carries still states them
     let mut assembler = Assembler::default();
     let mut request = conversation_event();
     let conversation = request.event.conversation_mut();
@@ -311,39 +297,7 @@ fn a_request_that_states_its_step_and_turn_gives_them_to_the_record() {
         0,
     );
 
-    assert_eq!((records[0].step, records[0].turn.as_deref()), (Some(3), Some("u2")));
-}
-
-#[test]
-fn a_request_that_states_no_step_is_step_one_and_has_no_turn() {
-    // A Claude exchange is one request, so the record is step 1 with no turn of its own
-    let mut assembler = Assembler::default();
-
-    let records = feed(
-        &mut assembler,
-        vec![
-            conversation_event(),
-            reply_end_of_message(json!("end_turn"), Value::Null),
-        ],
-        0,
-    );
-
-    assert_eq!((records[0].step, records[0].turn.as_deref()), (Some(1), None));
-}
-
-#[test]
-fn a_record_without_a_request_names_no_turn() {
-    // An unparsed request states neither a step nor a turn
-    let mut assembler = Assembler::default();
-
-    let records = feed(
-        &mut assembler,
-        vec![
-            unparsed(Side::Request),
-            reply_end_of_message(json!("end_turn"), Value::Null),
-        ],
-        0,
-    );
-
-    assert_eq!(records[0].turn, None);
+    let stated = records[0].conversation.as_ref().unwrap();
+    assert_eq!((stated.step, stated.turn.as_deref()), (Some(3), Some("u2")));
+    assert_eq!((records[0].step, &records[0].turn), (None, &None));
 }

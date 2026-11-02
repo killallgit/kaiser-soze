@@ -1,6 +1,5 @@
 use crate::capture::MAX_BUFFER_BYTES;
 use crate::event::{BlockDelta, BlockKind, BlockStart, Conversation, Delta, Event, Usage};
-use crate::graph::claimed;
 use crate::message::{Block, Message};
 use crate::record::{Record, Reply};
 use serde_json::{json, Value};
@@ -103,13 +102,6 @@ impl Assembler {
         records
     }
 
-    /// The step of the record the open reply is folded into; none while no conversation opened it.
-    pub fn step(&self) -> Option<u64> {
-        self.conversation
-            .as_ref()
-            .map(|conversation| claimed(conversation).step)
-    }
-
     /// Returns the open reply as an incomplete record, if any event was seen since the last record.
     pub fn finish(&mut self, dropped: u64) -> Option<Record> {
         self.seen.then(|| self.take_record(dropped, true))
@@ -157,7 +149,6 @@ impl Assembler {
         self.seen = false;
         let incomplete = cut || dropped > 0 || reply.unparsed || reply.truncated;
         let blocks = reply.blocks.into_values().map(OpenBlock::into_block).collect();
-        let claim = conversation.as_ref().map(claimed);
         Record {
             conversation,
             dropped,
@@ -170,9 +161,9 @@ impl Assembler {
                 usage: reply.usage,
             },
             session: None,
-            step: claim.as_ref().map(|claim| claim.step),
+            step: None,
             thread: None,
-            turn: claim.and_then(|claim| claim.turn),
+            turn: None,
         }
     }
 }
