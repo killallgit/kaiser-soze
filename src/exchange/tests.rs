@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 const ROOM: usize = 4096;
+const WAIT: Duration = Duration::from_secs(10);
 
 /// Exchanges writing to a sink nobody has to poll: `ended` reads the lines as they are written.
 struct Capture {
@@ -68,20 +69,30 @@ impl Capture {
     }
 
     async fn wait_for_refusals(&self, count: u64) {
-        while self.output.sink.dropped() < count {
-            tokio::task::yield_now().await;
-        }
+        let refused = async {
+            while self.output.sink.dropped() < count {
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::time::timeout(WAIT, refused)
+            .await
+            .expect("the sink refuses a line");
     }
 }
 
 async fn drain_ended(drained: &mut mpsc::Receiver<Line>, count: usize) -> Vec<Value> {
     let mut lines = Vec::new();
     let mut ends = 0;
-    while ends < count {
-        let line = drained.recv().await.expect("the sink stays open");
-        ends += usize::from(line.entry.event() == "exchange_end");
-        lines.push(serde_json::to_value(&line).unwrap());
-    }
+    let all_ended = async {
+        while ends < count {
+            let line = drained.recv().await.expect("the sink stays open");
+            ends += usize::from(line.entry.event() == "exchange_end");
+            lines.push(serde_json::to_value(&line).unwrap());
+        }
+    };
+    tokio::time::timeout(WAIT, all_ended)
+        .await
+        .expect("every exchange ends");
     lines
 }
 
