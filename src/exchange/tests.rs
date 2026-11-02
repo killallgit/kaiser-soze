@@ -901,7 +901,7 @@ async fn a_record_is_written_without_a_project_when_its_signal_is_dropped_unansw
 
 #[tokio::test]
 async fn a_reliable_write_waits_for_room_in_a_full_queue() {
-    // It delivers the start edge once the queue drains, where a plain write would drop it
+    // A one-slot sink still delivers the start, the start edge and the end, with nothing counted as dropped
     let mut capture = Capture::with_room(1);
 
     drop(capture.begin(
