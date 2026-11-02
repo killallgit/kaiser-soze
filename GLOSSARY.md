@@ -6,14 +6,14 @@ A local proxy between a coding agent and its model API. It forwards every byte a
 
 **Exchange**:
 One request an adapter claimed, and its reply; a WebSocket upgrade is one exchange for the whole socket, so an exchange holds one or more steps. A connection can carry many exchanges. Shown at `docs/common-format.md` ("The graph") and in `src/proxy/http.rs`, which starts one exchange per claimed request.
-_Avoid_: call, connection
+_Avoid_: call
 
 **Tap**:
 The copy of the stream that is read and turned into events while the original bytes go on to the agent untouched; what it writes is the tap file. Shown at `docs/objective.md` ("Robust").
 _Avoid_: log, capture output
 
 **Record**:
-One request and its reply, written as a single line of the tap file with its `event` key set to `record`; `incomplete` marks one whose reply never finished. It is not a live event, which is one line of a stream still in progress. Defined at `src/common/record.rs:6`.
+One request and its reply, written as a single line of the tap file with its `event` key set to `record`; `incomplete` marks one that lost data: a cut stream, dropped input, an unparsed reply or a truncated one. It is not a live event, which is one line of a stream still in progress. Defined at `src/common/record.rs:6`.
 _Avoid_: message
 
 **Step**:
@@ -25,16 +25,15 @@ The steps that answer one user prompt, named by the harness; a warm-up request n
 _Avoid_: message
 
 **Thread**:
-One agent's line of work inside a session: the main agent or a subagent. A subagent shares its parent's session, so a session can hold several threads; the main agent's thread has the session's own id. Defined at `docs/common-format.md` ("The graph").
-_Avoid_: conversation (the code's `Conversation` is the request payload)
+One agent's line of work inside a session: the main agent or a subagent. A subagent shares its parent's session, so a session can hold several threads; the main agent's thread has the session's own id. It is not the code's `Conversation`, which is the request payload. Defined at `docs/common-format.md` ("The graph").
 
 **Claim**:
-An adapter taking a request, or a host, as its own so the proxy decrypts and parses it. It is not the step a request states, which the code calls `claimed_step`. Defined at `src/adapter/mod.rs:62`.
+An adapter taking a request, or a host, as its own so the proxy decrypts and parses it. It is not the step a request states, which the code calls `claimed_step`. Defined by `Adapter::claim` and `claims_host` in `src/adapter/mod.rs`.
 _Avoid_: match, accept
 
 **Project**:
-The git repository a session worked in, named from its origin remote as `host/owner/repo`. It is not a Cargo crate or a working directory. Defined at `src/project/mod.rs:12`.
-_Avoid_: repo, workspace
+The git repository a session worked in. Its id is `host/owner/repo` from the origin remote; a repository with no origin remote, or a local-path remote, is named by its path. It is not a Cargo crate. Defined at `src/project/mod.rs:12` and, for the id, `src/project/id.rs`.
+_Avoid_: workspace
 
 **Edge**:
 One typed relation of the graph between two nodes, such as `in_thread` or `continues`. An edge whose far end is unknown is left out. Defined at `src/graph/edge.rs:15` and `src/graph/mod.rs:38`.
