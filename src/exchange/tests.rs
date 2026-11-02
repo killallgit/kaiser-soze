@@ -527,6 +527,21 @@ async fn a_record_writes_the_turn_and_continues_edges_of_its_step() {
 }
 
 #[tokio::test]
+async fn a_record_is_written_before_the_edges_of_its_step() {
+    // A reader meets the step's record before the turn edge that names it
+    let who = Identifying(Identity {
+        turn: Some("u1".into()),
+        ..Identity::default()
+    });
+
+    let lines = run_to_the_end(&who, closed_reply()).await;
+
+    let record = lines.iter().position(|line| line["event"] == "record").unwrap();
+    let turn = lines.iter().position(|line| line["payload"]["kind"] == "turn").unwrap();
+    assert!(record < turn);
+}
+
+#[tokio::test]
 async fn a_later_step_that_names_no_turn_does_not_take_the_header_turn() {
     // The header turn belongs to the first request of a socket; a later step may be a new turn
     let who = Identifying(Identity {

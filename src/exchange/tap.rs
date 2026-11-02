@@ -5,10 +5,10 @@ use super::ws::WsDecoder;
 use crate::adapter::{ExchangeParser, ResponseHead, TapInput};
 use crate::assembler::Assembler;
 use crate::capture::headers::redact_headers;
-use crate::event::Event;
-use crate::graph::claimed;
+use crate::graph::Steps;
 use crate::line::Entry;
 use crate::note::{self, Note, Transport};
+use crate::record::Record;
 use bytes::Bytes;
 use hyper::{Response, StatusCode};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,10 +44,12 @@ impl ExchangeTap {
     pub(crate) fn spawn(recorder: Recorder, clock: Clock, parser: Box<dyn ExchangeParser>) -> Self {
         let (tx, rx) = mpsc::channel(TAP_QUEUE);
         let stats = Arc::new(Stats::new());
+        let steps = Steps::join(recorder.threads.as_ref(), recorder.exchange, &recorder.identity);
         tokio::spawn(
             TapTask {
                 rx,
                 parser,
+                steps,
                 recorder: recorder.clone(),
                 clock,
                 stats: stats.clone(),
@@ -139,6 +141,7 @@ impl ExchangeTap {
 struct TapTask {
     rx: mpsc::Receiver<(Stamp, Msg)>,
     parser: Box<dyn ExchangeParser>,
+    steps: Steps,
     recorder: Recorder,
     clock: Clock,
     stats: Arc<Stats>,
@@ -149,6 +152,7 @@ impl TapTask {
         let Self {
             mut rx,
             mut parser,
+            mut steps,
             recorder,
             clock,
             stats,
@@ -181,21 +185,30 @@ impl TapTask {
                 }
             };
             for event in inputs.into_iter().flat_map(|input| parser.feed(input)) {
-                let step = match &event.event {
-                    Event::Conversation(conversation) => Some(claimed(conversation).step),
-                    _ => assembler.step(),
-                };
+                let step = steps.of_line(&event.event);
                 let records = assembler.push(&event.event, dropped());
                 recorder.write(stamp, Entry::Event(event.event), (event.start, event.end), step);
                 for record in records {
-                    recorder.write_record(stamp, record).await;
+                    write_record(&recorder, &steps, stamp, record).await;
                 }
             }
         }
         if let Some(record) = assembler.finish(dropped()) {
-            recorder.write_record(clock.stamp(), record).await;
+            write_record(&recorder, &steps, clock.stamp(), record).await;
         }
         let end = Note::ExchangeEnd(stats.summary(recorder.output.sink.dropped()));
         recorder.write_reliable(clock.stamp(), Entry::Note(end)).await;
     }
+}
+
+/// Writes a record once its project is settled and the earlier exchanges of its thread have written
+/// theirs, then the edges of its step, then lets the later exchanges of the thread go ahead.
+async fn write_record(recorder: &Recorder, steps: &Steps, stamp: Stamp, mut record: Record) {
+    let project = recorder.settled_project().await;
+    let edges = steps.link(&mut record).await;
+    recorder.write_record(stamp, record, project).await;
+    for edge in edges {
+        recorder.write_edge(stamp, edge).await;
+    }
+    steps.leave();
 }

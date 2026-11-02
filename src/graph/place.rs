@@ -47,7 +47,7 @@ impl Queue {
 }
 
 /// An exchange's place in line among the exchanges of its thread, held until the exchange ends.
-pub struct Place {
+pub(super) struct Place {
     queue: Arc<Queue>,
     thread: String,
     exchange: u64,
@@ -58,7 +58,7 @@ impl Place {
     /// Waits until every earlier exchange of the thread has written its first record or ended, or `limit`
     /// has passed, so an exchange that never finishes cannot hold the thread's records back for good.
     /// Once the exchange has left, its later records do not wait again.
-    pub async fn wait_for_turn(&self, limit: Duration) {
+    pub(super) async fn wait_for_turn(&self, limit: Duration) {
         if self.left.load(Ordering::Acquire) {
             return;
         }
@@ -79,7 +79,7 @@ impl Place {
     }
 
     /// Lets later exchanges of the thread go ahead. Ending the exchange does the same.
-    pub fn leave(&self) {
+    pub(super) fn leave(&self) {
         self.left.store(true, Ordering::Release);
         self.queue.leave(&self.thread, self.exchange);
     }

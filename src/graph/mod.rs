@@ -2,17 +2,19 @@ mod calls;
 mod edge;
 mod place;
 mod step;
+mod steps;
 
 use crate::project::Project;
 use calls::Calls;
-use place::Queue;
+use place::{Place, Queue};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use step::Step;
 
 pub use edge::{Edge, EdgeKind};
-pub use place::Place;
-pub use step::{claimed, named_turn, Claimed, Step};
+pub use step::named_turn;
+pub(crate) use steps::{Steps, Tracker};
 
 /// Whether a thread is the main agent or a subagent; `Unknown` unless the headers say so outright.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
@@ -74,7 +76,7 @@ struct Seen {
 /// Remembers the last step and the open tool calls of each thread, bounded, so a step can say which
 /// step it continues and which call its results answer.
 #[derive(Default)]
-pub struct Threads {
+struct Threads {
     seen: HashMap<String, Seen>,
     order: VecDeque<String>,
     calls: Calls,
@@ -83,14 +85,14 @@ pub struct Threads {
 
 impl Threads {
     /// Puts an exchange in line among the exchanges of its thread, so its records can wait for earlier ones.
-    pub fn join(&self, thread: &str, exchange: u64) -> Place {
+    fn join(&self, thread: &str, exchange: u64) -> Place {
         self.queue.join(thread, exchange)
     }
 
     /// The `turn`, `continues` and `calls` edges one finished step adds, then remembers the step.
     /// A previous message id continues the step that replied with it, or nothing when that
     /// reply is unknown; without one the step continues the thread's last step.
-    pub fn edges(&mut self, step: &Step) -> Vec<Edge> {
+    fn edges(&mut self, step: &Step) -> Vec<Edge> {
         let node = format!("step:{}.{}", step.exchange, step.n);
         let mut edges = Vec::new();
         if let Some(turn) = &step.turn {
