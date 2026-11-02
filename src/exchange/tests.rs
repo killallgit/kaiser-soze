@@ -68,6 +68,25 @@ impl Capture {
         drain_ended(&mut self.drained, count).await
     }
 
+    /// The lines written from now up to the record of `exchange`.
+    async fn up_to_the_record_of(&mut self, exchange: u64) -> Vec<Value> {
+        let mut lines = Vec::new();
+        let recorded = async {
+            loop {
+                let line = serde_json::to_value(self.drained.recv().await.expect("the sink stays open")).unwrap();
+                let found = line["exchange"] == exchange && line["event"] == "record";
+                lines.push(line);
+                if found {
+                    break;
+                }
+            }
+        };
+        tokio::time::timeout(WAIT, recorded)
+            .await
+            .expect("the exchange writes its record");
+        lines
+    }
+
     async fn wait_for_refusals(&self, count: u64) {
         let refused = async {
             while self.output.sink.dropped() < count {
@@ -932,6 +951,79 @@ async fn a_reliable_write_waits_for_room_in_a_full_queue() {
     let kinds: Vec<&str> = lines.iter().map(|line| line["event"].as_str().unwrap()).collect();
     assert_eq!(kinds, ["exchange_start", "edge", "exchange_end"]);
     assert_eq!(exchange_end_of(&lines)["payload"]["sink_dropped"], 0);
+}
+
+/// Lets every spawned task run until it waits; the single-threaded test runtime makes this deterministic.
+async fn let_the_tasks_run() {
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tokio::test]
+async fn a_start_edge_that_meets_a_full_sink_waits_for_room() {
+    // The start edge waits behind exchange_start in a one-slot sink nobody drains yet, and is written once it drains
+    let mut capture = Capture::with_room(1);
+
+    drop(capture.begin(
+        &on_thread("t1"),
+        None,
+        Emits {
+            events: Vec::new(),
+            release: None,
+        },
+    ));
+    let_the_tasks_run().await;
+    let lines = capture.ended(1).await;
+
+    let kinds: Vec<&str> = lines.iter().map(|line| line["event"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["exchange_start", "edge", "exchange_end"]);
+}
+
+#[tokio::test]
+async fn a_later_exchange_of_a_thread_records_right_after_the_earlier_one_writes_its_step_edges() {
+    // The later record comes after the earlier step's turn and continues edges, without waiting for the earlier exchange to end
+    let who = Identifying(Identity {
+        thread: Some("t1".into()),
+        turn: Some("u1".into()),
+        ..Identity::default()
+    });
+    let mut capture = Capture::with_room(1);
+    capture.run(&who, None, closed_reply()).await;
+    let earlier = capture.begin(
+        &who,
+        None,
+        Emits {
+            events: closed_reply(),
+            release: None,
+        },
+    );
+    let later = capture.begin(
+        &who,
+        None,
+        Emits {
+            events: closed_reply(),
+            release: None,
+        },
+    );
+    earlier.send(TapInput::ResponseEnd);
+    let_the_tasks_run().await;
+
+    later.send(TapInput::ResponseEnd);
+    let started = Instant::now();
+    let lines = capture.up_to_the_record_of(later.exchange_id()).await;
+    let waited = started.elapsed();
+
+    let position = |exchange: u64, kind: &str| {
+        lines
+            .iter()
+            .position(|line| line["exchange"] == exchange && (line["event"] == kind || line["payload"]["kind"] == kind))
+            .unwrap()
+    };
+    let later_record = position(later.exchange_id(), "record");
+    assert!(position(earlier.exchange_id(), "turn") < later_record);
+    assert!(position(earlier.exchange_id(), "continues") < later_record);
+    assert!(waited < Duration::from_secs(1));
 }
 
 #[tokio::test]
