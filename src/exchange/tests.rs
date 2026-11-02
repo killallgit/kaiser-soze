@@ -854,14 +854,14 @@ async fn a_record_carries_a_project_the_lookup_found_at_once() {
 async fn a_lookup_that_finds_nothing_lets_the_record_go_without_waiting() {
     // It does not wait out the bound once the lookup has answered
     let started = Instant::now();
-    let lookups = ProjectLookups::new(ProjectCache::locating_with(|_| None));
+    let lookups = ProjectLookups::new(ProjectCache::locating_with(|_| None)).with_wait(Duration::from_secs(5));
 
     let lines = Capture::finding_projects(lookups)
         .run(&nobody(), Some(&labelled("/nowhere")), closed_reply())
         .await;
 
     assert!(record_of(&lines)["payload"].get("project").is_none());
-    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(started.elapsed() < Duration::from_secs(2));
 }
 
 #[tokio::test]
