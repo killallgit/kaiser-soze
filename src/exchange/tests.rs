@@ -1,4 +1,3 @@
-use super::recorder::Tracking;
 use super::*;
 use crate::adapter::event::*;
 use crate::adapter::{Adapter, ExchangeParser, RequestHead, TapEvent, TapInput};
@@ -901,36 +900,6 @@ async fn a_lookup_that_finds_nothing_lets_the_record_go_without_waiting() {
 
     assert!(record_of(&lines)["payload"].get("project").is_none());
     assert!(started.elapsed() < Duration::from_secs(2));
-}
-
-#[tokio::test]
-async fn a_record_is_written_without_a_project_when_its_signal_is_dropped_unanswered() {
-    // It does not wait for a lookup that can no longer answer
-    let (output, mut drained) = TapOutput::detached(ROOM).unwrap();
-    let (recorder, signal) = Recorder::start(
-        output,
-        1,
-        "test",
-        Tracking {
-            identity: Identity::default(),
-            threads: None,
-        },
-    );
-    drop(signal);
-    let tap = ExchangeTap::spawn(
-        recorder,
-        Clock::start(),
-        Box::new(Emits {
-            events: closed_reply(),
-            release: None,
-        }),
-    );
-    tap.send(TapInput::ResponseEnd);
-    drop(tap);
-
-    let lines = drain_ended(&mut drained, 1).await;
-
-    assert!(record_of(&lines)["payload"].get("project").is_none());
 }
 
 #[tokio::test]

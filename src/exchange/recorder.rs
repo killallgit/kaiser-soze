@@ -1,31 +1,20 @@
 use super::clock::Stamp;
 use super::TapOutput;
-use crate::graph::{Edge, Identity, Tracker};
+use crate::graph::{Edge, Identity};
 use crate::line::{Entry, Line};
 use crate::record::Record;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::watch;
-
-/// `None` while the lookup runs; then `Some` of what it found.
-type ProjectLookup = Option<Option<String>>;
 
 #[derive(Clone)]
-pub(crate) struct Recorder {
+pub(super) struct Recorder {
     pub(super) output: TapOutput,
     pub(super) exchange: u64,
     adapter: &'static str,
     refused: Arc<AtomicU64>,
-    pub(super) identity: Identity,
+    identity: Identity,
     session: Option<Arc<str>>,
     thread: Option<Arc<str>>,
-    project: Arc<watch::Sender<ProjectLookup>>,
-    pub(super) threads: Option<Tracker>,
-}
-
-pub(super) struct Tracking {
-    pub identity: Identity,
-    pub threads: Option<Tracker>,
 }
 
 impl Recorder {
@@ -38,32 +27,16 @@ impl Recorder {
             identity: Identity::default(),
             session: None,
             thread: None,
-            project: Arc::new(watch::channel(Some(None)).0),
-            threads: None,
         }
     }
 
-    /// Starts a tracked recorder with the signal that settles or releases its project wait.
-    pub(super) fn start(
-        output: TapOutput,
-        exchange: u64,
-        adapter: &'static str,
-        tracking: Tracking,
-    ) -> (Self, ProjectSignal) {
+    /// Starts a recorder that stamps the exchange's ids on its lines and records.
+    pub(super) fn start(output: TapOutput, exchange: u64, adapter: &'static str, identity: Identity) -> Self {
         let mut recorder = Self::new(output, exchange, adapter);
-        recorder.session = tracking.identity.session.as_deref().map(Arc::from);
-        recorder.thread = tracking.identity.thread.as_deref().map(Arc::from);
-        recorder.identity = tracking.identity;
-        recorder.threads = tracking.threads;
-        recorder.project.send_replace(None);
-        let signal = ProjectSignal(recorder.clone());
-        (recorder, signal)
-    }
-
-    pub(super) async fn settled_project(&self) -> Option<String> {
-        let mut lookup = self.project.subscribe();
-        let found = lookup.wait_for(Option::is_some).await.ok()?.clone();
-        found.flatten()
+        recorder.session = identity.session.as_deref().map(Arc::from);
+        recorder.thread = identity.thread.as_deref().map(Arc::from);
+        recorder.identity = identity;
+        recorder
     }
 
     fn with_ids(&self, mut record: Record, project: Option<String>) -> Record {
@@ -119,27 +92,5 @@ impl Recorder {
     pub(super) async fn write_record(&self, stamp: Stamp, record: Record, project: Option<String>) {
         let record = self.with_ids(record, project);
         self.write_reliable(stamp, Entry::Record(Box::new(record))).await;
-    }
-}
-
-/// Ends a recorder's wait for its project: later records carry the project when `settle` gave one.
-/// Dropped unanswered, it settles with no project, so a record never waits for a lookup that cannot come.
-pub(super) struct ProjectSignal(Recorder);
-
-impl ProjectSignal {
-    pub(super) fn settle(self, project: Option<String>) {
-        self.0.project.send_replace(Some(project));
-    }
-}
-
-impl Drop for ProjectSignal {
-    fn drop(&mut self) {
-        self.0.project.send_if_modified(|lookup| {
-            let unanswered = lookup.is_none();
-            if unanswered {
-                *lookup = Some(None);
-            }
-            unanswered
-        });
     }
 }

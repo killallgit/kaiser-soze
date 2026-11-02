@@ -1,7 +1,9 @@
-use super::recorder::{ProjectSignal, Tracking};
-use super::{Clock, ExchangeTap, Recorder, TapOutput};
+use super::project_task::ProjectTask;
+use super::recorder::Recorder;
+use super::tap::Recording;
+use super::{Clock, ExchangeTap, TapOutput};
 use crate::adapter::{Adapter, ExchangeParser, RequestHead};
-use crate::graph::{self, Identity, Tracker};
+use crate::graph::{Steps, Tracker};
 use crate::line::Entry;
 use crate::note::{ExchangeStart, Label, Note};
 use crate::project::ProjectLookups;
@@ -47,34 +49,28 @@ impl Exchanges {
         let start = exchange_start(&opening);
         let exchange = self.next_exchange();
         let identity = opening.adapter.identity(opening.head);
-        let (recorder, signal) = Recorder::start(
-            self.output.clone(),
-            exchange,
-            opening.adapter.name(),
-            Tracking {
-                identity: identity.clone(),
-                threads: Some(self.threads.clone()),
-            },
-        );
+        // Joined before the parser is built, so nothing widens the gap between the id and the place in line
+        let steps = Steps::join(Some(&self.threads), exchange, &identity);
+        let recorder = Recorder::start(self.output.clone(), exchange, opening.adapter.name(), identity.clone());
         let parser: Box<dyn ExchangeParser> = match &self.shapes {
             Some(log) => Box::new(ShapedParser::new(log.clone(), opening.parser, exchange, opening.head)),
             None => opening.parser,
         };
-        let tap = ExchangeTap::spawn(recorder.clone(), self.clock, parser);
-        tap.note(start);
-        tokio::spawn(
-            StartEdges {
-                recorder,
-                clock: self.clock,
-                identity,
-                dir: opening.label.map(|label| PathBuf::from(&label.dir)),
-                projects: self.projects.clone(),
-                signal,
-                _open: tap.clone(),
-            }
-            .write(),
-        );
-        tap
+        recorder.write(self.clock.stamp(), Entry::Note(start), (0, 0), None);
+        let (project, start_edges) = ProjectTask {
+            recorder: recorder.clone(),
+            clock: self.clock,
+            identity,
+            dir: opening.label.map(|label| PathBuf::from(&label.dir)),
+            projects: self.projects.clone(),
+        }
+        .spawn();
+        let recording = Recording {
+            recorder,
+            steps,
+            project,
+        };
+        ExchangeTap::spawn(recording, self.clock, parser, start_edges)
     }
 
     /// Writes one line under an exchange id of its own, for something that happened without an exchange.
@@ -98,29 +94,4 @@ fn exchange_start(opening: &Opening<'_>) -> Note {
         path: opening.head.path.clone(),
         upgrade: opening.upgrade,
     })
-}
-
-/// Finds the project of the exchange's directory, settles the record's project signal, then writes the edges.
-struct StartEdges {
-    recorder: Recorder,
-    clock: Clock,
-    identity: Identity,
-    dir: Option<PathBuf>,
-    projects: ProjectLookups,
-    signal: ProjectSignal,
-    /// Keeps the parser loop, and so `exchange_end`, from finishing before the edges are written.
-    _open: ExchangeTap,
-}
-
-impl StartEdges {
-    async fn write(self) {
-        let project = match self.dir {
-            Some(dir) => self.projects.find(dir).await,
-            None => None,
-        };
-        self.signal.settle(project.as_ref().map(|project| project.id.clone()));
-        for edge in graph::edges(self.recorder.exchange, &self.identity, project.as_ref()) {
-            self.recorder.write_edge(self.clock.stamp(), edge).await;
-        }
-    }
 }
