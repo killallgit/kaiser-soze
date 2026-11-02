@@ -1,6 +1,6 @@
 use crate::adapter::body::is_encoded;
 use crate::adapter::{header, Adapter, ExchangeParser, RequestHead};
-use crate::graph::{named_turn, Identity, ThreadRole};
+use crate::graph::{Identity, ThreadRole};
 use serde_json::Value;
 
 mod history;
@@ -11,6 +11,11 @@ mod stream;
 mod tests;
 
 pub use parser::CodexParser;
+
+/// The turn a request names; an empty id, as a warm-up request sends, names none.
+fn named_turn(turn: Option<&str>) -> Option<String> {
+    turn.filter(|turn| !turn.is_empty()).map(String::from)
+}
 
 pub struct CodexAdapter {
     hosts: Vec<String>,

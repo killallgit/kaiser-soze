@@ -1,4 +1,5 @@
 use super::history::History;
+use super::named_turn;
 use super::stream::stream_event;
 use crate::adapter::body::{is_encoded, RequestBuffer};
 use crate::adapter::event::unparsed;
@@ -6,7 +7,6 @@ use crate::adapter::sse::{SseEvent, SseSplitter};
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
 use crate::common::event::{Conversation, Event};
 use crate::common::*;
-use crate::graph::named_turn;
 use serde_json::Value;
 
 pub struct CodexParser {
