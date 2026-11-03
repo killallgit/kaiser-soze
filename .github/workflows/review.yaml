@@ -6,7 +6,7 @@ jobs:
   pr_agent_job:
     if: >-
       github.event.issue.pull_request
-      && github.event.comment.author_association == 'OWNER'
+      && contains(fromJSON('["MEMBER","OWNER"]'), github.event.comment.author_association)
       && startsWith(github.event.comment.body, '/')
     runs-on: ubuntu-latest
     permissions:
