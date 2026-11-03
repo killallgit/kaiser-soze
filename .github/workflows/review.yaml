@@ -1,0 +1,22 @@
+# Manual review: comment /review on a pull request. Runs from the default branch's copy of this file.
+on:
+  issue_comment:
+    types: [created]
+jobs:
+  pr_agent_job:
+    if: >-
+      github.event.issue.pull_request
+      && github.event.comment.author_association == 'OWNER'
+      && startsWith(github.event.comment.body, '/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    name: Run pr agent on a pull request comment
+    steps:
+      - name: PR Agent action step
+        uses: docker://pragent/pr-agent:0.48.0-github_action
+        env:
+          OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

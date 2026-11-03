@@ -1,0 +1,8 @@
+[pr_reviewer]
+extra_instructions = """\
+Check these rules first.
+- Forwarding never waits on the tap: a slow or failing parser drops and counts, and never delays or alters the bytes the agent receives.
+- Message content is never printed, logged or put in a test assertion; tests assert on types, values and events.
+- Credential headers are redacted before anything is written.
+- Dependency versions are exact (=x.y.z).
+"""
