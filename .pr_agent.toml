@@ -1,8 +1,30 @@
+# Tooling, generated and design-note paths: nothing here is code under review.
+[ignore]
+glob = [
+  "Cargo.lock",
+  "skills-lock.json",
+  ".beads/**",
+  ".specify/**",
+  ".opencode/**",
+  ".agents/**",
+  ".claude/**",
+  "specs/**",
+]
+
 [pr_reviewer]
+num_max_findings = 5
+inline_key_issues = true
+require_estimate_effort_to_review = false
+require_ticket_analysis_review = false
+enable_review_labels_effort = false
 extra_instructions = """\
+This is a Rust crate: a local streaming HTTP/WebSocket proxy that taps a copy of agent traffic into events.
+Report only concrete correctness, security, reliability or performance defects, and give the failure scenario for each: the input or state, then the wrong result.
 Check these rules first.
 - Forwarding never waits on the tap: a slow or failing parser drops and counts, and never delays or alters the bytes the agent receives.
-- Message content is never printed, logged or put in a test assertion; tests assert on types, values and events.
-- Credential headers are redacted before anything is written.
-- Dependency versions are exact (=x.y.z).
+- Look for blocking calls in async code, locks held across await points, cancellation and task lifetimes, channel backpressure, and unbounded buffers.
+- Preserve forwarded bytes, event ordering, the serialization contracts and the credential redaction. Credential headers are redacted before anything is written.
+- Message content is never printed, logged or put in a test assertion. Tests use synthetic fixtures and assert on types, values and events, never on log or error text.
+- Functions with more than 3-4 arguments take a context struct. Dead code is deleted. Dependency versions are exact (=x.y.z).
+Leave out style, formatting, naming taste, docstring coverage, comments that restate code, speculative abstractions, and anything rustfmt or Clippy already enforces in CI. Keep findings within the changed code.
 """
