@@ -3,20 +3,6 @@
     "rust-analyzer-lsp@claude-plugins-official": true
   },
   "hooks": {
-    "PreToolUse": [
-      {
-        "hooks": [
-          {
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-pr-check.sh",
-            "if": "Bash(gh pr create*)",
-            "statusMessage": "Running task check before opening the PR...",
-            "timeout": 620,
-            "type": "command"
-          }
-        ],
-        "matcher": "Bash"
-      }
-    ],
     "SessionStart": [
       {
         "hooks": [

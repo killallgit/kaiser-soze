@@ -1,8 +1,10 @@
 # Contract: Records in the Tap File
 
-Consumer: any application that reads the JSONL tap file. One JSON object per line. Every line has the envelope in [data-model.md](../data-model.md). The lines differ in `event` and `payload`, and in the optional `session`, `thread`, `thread_role` and `step` below.
+Consumer: any application that reads the JSONL tap file. One JSON object per line. Every line has the [envelope](#envelope). The lines differ in `event` and `payload`, and in the optional `session`, `thread`, `thread_role` and `step` below.
 
 ## Envelope
+
+Fields: `run_id` (opaque capture epoch), `sequence` (1-based emission order within that epoch), `exchange` (id within that epoch), `adapter` (name), `event` (kind), `mono_us`, `wall_ms`, `start`, `end` (byte offsets), `schema_version`, `payload`, and when known `session`, `thread`, `thread_role` (with `thread`) and (on live event lines) `step`.
 
 Every tap line carries a nonempty string `run_id`, including `tunnel`, `unsupported`, `edge`, `record` and `exchange_end`. It is an opaque random capture identity generated once before a Proxy instance can emit a line and shared by all its exchanges and cloned recorders. The writer uses 128 random bits encoded as hexadecimal; consumers treat the string as opaque. A new Proxy instance gets a fresh identity even when it appends to the same tap file and starts again at exchange 1. Generation uses the existing crypto provider at startup, never the forwarding path.
 

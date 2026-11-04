@@ -166,7 +166,7 @@ These keys apply to the tap, are read at startup only (not reloaded on SIGHUP), 
 - **Images** are a reference, content type and size, never the bytes.
 - **`unsupported`** marks a request on a claimed host that the adapter does not read (host and path only). **`unparsed`** marks a body that could not be read: still encoded, or over 32 MiB.
 
-Line shapes: [specs/002-agent-traffic-capture/contracts/records.md](specs/002-agent-traffic-capture/contracts/records.md). To support a new tool, implement the `Adapter` trait: name its hosts and return a parser per request.
+Line shapes: [docs/tap-records.md](docs/tap-records.md). To support a new tool, implement the `Adapter` trait: name its hosts and return a parser per request.
 
 ## Tasks
 
