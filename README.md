@@ -108,7 +108,7 @@ stream = false
 
 Bare `--live` and `--stream` enable their setting; `--live=false` and `--stream=false` disable a configured value. Repeating a valued option uses its last value, so flags forwarded by `task dev -- ...` still override the script's defaults. An explicit log level wins over the stream-dependent default (`debug` with streaming, `info` otherwise); the log-format default is human on a terminal and JSON otherwise. The dev script's explicit capture paths, port and live flag (unless `LIVE=0`) take precedence over config files.
 
-Configuration is loaded at startup. SIGHUP reloads the live logging settings; every other key, including `[retention]`, takes effect on restart. A config file may set `version`; absent means 1. A newer version than this build reads stops `soze` at startup, and on reload the running settings stay.
+Configuration is loaded at startup. SIGHUP reloads the live logging settings; every other key, including `[retention]`, takes effect on restart. A config file may set `version` to 1; absent means 1. Any other value stops `soze` at startup, and on reload the running settings stay.
 
 ## The live view
 

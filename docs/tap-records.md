@@ -70,10 +70,6 @@ A reply holds only text, reasoning and tool_call blocks. tool_result and image b
 
 `input`, `output`, `cache_read`, `cache_write`, `reasoning`. Counts, or null when the agent did not send one.
 
-## State of an exchange
-
-`open` (request seen), then `streaming` (first reply event), then `ended` (reply end marker) or `cut` (stream closed first). `cut` sets `incomplete`.
-
 ## Guarantees
 
 - Within an exchange identified by `(run_id, exchange)`, lines appear in the order the events occurred.

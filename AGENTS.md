@@ -22,7 +22,8 @@ wrapper and service shell tests, and names every check that failed. To test a si
 - **Never in the way.** Forwarding never waits on the tap. A slow or failing parser drops and
   counts; it never delays, alters or breaks the bytes the agent receives.
 - **Tests first.** Write the failing test, then the code. Fixtures are synthetic, never captured
-  real traffic. Each test follows Assemble, Act, Assert, with a comment describing the assertion. Unit and integration tests stay separate.
+  real traffic. Each test follows Assemble, Act, Assert, with a comment describing the assertion.
+  Unit and integration tests stay separate.
 - **No log or error text in tests.** Assert on types, values and events, never on message strings.
   A failure is checked by its concrete error type; a test that cannot do that signals a refactor.
 - **Data safety.**
