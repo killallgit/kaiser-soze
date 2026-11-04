@@ -9,7 +9,7 @@ use serde_json::Value;
 
 #[test]
 fn builds_each_live_event_with_its_contract_kind_and_fields() {
-    // It names the kinds in contracts/records.md and carries only their fields
+    // It names the kinds in docs/tap-records.md and carries only their fields
     let conversation = conversation(
         json!("sys"),
         json!([{"name": "shell"}]),

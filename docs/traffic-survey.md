@@ -1,7 +1,7 @@
 # Traffic survey
 
 Shapes only, from one harmless prompt per harness through the proxy (2026-10-18). No content, no ids.
-Roadmap item 1; it decides which mappings exist.
+It decides which mappings exist.
 
 ## Results
 
@@ -30,7 +30,7 @@ Roadmap item 1; it decides which mappings exist.
 
 ## Run 2: four scenarios per harness (claude, codex)
 
-Scenarios: plain text, one tool call, a second turn, a longer reply. Shapes of the tap output only, so this shows what the current mapping keeps, not the raw wire. Wire fingerprints need raw frames, which the proxy does not store yet (roadmap item 13).
+Scenarios: plain text, one tool call, a second turn, a longer reply. Shapes of the tap output only, so this shows what the current mapping keeps, not the raw wire.
 
 | | `claude` | `codex` |
 |---|---|---|
@@ -80,4 +80,4 @@ A Codex request shape, abbreviated:
   "input":[{"type":"string=custom_tool_call_output","call_id":"string","output":[{"type":"string=input_text","text":"string"}]}]}}
 ```
 
-One run of both harnesses gave 50 distinct shapes: 16 Anthropic and 34 Codex event, request and header shapes. These are the raw material for the schema fingerprints in roadmap item 13.
+One run of both harnesses gave 50 distinct shapes: 16 Anthropic and 34 Codex event, request and header shapes.

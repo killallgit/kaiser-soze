@@ -4,11 +4,8 @@ glob = [
   "Cargo.lock",
   "skills-lock.json",
   ".beads/**",
-  ".specify/**",
-  ".opencode/**",
   ".agents/**",
   ".claude/**",
-  "specs/**",
 ]
 
 [pr_reviewer]

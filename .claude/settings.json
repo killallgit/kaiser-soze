@@ -1,32 +1,19 @@
 {
-  "enabledPlugins": {
-    "rust-analyzer-lsp@claude-plugins-official": true
-  },
   "hooks": {
-    "PreToolUse": [
-      {
-        "hooks": [
-          {
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-pr-check.sh",
-            "if": "Bash(gh pr create*)",
-            "statusMessage": "Running task check before opening the PR...",
-            "timeout": 620,
-            "type": "command"
-          }
-        ],
-        "matcher": "Bash"
-      }
-    ],
+    "PreToolUse": [],
     "SessionStart": [
       {
+        "matcher": "",
         "hooks": [
           {
-            "command": "bd prime --hook-json",
-            "type": "command"
+            "type": "command",
+            "command": "bd prime --hook-json"
           }
-        ],
-        "matcher": ""
+        ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "rust-analyzer-lsp@claude-plugins-official": true
   }
 }
