@@ -54,6 +54,26 @@ Every emitted tap envelope carries a `sequence`: a strictly increasing, 1-based 
 |---------|-----------|
 | `record` | `{conversation, reply: {message, usage, stop_reason, message_id?}, incomplete, dropped, step, turn?, project?, session?, thread?}`; `step` is the conversation's step, 1 when it names none (Claude Code); `turn` is the conversation's turn, else the exchange's header turn. A turn id groups replies; it does not say the turn ended |
 
+## Blocks
+
+| Kind | Fields |
+|------|--------|
+| text | `text` |
+| reasoning | `text`, or `encrypted`; optional `signature` |
+| tool_call | `id`, `name`, `input` |
+| tool_result | `call_id`, `output`, `is_error` |
+| image | `ref`, `content_type`, `size` |
+
+A reply holds only text, reasoning and tool_call blocks. tool_result and image blocks appear in requests.
+
+## Usage
+
+`input`, `output`, `cache_read`, `cache_write`, `reasoning`. Counts, or null when the agent did not send one.
+
+## State of an exchange
+
+`open` (request seen), then `streaming` (first reply event), then `ended` (reply end marker) or `cut` (stream closed first). `cut` sets `incomplete`.
+
 ## Guarantees
 
 - Within an exchange identified by `(run_id, exchange)`, lines appear in the order the events occurred.
