@@ -67,12 +67,14 @@ Each commit message is one plain sentence, with no attribution lines. `CLAUDE.lo
 committed.
 
 Integrate by rebasing the lane onto `main`, running the gate, and opening a pull request. Merge
-only after all CI checks pass. Nothing is pushed without the user's request.
+only after all CI checks pass. Commit and code push require the user's request; report proposed
+commands at handoff otherwise. Beads data stays local; do not push Beads or Dolt state.
 
 To get a pull request reviewed, use the `independent-review` skill
 (`killall-skills:independent-review`); it holds the review rules.
 
 ## Beads
 
-For task tracking, persistent project memory, or implementation handoff, use the `beads` skill and
-run `bd prime` first.
+For task tracking, persistent project memory, or implementation handoff, read
+[the Beads skill](.agents/skills/beads/SKILL.md) and run `bd prime` first. The Git and worktrees
+section above governs commit and sync authority.
