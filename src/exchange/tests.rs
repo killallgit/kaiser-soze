@@ -57,7 +57,7 @@ impl Capture {
     /// Begins an exchange whose reply ends with `events`, ends it, and returns the lines up to its `exchange_end`.
     async fn run(&mut self, adapter: &dyn Adapter, label: Option<&Label>, events: Vec<TapEvent>) -> Vec<Value> {
         let tap = self.begin(adapter, label, Emits { events, release: None });
-        tap.send(TapInput::ResponseEnd);
+        tap.end(Side::Response);
         drop(tap);
         self.ended(1).await
     }
@@ -128,6 +128,8 @@ fn exchange_end_of(lines: &[Value]) -> &Value {
 
 struct BlocksUntilReleased {
     release: Receiver<()>,
+    /// Told once, when the first input has been taken off the queue and the parser starts to block.
+    entered: std::sync::mpsc::Sender<()>,
     blocked: bool,
     messages_seen: Arc<Mutex<Vec<String>>>,
 }
@@ -135,6 +137,7 @@ struct BlocksUntilReleased {
 impl ExchangeParser for BlocksUntilReleased {
     fn feed(&mut self, input: TapInput) -> Vec<TapEvent> {
         if !std::mem::replace(&mut self.blocked, true) {
+            self.entered.send(()).ok();
             self.release.recv().ok();
         }
         if let TapInput::WsMessage { text, .. } = input {
@@ -148,15 +151,18 @@ struct Fixture {
     capture: Capture,
     tap: ExchangeTap,
     release: std::sync::mpsc::Sender<()>,
+    entered: Receiver<()>,
     messages_seen: Arc<Mutex<Vec<String>>>,
 }
 
 fn blocked_tap() -> Fixture {
     let capture = Capture::new();
     let (release, receiver) = std::sync::mpsc::channel();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
     let messages_seen = Arc::<Mutex<Vec<String>>>::default();
     let parser = BlocksUntilReleased {
         release: receiver,
+        entered: entered_tx,
         blocked: false,
         messages_seen: messages_seen.clone(),
     };
@@ -165,6 +171,7 @@ fn blocked_tap() -> Fixture {
         capture,
         tap,
         release,
+        entered,
         messages_seen,
     }
 }
@@ -180,7 +187,7 @@ async fn a_stalled_parser_drops_and_counts_instead_of_blocking_the_sender() {
     } = blocked_tap();
 
     for _ in 0..1000 {
-        tap.send(TapInput::ResponseBody(Bytes::from_static(b"x")));
+        tap.bytes(Side::Response, Bytes::from_static(b"x"));
     }
     release.send(()).unwrap();
     drop(tap);
@@ -196,13 +203,17 @@ async fn a_dropped_websocket_chunk_stops_decoding_only_from_the_gap() {
         mut capture,
         tap,
         release,
+        entered,
         messages_seen,
     } = blocked_tap();
     let before_gap = Bytes::from_static(&[0x81, 0x01, b'a']);
     let after_gap = Bytes::from_static(&[0x81, 0x01, b'b']);
 
+    tap.note_response_head(&response(101, &[]));
+    // The parser blocks on the head, so the queue is empty when the frames arrive
+    entered.recv_timeout(WAIT).expect("the parser takes the response head");
     for _ in 0..300 {
-        tap.send_ws_bytes(true, before_gap.clone(), Duration::ZERO);
+        tap.bytes(Side::Request, before_gap.clone());
     }
     release.send(()).unwrap();
     // The queue has room again once the parser has drained it, so this frame is queued, not refused
@@ -214,14 +225,133 @@ async fn a_dropped_websocket_chunk_stops_decoding_only_from_the_gap() {
     tokio::time::timeout(WAIT, drained)
         .await
         .expect("the parser drains its queue");
-    tap.send_ws_bytes(true, after_gap, Duration::ZERO);
+    tap.bytes(Side::Request, after_gap);
     drop(tap);
     capture.ended(1).await;
 
-    // The queue holds 256, plus the one the blocked parser had already taken
+    // The queue holds 256 frames; the 44 after them were refused
     let seen = messages_seen.lock().unwrap();
-    assert!((256..=257).contains(&seen.len()));
+    assert_eq!(seen.len(), 256);
     assert!(seen.iter().all(|text| text == "a"));
+}
+
+struct HearsMessages(Arc<Mutex<Vec<(bool, String)>>>);
+
+impl ExchangeParser for HearsMessages {
+    fn feed(&mut self, input: TapInput) -> Vec<TapEvent> {
+        if let TapInput::WsMessage { from_client, text, .. } = input {
+            self.0.lock().unwrap().push((from_client, text));
+        }
+        Vec::new()
+    }
+}
+
+#[tokio::test]
+async fn after_a_switch_of_protocols_bytes_on_both_sides_are_decoded_as_frames_and_only_the_server_side_is_counted() {
+    // The parser gets each decoded message with its side, and exchange_end counts the server's frame bytes only
+    let mut capture = Capture::new();
+    let heard = Arc::default();
+    let tap = capture.begin(&nobody(), None, HearsMessages(Arc::clone(&heard)));
+
+    tap.note_response_head(&response(101, &[]));
+    tap.bytes(Side::Request, Bytes::from_static(&[0x81, 0x02, b'h', b'i']));
+    tap.bytes(Side::Response, Bytes::from_static(&[0x81, 0x01, b'a']));
+    tap.bytes(Side::Response, Bytes::from_static(&[0x81, 0x01, b'b']));
+    drop(tap);
+
+    let lines = capture.ended(1).await;
+    let end = &exchange_end_of(&lines)["payload"];
+    assert_eq!((&end["bytes"], &end["chunks"]), (&json!(6), &json!(2)));
+    assert!(end["first_byte_us"].is_u64());
+    assert_eq!(end["tap_dropped"], 0);
+    let heard = heard.lock().unwrap();
+    assert_eq!(
+        *heard,
+        [
+            (true, "hi".to_string()),
+            (false, "a".to_string()),
+            (false, "b".to_string())
+        ]
+    );
+}
+
+#[tokio::test]
+async fn response_bytes_are_counted_before_they_are_queued_and_request_bytes_are_not() {
+    // It counts the response side's bytes and chunks and leaves response_head_us unset when no head arrived
+    let mut capture = Capture::new();
+    let tap = capture.begin(
+        &nobody(),
+        None,
+        Emits {
+            events: Vec::new(),
+            release: None,
+        },
+    );
+
+    tap.bytes(Side::Request, Bytes::from_static(b"request"));
+    tap.bytes(Side::Response, Bytes::from_static(b"abc"));
+    tap.bytes(Side::Response, Bytes::from_static(b"de"));
+    drop(tap);
+
+    let lines = capture.ended(1).await;
+    let end = &exchange_end_of(&lines)["payload"];
+    assert_eq!((&end["bytes"], &end["chunks"]), (&json!(5), &json!(2)));
+    assert!(end["first_byte_us"].is_u64());
+    assert!(end["response_head_us"].is_null());
+    assert_eq!(end["tap_dropped"], 0);
+}
+
+#[tokio::test]
+async fn handed_on_sums_and_keeps_the_longest_forward_latency() {
+    // It reports the total and the maximum of what the forwarding path measured
+    let mut capture = Capture::new();
+    let tap = capture.begin(
+        &nobody(),
+        None,
+        Emits {
+            events: Vec::new(),
+            release: None,
+        },
+    );
+
+    tap.handed_on(Duration::from_millis(2));
+    tap.handed_on(Duration::from_millis(5));
+    drop(tap);
+
+    let lines = capture.ended(1).await;
+    let end = &exchange_end_of(&lines)["payload"];
+    assert_eq!(
+        (&end["forward_sum_us"], &end["forward_max_us"]),
+        (&json!(7000), &json!(5000))
+    );
+}
+
+#[tokio::test]
+async fn a_tee_body_counts_the_response_bytes_once_and_hands_them_on_unchanged() {
+    // The body the agent reads is the body the upstream sent, and exchange_end counts it once
+    use http_body_util::{BodyExt, Full};
+    let mut capture = Capture::new();
+    let tap = capture.begin(
+        &nobody(),
+        None,
+        Emits {
+            events: Vec::new(),
+            release: None,
+        },
+    );
+    tap.note_response_head(&hyper::Response::new(()));
+
+    let body = TeeBody::new(Full::new(Bytes::from_static(b"abc")), Some(tap.clone()), Side::Response);
+    let received = body.collect().await.unwrap().to_bytes();
+    drop(tap);
+
+    let lines = capture.ended(1).await;
+    let end = &exchange_end_of(&lines)["payload"];
+    assert_eq!(received, Bytes::from_static(b"abc"));
+    assert_eq!((&end["bytes"], &end["chunks"]), (&json!(3), &json!(1)));
+    assert!(end["response_head_us"].is_u64());
+    assert!(end["first_byte_us"].is_u64());
+    assert_eq!(end["tap_dropped"], 0);
 }
 
 #[tokio::test]
@@ -236,7 +366,7 @@ async fn exchange_end_reports_records_the_sink_had_to_drop() {
             release: None,
         },
     );
-    tap.send(TapInput::ResponseEnd);
+    tap.end(Side::Response);
     capture.wait_for_refusals(1).await;
     drop(tap);
 
@@ -776,7 +906,7 @@ async fn race_one_thread(replies: Vec<Vec<TapEvent>>, late: Option<usize>) -> Ve
     for (index, events) in replies.into_iter().enumerate() {
         let label = (late == Some(index)).then(|| labelled("/late"));
         let tap = capture.begin(&who, label.as_ref(), Emits { events, release: None });
-        tap.send(TapInput::ResponseEnd);
+        tap.end(Side::Response);
         taps.push(tap);
     }
     drop(taps);
@@ -961,7 +1091,7 @@ async fn an_exchange_closed_before_its_reply_ends_writes_its_start_edges_before_
             release: None,
         },
     );
-    tap.send(TapInput::ResponseEnd);
+    tap.end(Side::Response);
     drop(tap);
     let_the_tasks_run().await;
 
@@ -1005,10 +1135,10 @@ async fn a_later_exchange_of_a_thread_records_right_after_the_earlier_one_writes
             release: None,
         },
     );
-    earlier.send(TapInput::ResponseEnd);
+    earlier.end(Side::Response);
     let_the_tasks_run().await;
 
-    later.send(TapInput::ResponseEnd);
+    later.end(Side::Response);
     let started = Instant::now();
     let lines = capture.up_to_the_record_of(later.exchange_id()).await;
     let waited = started.elapsed();
@@ -1058,7 +1188,7 @@ async fn a_record_is_written_when_the_sink_refuses_live_lines_and_counts_them() 
             release: None,
         },
     );
-    tap.send(TapInput::ResponseEnd);
+    tap.end(Side::Response);
     capture.wait_for_refusals(1).await;
     drop(tap);
 
@@ -1084,11 +1214,11 @@ async fn a_stalled_parser_gives_an_incomplete_record_that_counts_the_dropped_inp
     );
 
     for _ in 0..1000 {
-        tap.send(TapInput::ResponseBody(Bytes::from_static(b"x")));
+        tap.bytes(Side::Response, Bytes::from_static(b"x"));
     }
     release.send(()).unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
-    tap.send(TapInput::ResponseEnd);
+    tap.end(Side::Response);
     drop(tap);
 
     let lines = capture.ended(1).await;
@@ -1098,7 +1228,7 @@ async fn a_stalled_parser_gives_an_incomplete_record_that_counts_the_dropped_inp
     assert_eq!(record["incomplete"], true);
 }
 
-pub(super) struct Identifying(Identity);
+struct Identifying(Identity);
 
 impl Adapter for Identifying {
     fn name(&self) -> &'static str {
@@ -1130,7 +1260,7 @@ fn on_thread(thread: &str) -> Identifying {
     })
 }
 
-pub(super) fn nobody() -> Identifying {
+fn nobody() -> Identifying {
     Identifying(Identity::default())
 }
 
@@ -1163,7 +1293,7 @@ fn begin_with(
     })
 }
 
-pub(super) fn begin(exchanges: &Exchanges, adapter: &dyn Adapter, label: Option<&Label>) -> ExchangeTap {
+fn begin(exchanges: &Exchanges, adapter: &dyn Adapter, label: Option<&Label>) -> ExchangeTap {
     let parser = Emits {
         events: Vec::new(),
         release: None,

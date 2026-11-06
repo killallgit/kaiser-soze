@@ -1,7 +1,7 @@
 //! Upgrade completion and byte-preserving bidirectional WebSocket relaying.
 
 use super::Out;
-use crate::exchange::ExchangeTap;
+use crate::exchange::{ExchangeTap, Side};
 use crate::logging::{Fields, Level, Logger};
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -101,8 +101,13 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(mut from: R, mut to: 
             break;
         }
         if let Some(tap) = &context.tap {
-            let handoff = received_at.elapsed();
-            tap.send_ws_bytes(context.from_client, Bytes::copy_from_slice(&buf[..n]), handoff);
+            tap.handed_on(received_at.elapsed());
+            let side = if context.from_client {
+                Side::Request
+            } else {
+                Side::Response
+            };
+            tap.bytes(side, Bytes::copy_from_slice(&buf[..n]));
         }
     }
     let _ = to.shutdown().await;

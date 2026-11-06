@@ -1,5 +1,3 @@
-#[cfg(test)]
-mod accounting_tests;
 mod clock;
 mod exchanges;
 mod output;

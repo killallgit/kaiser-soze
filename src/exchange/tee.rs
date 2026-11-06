@@ -1,5 +1,4 @@
 use super::tap::ExchangeTap;
-use crate::adapter::TapInput;
 use bytes::Bytes;
 use http_body::{Body, Frame, SizeHint};
 use std::pin::Pin;
@@ -48,17 +47,14 @@ impl<B: Body<Data = Bytes> + Unpin> Body for TeeBody<B> {
         if let Poll::Ready(Some(Ok(frame))) = &polled {
             if let Some(data) = frame.data_ref() {
                 this.received_at = Some(Instant::now());
-                tap.send_body(this.side, data.clone());
+                tap.bytes(this.side, data.clone());
             }
         }
         // hyper stops polling once a body reports its end, so the end is noted here too
         let finished = matches!(polled, Poll::Ready(None)) || this.inner.is_end_stream();
         if finished && !this.ended {
             this.ended = true;
-            tap.send(match this.side {
-                Side::Request => TapInput::RequestEnd,
-                Side::Response => TapInput::ResponseEnd,
-            });
+            tap.end(this.side);
         }
         polled
     }
