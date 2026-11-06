@@ -1,7 +1,8 @@
 use crate::logging::{Fields, Level, Logger};
-use crate::sink::Sink;
+use crate::sink::{Retention, Sink};
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -21,7 +22,14 @@ impl ShapeLog {
         Self::with_logging(sink, Logger::default())
     }
 
-    pub(crate) fn with_logging(sink: Sink<Value>, logging: Logger) -> Arc<Self> {
+    /// Opens the shape file, closing it into the segments `Retention::SHAPES` bounds.
+    pub(crate) async fn open(path: &Path, logging: Logger) -> std::io::Result<Arc<Self>> {
+        let logging = logging.component("shape");
+        let sink = Sink::open_reporting(path, Retention::SHAPES, logging.clone()).await?;
+        Ok(Self::with_logging(sink, logging))
+    }
+
+    pub(super) fn with_logging(sink: Sink<Value>, logging: Logger) -> Arc<Self> {
         Arc::new(Self {
             sink,
             seen: Mutex::default(),

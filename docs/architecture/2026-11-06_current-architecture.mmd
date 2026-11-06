@@ -1,0 +1,74 @@
+%% Current architecture only, as of 2026-11-06 (main at 355bc45). Nothing proposed.
+%% Wire-to-common-scheme mapping is hand-written Rust inside each adapter; there is no config.
+flowchart TB
+    AG["agent: claude, codex<br/>HTTPS_PROXY set by scripts/soze-wrappers.sh<br/>http://command:dir@127.0.0.1:port"]
+    UP["upstream model API"]
+    MAIN["main.rs, cli.rs, config.rs<br/>flags, files and env give ProxyConfig<br/>SIGHUP re-reads log level, live and stream"]
+
+    subgraph PROXY["src/proxy: Proxy"]
+        CONN["connect.rs handle_connect<br/>reads label from Proxy-Authorization (connect/label.rs)"]
+        CA["ca.rs<br/>leaf cert per claimed host, TLS terminate"]
+        FWD["http.rs Tunnel::forward<br/>adapter.claim(RequestHead), headers redacted by capture/headers.rs"]
+        UPS["upstream.rs<br/>TLS and HTTP/1 connection, reconnects when not ready"]
+        WS["websocket.rs<br/>relays a 101 upgrade both ways, byte for byte"]
+        BLIND["blind TCP tunnel<br/>host no adapter claims"]
+    end
+
+    subgraph ADAPTERS["src/adapter: traits Adapter, ExchangeParser"]
+        CL["claude/<br/>Anthropic Messages, SSE"]
+        CX["codex/<br/>OpenAI Responses, SSE and WebSocket"]
+        HELP["helpers: body.rs, sse.rs, image.rs, event.rs"]
+    end
+
+    subgraph EXCH["src/exchange"]
+        BEGIN["Exchanges::begin(Opening)<br/>id, Steps::join, Recorder::start, ProjectTask"]
+        TEE["TeeBody (tee.rs)<br/>copies each chunk to the tap, never waits"]
+        TAP["ExchangeTap<br/>one door: bytes, end, handed_on, note_response_head<br/>bounded queue, counts what it refuses (stats.rs)"]
+        TASK["TapTask<br/>ws.rs WsDecoder after a 101, then parser.feed(TapInput)"]
+        SHAPE["src/shape ShapedParser<br/>optional wrapper: logs structure without values"]
+        ASM["src/assembler<br/>events into one whole reply record"]
+        STEPS["src/graph Steps and Tracker<br/>step, turn, thread order and step edges"]
+        PROJ["ProjectTask, src/project<br/>repository of the label dir, start edges"]
+        REC["Recorder<br/>stamps exchange id, time, adapter, session, thread"]
+        OUT["TapOutput<br/>one run_id per run"]
+    end
+
+    SINK["src/sink.rs Sink<br/>bounded queue, one writer stamps run_id and sequence<br/>rotates into segments, deletes by age and capacity"]
+    LOG["src/logging Logger<br/>metadata-only operational log of each line"]
+    TAPF[("tap.jsonl")]
+    SHAPEF[("shapes.jsonl")]
+    ERR[("stderr and debug.jsonl")]
+
+    MAIN -->|ProxyConfig| CONN
+    AG -->|CONNECT| CONN
+    CONN -->|unclaimed host| BLIND
+    BLIND <--> UP
+    BLIND -. "tunnel note" .-> REC
+    CONN -->|claimed host| CA --> FWD
+    FWD -->|request| TEE
+    TEE -->|bytes| UPS
+    UPS <--> UP
+    UPS -->|response| TEE
+    TEE -->|bytes| AG
+    FWD -->|101| WS
+    WS -->|frames both ways| TAP
+    FWD -. "adapter declines: unsupported note" .-> REC
+    FWD -->|claim| CL
+    FWD -->|claim| CX
+    FWD -->|claimed| BEGIN
+    BEGIN --> TAP
+    BEGIN --> PROJ
+    TEE -. "copy of each chunk" .-> TAP
+    TAP --> TASK
+    CL --- HELP
+    CX --- HELP
+    TASK --> CL
+    TASK --> CX
+    SHAPE -.-> TASK
+    SHAPE --> SHAPEF
+    TASK --> ASM
+    TASK --> REC
+    ASM --> STEPS --> REC
+    PROJ --> REC
+    REC --> OUT --> SINK --> TAPF
+    REC --> LOG --> ERR

@@ -10,7 +10,7 @@ use crate::exchange::{Exchanges, TapOutput};
 use crate::logging::{Fields, Level, Logger};
 use crate::project::{ProjectCache, ProjectLookups};
 use crate::shape::ShapeLog;
-use crate::sink::{Retention, Sink};
+use crate::sink::Retention;
 use crate::BoxError;
 use bytes::Bytes;
 use http_body_util::combinators::UnsyncBoxBody;
@@ -65,10 +65,7 @@ impl Proxy {
         let output = TapOutput::open_retaining(&config.tap_file, config.tap_retention, config.logging).await?;
         let logging = output.logging.component("proxy");
         let shapes = match &config.shape_file {
-            Some(path) => Some(ShapeLog::with_logging(
-                Sink::open_reporting(path, Retention::SHAPES, logging.component("shape")).await?,
-                logging.component("shape"),
-            )),
+            Some(path) => Some(ShapeLog::open(path, logging.clone()).await?),
             None => None,
         };
         let ca = Ca::load_or_create(&config.ca_dir, &hosts).inspect_err(|_| {

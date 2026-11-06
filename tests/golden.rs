@@ -11,6 +11,7 @@ use kaiser_soze::exchange::{ExchangeTap, Exchanges, Opening, Side, TapOutput};
 use kaiser_soze::logging::Logger;
 use kaiser_soze::note::{self, Label, Note};
 use kaiser_soze::project::{ProjectCache, ProjectLookups};
+use kaiser_soze::sink::Retention;
 use serde_json::{json, Value};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -72,7 +73,7 @@ impl Recording {
             "[remote \"origin\"]\n\turl = https://example.com/owner/repo.git\n",
         )
         .unwrap();
-        let output = TapOutput::open(&dir.path().join("tap.jsonl"), Logger::default())
+        let output = TapOutput::open_retaining(&dir.path().join("tap.jsonl"), Retention::TAP, Logger::default())
             .await
             .unwrap();
         let exchanges = Exchanges::new(output, None, ProjectLookups::new(ProjectCache::default()));

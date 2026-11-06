@@ -15,13 +15,9 @@ pub struct TapOutput {
 }
 
 impl TapOutput {
-    /// Generates the opaque capture identity once, before any tap line is emitted.
-    /// Opens the tap file. The writer assigns each tap line its 1-based sequence after dequeue.
-    pub async fn open(path: &Path, logging: Logger) -> io::Result<Self> {
-        Self::open_retaining(path, Retention::TAP, logging).await
-    }
-
-    /// Like `open`, closing the tap file into segments of `retention.segment_bytes`.
+    /// Generates the opaque capture identity once, before any tap line is emitted, and opens the tap file,
+    /// closing it into segments of `retention.segment_bytes`. The writer assigns each tap line its 1-based
+    /// sequence after dequeue.
     pub async fn open_retaining(path: &Path, retention: Retention, logging: Logger) -> io::Result<Self> {
         let run_id = run_id()?;
         let logging = logging.for_run(run_id.clone());

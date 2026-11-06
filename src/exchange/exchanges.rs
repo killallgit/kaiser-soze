@@ -50,7 +50,7 @@ impl Exchanges {
         let exchange = self.next_exchange();
         let identity = opening.adapter.identity(opening.head);
         // Joined before the parser is built, so nothing widens the gap between the id and the place in line
-        let steps = Steps::join(Some(&self.threads), exchange, &identity);
+        let steps = Steps::join(&self.threads, exchange, &identity);
         let recorder = Recorder::start(self.output.clone(), exchange, opening.adapter.name(), identity.clone());
         let parser: Box<dyn ExchangeParser> = match &self.shapes {
             Some(log) => Box::new(ShapedParser::new(log.clone(), opening.parser, exchange, opening.head)),
