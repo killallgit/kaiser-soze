@@ -1,5 +1,6 @@
 use crate::adapter::{header, Adapter, ExchangeParser, RequestHead};
-use crate::graph::{Identity, ThreadRole};
+use crate::common::ThreadRole;
+use crate::graph::Identity;
 
 mod parser;
 mod request;

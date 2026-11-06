@@ -3,8 +3,9 @@ use crate::adapter::event::*;
 use crate::adapter::{Event, ExchangeParser, TapEvent, TapInput};
 use crate::capture::MAX_BUFFER_BYTES;
 use crate::common::message::{Block, Message, Output};
+use crate::common::ThreadRole;
 use crate::common::*;
-use crate::graph::{Identity, ThreadRole};
+use crate::graph::Identity;
 use bytes::Bytes;
 use serde_json::{json, Value};
 

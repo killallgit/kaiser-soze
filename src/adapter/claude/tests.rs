@@ -3,8 +3,8 @@ use crate::adapter::event::*;
 use crate::adapter::ResponseHead;
 use crate::adapter::{ExchangeParser, TapEvent, TapInput};
 use crate::common::message::{Block, Message, Output};
+use crate::common::ThreadRole;
 use crate::common::*;
-use crate::graph::ThreadRole;
 use bytes::Bytes;
 use serde_json::{json, Value};
 

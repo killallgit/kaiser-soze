@@ -1,7 +1,8 @@
+use super::edge::Edge;
 use super::event::Event;
 use super::note::Note;
 use super::record::Record;
-use crate::graph::{Edge, ThreadRole};
+use super::thread_role::ThreadRole;
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use std::sync::Arc;
 
@@ -94,8 +95,8 @@ impl Serialize for Line {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::EdgeKind;
     use crate::event::{BlockDelta, Delta, Usage};
-    use crate::graph::EdgeKind;
     use crate::note::Tunnel;
     use serde_json::json;
 

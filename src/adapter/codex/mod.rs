@@ -1,6 +1,7 @@
 use crate::adapter::body::is_encoded;
 use crate::adapter::{header, Adapter, ExchangeParser, RequestHead};
-use crate::graph::{Identity, ThreadRole};
+use crate::common::ThreadRole;
+use crate::graph::Identity;
 use serde_json::Value;
 
 mod history;
