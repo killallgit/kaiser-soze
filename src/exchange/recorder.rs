@@ -1,6 +1,7 @@
 use super::clock::Stamp;
 use super::TapOutput;
-use crate::graph::{Edge, Identity};
+use crate::common::Edge;
+use crate::graph::Identity;
 use crate::line::{Entry, Line};
 use crate::record::Record;
 use std::sync::atomic::{AtomicU64, Ordering};

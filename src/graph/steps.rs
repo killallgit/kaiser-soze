@@ -1,6 +1,7 @@
 use super::place::Place;
 use super::step::{claimed_step, Step};
-use super::{Edge, Identity, Threads};
+use super::{Identity, Threads};
+use crate::common::Edge;
 use crate::event::Event;
 use crate::record::Record;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -82,8 +83,8 @@ impl Steps {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::EdgeKind;
     use crate::event::{Conversation, ReplyEnd};
-    use crate::graph::EdgeKind;
     use serde_json::Value;
 
     fn request(step: Option<u64>, turn: Option<&str>) -> Conversation {

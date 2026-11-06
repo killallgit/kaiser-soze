@@ -1,29 +1,17 @@
 mod calls;
-mod edge;
 mod place;
 mod step;
 mod steps;
 
+use crate::common::{Edge, EdgeKind, ThreadRole};
 use crate::project::Project;
 use calls::Calls;
 use place::{Place, Queue};
-use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use step::Step;
 
-pub use edge::{Edge, EdgeKind};
 pub(crate) use steps::{Steps, Tracker};
-
-/// Whether a thread is the main agent or a subagent; `Unknown` unless the headers say so outright.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ThreadRole {
-    Main,
-    Subagent,
-    #[default]
-    Unknown,
-}
 
 /// Which session, thread and turn an exchange belongs to, as its request headers say.
 #[derive(Clone, Debug, Default, PartialEq)]

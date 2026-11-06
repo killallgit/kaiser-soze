@@ -1,4 +1,4 @@
-use super::{Edge, EdgeKind};
+use crate::common::{Edge, EdgeKind};
 use std::collections::{HashMap, VecDeque};
 
 /// How many calls are remembered as open before the oldest is forgotten.

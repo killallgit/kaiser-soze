@@ -1,5 +1,5 @@
 use super::*;
-use crate::graph::ThreadRole;
+use crate::common::ThreadRole;
 use crate::line::Entry;
 use crate::note::{Note, Tunnel};
 use serde_json::Value;

@@ -1,7 +1,7 @@
 use super::formatting::{MAX_COLUMNS, MAX_RECORD_BYTES};
 use super::*;
+use crate::common::ThreadRole;
 use crate::event::{BlockDelta, Delta, Event};
-use crate::graph::ThreadRole;
 use crate::line::{Entry, Line};
 use serde_json::Value;
 use std::time::Duration;
