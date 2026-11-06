@@ -307,3 +307,27 @@ fn json_response_at_the_capture_limit_is_still_observed() {
     assert_eq!(responses.len(), 1);
     assert_eq!(responses[0]["shape"], json!({}));
 }
+
+#[tokio::test]
+async fn a_shape_log_opened_on_a_path_writes_its_shapes_there() {
+    // A distinct shape recorded through a log opened on a path reaches that file, tagged with its exchange
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shapes.jsonl");
+    let log = ShapeLog::open(&path, crate::logging::Logger::default()).await.unwrap();
+
+    log.record(5, json!({"direction": "request", "shape": {"model": "string"}}));
+
+    let written = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match tokio::fs::read_to_string(&path).await {
+                Ok(text) if text.ends_with('\n') => break text,
+                _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let line: Value = serde_json::from_str(written.trim()).unwrap();
+    assert_eq!(line["exchange"], json!(5));
+    assert_eq!(line["shape"], json!({"model": "string"}));
+}

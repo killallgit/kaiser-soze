@@ -1302,9 +1302,13 @@ fn begin(exchanges: &Exchanges, adapter: &dyn Adapter, label: Option<&Label>) ->
 }
 
 async fn exchanges_writing_to(dir: &tempfile::TempDir, projects: ProjectLookups) -> Exchanges {
-    let output = TapOutput::open(&dir.path().join("tap.jsonl"), crate::logging::Logger::default())
-        .await
-        .unwrap();
+    let output = TapOutput::open_retaining(
+        &dir.path().join("tap.jsonl"),
+        crate::sink::Retention::TAP,
+        crate::logging::Logger::default(),
+    )
+    .await
+    .unwrap();
     Exchanges::new(output, None, projects)
 }
 
