@@ -2,6 +2,7 @@ use super::clock::{Clock, Stamp};
 use super::project_task::Project;
 use super::recorder::Recorder;
 use super::stats::Stats;
+use super::tee::Side;
 use super::ws::WsDecoder;
 use crate::adapter::{ExchangeParser, ResponseHead, TapInput};
 use crate::assembler::Assembler;
@@ -29,6 +30,8 @@ enum Msg {
     },
 }
 
+/// The one door into an exchange's tap. Every byte handed in is counted; after a switch of protocols the
+/// bytes of both sides are decoded as WebSocket frames, before it they are the request and response bodies.
 #[derive(Clone)]
 pub struct ExchangeTap {
     tx: mpsc::Sender<(Stamp, Msg)>,
@@ -37,6 +40,8 @@ pub struct ExchangeTap {
     stats: Arc<Stats>,
     /// Per direction: a chunk was refused and the next one queued must say so.
     gap: Arc<[AtomicBool; 2]>,
+    /// The response head switched protocols, so later bytes are frames.
+    websocket: Arc<AtomicBool>,
 }
 
 impl ExchangeTap {
@@ -70,6 +75,7 @@ impl ExchangeTap {
             recorder,
             stats,
             gap: Default::default(),
+            websocket: Default::default(),
         }
     }
 
@@ -86,6 +92,7 @@ impl ExchangeTap {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         let transport = if res.status() == StatusCode::SWITCHING_PROTOCOLS {
+            self.websocket.store(true, Ordering::Relaxed);
             Transport::Websocket
         } else if content_type.contains("event-stream") {
             Transport::Sse
@@ -99,40 +106,44 @@ impl ExchangeTap {
             status: res.status().as_u16(),
             transport,
         }));
-        self.send(TapInput::ResponseHead(ResponseHead {
+        self.offer(Msg::Input(TapInput::ResponseHead(ResponseHead {
             status: res.status().as_u16(),
             headers,
+        })));
+    }
+
+    /// Hands in the bytes one side sent: counted first, then queued for the parser. Never waits.
+    pub fn bytes(&self, side: Side, bytes: Bytes) {
+        if side == Side::Response {
+            self.stats.response_chunk_arrived(bytes.len());
+        }
+        let msg = if self.websocket.load(Ordering::Relaxed) {
+            let from_client = side == Side::Request;
+            let after_gap = self.gap[from_client as usize].swap(false, Ordering::Relaxed);
+            Msg::WsBytes {
+                from_client,
+                bytes,
+                after_gap,
+            }
+        } else {
+            Msg::Input(match side {
+                Side::Request => TapInput::RequestBody(bytes),
+                Side::Response => TapInput::ResponseBody(bytes),
+            })
+        };
+        self.offer(msg);
+    }
+
+    /// Says one side's body has ended.
+    pub fn end(&self, side: Side) {
+        self.offer(Msg::Input(match side {
+            Side::Request => TapInput::RequestEnd,
+            Side::Response => TapInput::ResponseEnd,
         }));
     }
 
-    pub fn send(&self, input: TapInput) {
-        self.offer(Msg::Input(input));
-    }
-
-    pub(super) fn send_body(&self, side: super::Side, bytes: Bytes) {
-        if side == super::Side::Response {
-            self.stats.response_chunk_arrived(bytes.len());
-        }
-        self.send(match side {
-            super::Side::Request => TapInput::RequestBody(bytes),
-            super::Side::Response => TapInput::ResponseBody(bytes),
-        });
-    }
-
-    pub fn send_ws_bytes(&self, from_client: bool, bytes: Bytes, handoff: Duration) {
-        self.handed_on(handoff);
-        if !from_client {
-            self.stats.response_chunk_arrived(bytes.len());
-        }
-        let after_gap = self.gap[from_client as usize].swap(false, Ordering::Relaxed);
-        self.offer(Msg::WsBytes {
-            from_client,
-            bytes,
-            after_gap,
-        });
-    }
-
-    pub(super) fn handed_on(&self, elapsed: Duration) {
+    /// Adds how long the forwarding path held a chunk before handing it on.
+    pub fn handed_on(&self, elapsed: Duration) {
         self.stats.chunk_handed_on(elapsed);
     }
 

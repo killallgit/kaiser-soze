@@ -4,10 +4,10 @@
 //! Set `SOZE_BLESS_GOLDEN` to write the golden files from the current code.
 
 use bytes::Bytes;
-use kaiser_soze::adapter::{Adapter, RequestHead, TapInput};
+use kaiser_soze::adapter::{Adapter, RequestHead};
 use kaiser_soze::claude::ClaudeAdapter;
 use kaiser_soze::codex::CodexAdapter;
-use kaiser_soze::exchange::{ExchangeTap, Exchanges, Opening, TapOutput};
+use kaiser_soze::exchange::{ExchangeTap, Exchanges, Opening, Side, TapOutput};
 use kaiser_soze::logging::Logger;
 use kaiser_soze::note::{self, Label, Note};
 use kaiser_soze::project::{ProjectCache, ProjectLookups};
@@ -176,16 +176,38 @@ fn sse(events: &[(&str, Value)]) -> Vec<u8> {
 fn send_request(tap: &ExchangeTap, body: &Value) {
     let body = body.to_string().into_bytes();
     let (first, second) = body.split_at(body.len() / 2);
-    tap.send(TapInput::RequestBody(Bytes::copy_from_slice(first)));
-    tap.send(TapInput::RequestBody(Bytes::copy_from_slice(second)));
-    tap.send(TapInput::RequestEnd);
+    tap.bytes(Side::Request, Bytes::copy_from_slice(first));
+    tap.bytes(Side::Request, Bytes::copy_from_slice(second));
+    tap.end(Side::Request);
 }
 
 fn send_reply(tap: &ExchangeTap, stream: &[u8]) {
     for chunk in stream.chunks(SSE_CHUNK) {
-        tap.send(TapInput::ResponseBody(Bytes::copy_from_slice(chunk)));
+        tap.bytes(Side::Response, Bytes::copy_from_slice(chunk));
     }
-    tap.send(TapInput::ResponseEnd);
+    tap.end(Side::Response);
+}
+
+/// One text frame as it crosses the wire: a client's is masked, a server's is not.
+fn text_frame(from_client: bool, text: &str) -> Bytes {
+    let payload = text.as_bytes();
+    let mask_bit = if from_client { 0x80 } else { 0 };
+    let mut frame = vec![0x81];
+    match payload.len() {
+        0..=125 => frame.push(mask_bit | payload.len() as u8),
+        _ => {
+            frame.push(mask_bit | 126);
+            frame.extend((payload.len() as u16).to_be_bytes());
+        }
+    }
+    if from_client {
+        let key = [0x12, 0x34, 0x56, 0x78];
+        frame.extend(key);
+        frame.extend(payload.iter().enumerate().map(|(i, b)| b ^ key[i % 4]));
+    } else {
+        frame.extend(payload);
+    }
+    Bytes::from(frame)
 }
 
 fn claude_headers<'a>(prompt: &'a str, agent: Option<&'a str>) -> Vec<(&'a str, &'a str)> {
@@ -511,16 +533,9 @@ async fn a_codex_socket_writes_these_exact_bytes() {
 
     let tap = recording.begin(&adapter, &head, Some(&label), 3).await;
     tap.note_response_head(&response(101, "text/plain"));
-    let mut offset = 0;
     for (from_client, text) in codex_socket() {
-        let end = offset + text.len() as u64;
-        tap.send(TapInput::WsMessage {
-            from_client,
-            text,
-            start: offset,
-            end,
-        });
-        offset = end;
+        let side = if from_client { Side::Request } else { Side::Response };
+        tap.bytes(side, text_frame(from_client, &text));
     }
     recording.end(tap).await;
 
