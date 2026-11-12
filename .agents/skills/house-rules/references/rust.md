@@ -34,7 +34,7 @@ Several behaviours in one test, asserting on message text:
 #[test]
 fn test_monkey() {
     let m = build_monkey("safe-monkey", 9).unwrap();
-    assert!(trigger_fall(m).bed() == Bed::Soft, "bad bed");
+    assert!(trigger_fall(m).unwrap().bed() == Bed::Soft, "bad bed");
     let e = build_monkey("bedless-monkey", 9).unwrap_err();
     assert_eq!(e.to_string(), "no bed configured");
 }
@@ -47,7 +47,7 @@ One behaviour per test, named for its assertion, asserting on the error type:
 fn falls_on_soft_bed_from_low_height() {
     let monkey = Monkey::builder().height(9).name("safe-monkey").build();
 
-    let fallen = trigger_fall(monkey);
+    let fallen = trigger_fall(monkey).unwrap();
 
     assert_eq!(fallen.bed(), Bed::Soft);
 }
