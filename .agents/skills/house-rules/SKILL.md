@@ -42,7 +42,7 @@ Write code a stranger understands in one read. Every rule below serves that read
 ## Tests
 
 - Test first: a test that fails for the intended reason, then the code that makes it pass.
-- Arrange, Act, Assert, one behaviour per test. A one-line comment states the assertion.
+- Assemble, Act, Assert, one behaviour per test. A one-line comment states the assertion.
 - Assert on behaviour, values and concrete error types, never on message text.
 - Unit and integration tests live apart, each runnable on its own.
 
