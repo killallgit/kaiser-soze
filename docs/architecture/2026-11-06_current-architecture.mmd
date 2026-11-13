@@ -3,7 +3,7 @@
 flowchart TB
     AG["agent: claude, codex<br/>HTTPS_PROXY set by scripts/soze-wrappers.sh<br/>http://command:dir@127.0.0.1:port"]
     UP["upstream model API"]
-    MAIN["main.rs, cli.rs, config.rs<br/>flags, files and env give ProxyConfig<br/>SIGHUP re-reads log level, live and stream"]
+    MAIN["main.rs, cli.rs, config.rs, reload.rs<br/>flags, files and env give ProxyConfig<br/>reload.rs: SIGHUP re-reads log level, live and stream"]
 
     subgraph PROXY["src/proxy: Proxy"]
         CONN["connect.rs handle_connect<br/>reads label from Proxy-Authorization (connect/label.rs)"]
