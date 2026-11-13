@@ -1,4 +1,4 @@
-use super::Identity;
+use super::Thread;
 use crate::event::Conversation;
 use crate::message::{Block, Message};
 use crate::record::Record;
@@ -7,7 +7,7 @@ use serde_json::Value;
 /// One request and its reply: the unit `turn` and `continues` link.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Step {
-    pub(super) thread: Option<String>,
+    pub(super) thread: Option<Thread>,
     pub(super) exchange: u64,
     pub(super) n: u64,
     pub(super) turn: Option<String>,
@@ -22,13 +22,18 @@ pub(super) struct Step {
 impl Step {
     /// The step a finished record describes, or none when the record has no request. A first step
     /// that names no turn is in the header turn; a later one may be in a new turn, so it has none.
-    pub(super) fn of_record(record: &Record, identity: &Identity, exchange: u64) -> Option<Step> {
+    pub(super) fn of_record(
+        record: &Record,
+        thread: Option<&Thread>,
+        header_turn: Option<&str>,
+        exchange: u64,
+    ) -> Option<Step> {
         let conversation = record.conversation.as_ref()?;
         let n = claimed_step(conversation);
         let text = |value: &Value| value.as_str().map(String::from);
-        let header_turn = (n == 1).then(|| identity.turn.clone()).flatten();
+        let header_turn = header_turn.filter(|_| n == 1).map(str::to_owned);
         Some(Step {
-            thread: identity.thread.clone(),
+            thread: thread.cloned(),
             exchange,
             n,
             turn: conversation.turn.clone().or(header_turn),
@@ -96,30 +101,23 @@ mod tests {
         }
     }
 
-    fn identity(turn: Option<&str>) -> Identity {
-        Identity {
-            thread: Some("t1".into()),
-            turn: turn.map(Into::into),
-            ..Identity::default()
-        }
-    }
-
     #[test]
     fn a_first_step_that_names_no_turn_takes_the_header_turn() {
         // The header turn is the first request's
         let record = step_record(1, None);
+        let thread = Thread::new("test", "t1");
 
-        let step = Step::of_record(&record, &identity(Some("h1")), 7).unwrap();
+        let step = Step::of_record(&record, Some(&thread), Some("h1"), 7).unwrap();
 
         assert_eq!(step.turn.as_deref(), Some("h1"));
-        assert_eq!((step.thread.as_deref(), step.exchange, step.n), (Some("t1"), 7, 1));
+        assert_eq!((step.thread, step.exchange, step.n), (Some(thread), 7, 1));
     }
 
     #[test]
     fn an_explicit_turn_beats_the_header_turn() {
         // A Codex step names its own turn, whichever step it is
-        let first = Step::of_record(&step_record(1, Some("u2")), &identity(Some("h1")), 7).unwrap();
-        let later = Step::of_record(&step_record(3, Some("u2")), &identity(Some("h1")), 7).unwrap();
+        let first = Step::of_record(&step_record(1, Some("u2")), None, Some("h1"), 7).unwrap();
+        let later = Step::of_record(&step_record(3, Some("u2")), None, Some("h1"), 7).unwrap();
 
         assert_eq!(first.turn.as_deref(), Some("u2"));
         assert_eq!(later.turn.as_deref(), Some("u2"));
@@ -128,7 +126,7 @@ mod tests {
     #[test]
     fn a_later_step_that_names_no_turn_gets_none() {
         // The header turn does not carry past the first step
-        let step = Step::of_record(&step_record(2, None), &identity(Some("h1")), 7).unwrap();
+        let step = Step::of_record(&step_record(2, None), None, Some("h1"), 7).unwrap();
 
         assert_eq!(step.turn, None);
     }
@@ -136,7 +134,7 @@ mod tests {
     #[test]
     fn a_record_without_a_request_gives_no_step() {
         // A reply with no request in front of it cannot be linked
-        assert_eq!(Step::of_record(&Record::empty(), &identity(Some("h1")), 7), None);
+        assert_eq!(Step::of_record(&Record::empty(), None, Some("h1"), 7), None);
     }
 
     #[test]
@@ -163,7 +161,7 @@ mod tests {
             Block::text("y"),
         ]);
 
-        let step = Step::of_record(&record, &identity(None), 7).unwrap();
+        let step = Step::of_record(&record, None, None, 7).unwrap();
 
         assert_eq!(step.previous_message_id.as_deref(), Some("m1"));
         assert_eq!(step.message_id.as_deref(), Some("m2"));
@@ -174,7 +172,7 @@ mod tests {
     #[test]
     fn a_record_with_none_of_the_ids_gives_a_bare_step() {
         // Missing ids are absent, not empty
-        let step = Step::of_record(&step_record(1, None), &Identity::default(), 7).unwrap();
+        let step = Step::of_record(&step_record(1, None), None, None, 7).unwrap();
 
         assert_eq!(
             step,

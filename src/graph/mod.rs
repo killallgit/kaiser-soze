@@ -60,19 +60,32 @@ struct Seen {
     replies: HashMap<String, String>,
 }
 
+/// Native thread identity is scoped to the adapter that supplied it, not the capture epoch.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct Thread {
+    adapter: &'static str,
+    id: String,
+}
+
+impl Thread {
+    fn new(adapter: &'static str, id: &str) -> Self {
+        Self { adapter, id: id.into() }
+    }
+}
+
 /// Remembers the last step and the open tool calls of each thread, bounded, so a step can say which
 /// step it continues and which call its results answer.
 #[derive(Default)]
 struct Threads {
-    seen: HashMap<String, Seen>,
-    order: VecDeque<String>,
+    seen: HashMap<Thread, Seen>,
+    order: VecDeque<Thread>,
     calls: Calls,
     queue: Arc<Queue>,
 }
 
 impl Threads {
     /// Puts an exchange in line among the exchanges of its thread, so its records can wait for earlier ones.
-    fn join(&self, thread: &str, exchange: u64) -> Place {
+    fn join(&self, thread: &Thread, exchange: u64) -> Place {
         self.queue.join(thread, exchange)
     }
 
@@ -210,7 +223,7 @@ mod tests {
 
     fn step(thread: &str, exchange: u64, n: u64) -> Step {
         Step {
-            thread: Some(thread.into()),
+            thread: Some(Thread::new("test", thread)),
             exchange,
             n,
             turn: None,

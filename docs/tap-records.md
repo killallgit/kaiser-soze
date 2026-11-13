@@ -18,6 +18,8 @@ Identity scopes remain separate:
 - Capture attempt: `(run_id, exchange, step)` when the step is known; `(run_id, exchange)` identifies the exchange even for anonymous or unread traffic.
 - Graph nodes named `exchange:<n>` and `step:<exchange>.<n>` are scoped to the enclosing line's `run_id`; their bare names are not globally unique.
 
+Record-order waits, continuation history and tool-call matching use `(adapter, thread)`: equal native ids from different adapters do not link or wait on each other. Native ids and emitted edge names remain unchanged. The thread and open-call memory bounds below are shared across all adapters, not allocated per adapter.
+
 The capture identity is independent of native harness sessions and wrapper run attribution. Diagnostic `--shape-file` output has its own format and carries none of `run_id`, `schema_version` or `sequence`.
 
 ## Delivery cursor

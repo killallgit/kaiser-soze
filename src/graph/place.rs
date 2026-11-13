@@ -1,3 +1,4 @@
+use super::Thread;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -9,23 +10,23 @@ use tokio::time::timeout;
 /// written in the order their exchanges began.
 #[derive(Default)]
 pub(super) struct Queue {
-    waiting: Mutex<HashMap<String, BTreeSet<u64>>>,
+    waiting: Mutex<HashMap<Thread, BTreeSet<u64>>>,
     changed: Notify,
 }
 
 impl Queue {
-    pub(super) fn join(self: &Arc<Self>, thread: &str, exchange: u64) -> Place {
+    pub(super) fn join(self: &Arc<Self>, thread: &Thread, exchange: u64) -> Place {
         let mut waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
-        waiting.entry(thread.to_owned()).or_default().insert(exchange);
+        waiting.entry(thread.clone()).or_default().insert(exchange);
         Place {
             queue: self.clone(),
-            thread: thread.to_owned(),
+            thread: thread.clone(),
             exchange,
             left: AtomicBool::new(false),
         }
     }
 
-    fn is_clear_before(&self, thread: &str, exchange: u64) -> bool {
+    fn is_clear_before(&self, thread: &Thread, exchange: u64) -> bool {
         let waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
         waiting
             .get(thread)
@@ -33,7 +34,7 @@ impl Queue {
             .is_none_or(|first| *first >= exchange)
     }
 
-    fn leave(&self, thread: &str, exchange: u64) {
+    fn leave(&self, thread: &Thread, exchange: u64) {
         let mut waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(exchanges) = waiting.get_mut(thread) {
             exchanges.remove(&exchange);
@@ -49,7 +50,7 @@ impl Queue {
 /// An exchange's place in line among the exchanges of its thread, held until the exchange ends.
 pub(super) struct Place {
     queue: Arc<Queue>,
-    thread: String,
+    thread: Thread,
     exchange: u64,
     left: AtomicBool,
 }
@@ -102,8 +103,8 @@ mod tests {
     async fn the_first_exchange_of_a_thread_does_not_wait() {
         // It goes ahead at once when no earlier exchange of its thread is in line
         let queue = Arc::<Queue>::default();
-        let first = queue.join("t1", 1);
-        let _second = queue.join("t1", 2);
+        let first = queue.join(&Thread::new("test", "t1"), 1);
+        let _second = queue.join(&Thread::new("test", "t1"), 2);
 
         assert!(took_less_than(SHORT, first.wait_for_turn(LONG)).await);
     }
@@ -112,8 +113,8 @@ mod tests {
     async fn a_later_exchange_waits_until_the_earlier_one_leaves() {
         // It is held while the earlier exchange is in line, and goes ahead once that one leaves
         let queue = Arc::<Queue>::default();
-        let first = queue.join("t1", 1);
-        let second = queue.join("t1", 2);
+        let first = queue.join(&Thread::new("test", "t1"), 1);
+        let second = queue.join(&Thread::new("test", "t1"), 2);
 
         assert!(!took_less_than(SHORT, second.wait_for_turn(LONG)).await);
         first.leave();
@@ -125,8 +126,8 @@ mod tests {
     async fn a_later_exchange_goes_ahead_when_the_earlier_one_is_dropped() {
         // It does not wait for an exchange that ended without leaving
         let queue = Arc::<Queue>::default();
-        let first = queue.join("t1", 1);
-        let second = queue.join("t1", 2);
+        let first = queue.join(&Thread::new("test", "t1"), 1);
+        let second = queue.join(&Thread::new("test", "t1"), 2);
 
         drop(first);
 
@@ -137,8 +138,8 @@ mod tests {
     async fn another_thread_does_not_hold_an_exchange_back() {
         // It orders exchanges only within their own thread
         let queue = Arc::<Queue>::default();
-        let _other = queue.join("t1", 1);
-        let mine = queue.join("t2", 2);
+        let _other = queue.join(&Thread::new("test", "t1"), 1);
+        let mine = queue.join(&Thread::new("test", "t2"), 2);
 
         assert!(took_less_than(SHORT, mine.wait_for_turn(LONG)).await);
     }
@@ -147,8 +148,8 @@ mod tests {
     async fn a_waiting_exchange_is_woken_when_the_earlier_one_leaves() {
         // It goes ahead after the wait began, not only when it checks first
         let queue = Arc::<Queue>::default();
-        let first = queue.join("t1", 1);
-        let second = queue.join("t1", 2);
+        let first = queue.join(&Thread::new("test", "t1"), 1);
+        let second = queue.join(&Thread::new("test", "t1"), 2);
         let waiting = tokio::spawn(async move { second.wait_for_turn(LONG).await });
 
         tokio::task::yield_now().await;
@@ -161,8 +162,8 @@ mod tests {
     async fn an_exchange_that_has_left_does_not_wait_again() {
         // It lets the later records of an exchange through while an earlier exchange is still in line
         let queue = Arc::<Queue>::default();
-        let _first = queue.join("t1", 1);
-        let second = queue.join("t1", 2);
+        let _first = queue.join(&Thread::new("test", "t1"), 1);
+        let second = queue.join(&Thread::new("test", "t1"), 2);
         second.leave();
 
         assert!(took_less_than(SHORT, second.wait_for_turn(LONG)).await);
@@ -172,8 +173,8 @@ mod tests {
     async fn an_exchange_goes_ahead_after_the_limit_when_the_earlier_one_never_leaves() {
         // It stops waiting for an exchange that stays in line
         let queue = Arc::<Queue>::default();
-        let _first = queue.join("t1", 1);
-        let second = queue.join("t1", 2);
+        let _first = queue.join(&Thread::new("test", "t1"), 1);
+        let second = queue.join(&Thread::new("test", "t1"), 2);
 
         assert!(took_less_than(LONG, second.wait_for_turn(SHORT)).await);
     }
