@@ -7,7 +7,7 @@ use tokio::sync::Notify;
 use tokio::time::timeout;
 
 /// The exchanges of each thread that have not yet written their first record, so records can be
-/// written in the order their exchanges began.
+/// written in the order their exchanges were admitted.
 #[derive(Default)]
 pub(super) struct Queue {
     waiting: Mutex<HashMap<Thread, BTreeSet<u64>>>,

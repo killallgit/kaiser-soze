@@ -70,8 +70,9 @@ Integrate by rebasing the lane onto `main`, running the gate, and opening a pull
 only after all CI checks pass. Commit and code push require the user's request; report proposed
 commands at handoff otherwise. Beads data stays local; do not push Beads or Dolt state.
 
-To get a pull request reviewed, use the `independent-review` skill
-(`killall-skills:independent-review`); it holds the review rules.
+Use local independent reviews, not GitHub-triggered reviews. Never post `/review` or other bot
+review commands, trigger review bots, or dispatch review workflows. Read existing automatic
+CodeRabbit feedback without retriggering it; fix and resolve its findings when the user asks.
 
 ## Beads
 
