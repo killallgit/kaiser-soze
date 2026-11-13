@@ -73,10 +73,11 @@ impl Thread {
     }
 }
 
-/// Remembers the last step and the open tool calls of each thread, bounded, so a step can say which
-/// step it continues and which call its results answer.
+/// Owns exchange admission and bounded thread history, so a step can say which step it continues
+/// and which call its results answer.
 #[derive(Default)]
 struct Threads {
+    last_exchange: u64,
     seen: HashMap<Thread, Seen>,
     order: VecDeque<Thread>,
     calls: Calls,
@@ -84,6 +85,11 @@ struct Threads {
 }
 
 impl Threads {
+    fn next_exchange(&mut self) -> u64 {
+        self.last_exchange += 1;
+        self.last_exchange
+    }
+
     /// Puts an exchange in line among the exchanges of its thread, so its records can wait for earlier ones.
     fn join(&self, thread: &Thread, exchange: u64) -> Place {
         self.queue.join(thread, exchange)
@@ -251,7 +257,7 @@ mod tests {
 
     #[test]
     fn a_later_step_on_a_thread_continues_the_one_before_it() {
-        // Without a previous message id it follows arrival order, across exchanges and within a socket
+        // Without a previous message id it follows record-link order, across exchanges and within a socket
         let mut threads = Threads::default();
 
         let first = threads.edges(&step("t1", 7, 1));

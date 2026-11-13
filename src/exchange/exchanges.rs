@@ -3,13 +3,12 @@ use super::recorder::Recorder;
 use super::tap::Recording;
 use super::{Clock, ExchangeTap, TapOutput};
 use crate::adapter::{Adapter, ExchangeParser, RequestHead};
-use crate::graph::{Steps, Tracker};
+use crate::graph::Tracker;
 use crate::line::Entry;
 use crate::note::{ExchangeStart, Label, Note};
 use crate::project::ProjectLookups;
 use crate::shape::{ShapeLog, ShapedParser};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// One request an adapter claimed, as `Exchanges::begin` takes it.
@@ -24,7 +23,6 @@ pub struct Opening<'a> {
 
 /// Gives every exchange its id, its record and its edges. Nothing here waits for the project lookup or the sink.
 pub struct Exchanges {
-    next_exchange: AtomicU64,
     clock: Clock,
     output: TapOutput,
     shapes: Option<Arc<ShapeLog>>,
@@ -35,7 +33,6 @@ pub struct Exchanges {
 impl Exchanges {
     pub fn new(output: TapOutput, shapes: Option<Arc<ShapeLog>>, projects: ProjectLookups) -> Self {
         Self {
-            next_exchange: AtomicU64::new(1),
             clock: Clock::start(),
             output,
             shapes,
@@ -47,10 +44,9 @@ impl Exchanges {
     /// Starts tapping one exchange: writes `exchange_start` now, and the edges once the project is found.
     pub fn begin(&self, opening: Opening<'_>) -> ExchangeTap {
         let start = exchange_start(&opening);
-        let exchange = self.next_exchange();
         let identity = opening.adapter.identity(opening.head);
-        // Joined before the parser is built, so nothing widens the gap between the id and the place in line
-        let steps = Steps::join(&self.threads, exchange, &identity, opening.adapter.name());
+        let steps = self.threads.admit(opening.adapter.name(), &identity);
+        let exchange = steps.exchange_id();
         let recorder = Recorder::start(self.output.clone(), exchange, opening.adapter.name(), identity.clone());
         let parser: Box<dyn ExchangeParser> = match &self.shapes {
             Some(log) => Box::new(ShapedParser::new(log.clone(), opening.parser, exchange, opening.head)),
@@ -75,12 +71,8 @@ impl Exchanges {
 
     /// Writes one line under an exchange id of its own, for something that happened without an exchange.
     pub fn note_alone(&self, adapter: &'static str, note: Note) {
-        let recorder = Recorder::new(self.output.clone(), self.next_exchange(), adapter);
+        let recorder = Recorder::new(self.output.clone(), self.threads.note_exchange(), adapter);
         recorder.write(self.clock.stamp(), Entry::Note(note), (0, 0), None);
-    }
-
-    fn next_exchange(&self) -> u64 {
-        self.next_exchange.fetch_add(1, Ordering::Relaxed)
     }
 }
 

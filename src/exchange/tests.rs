@@ -1063,7 +1063,7 @@ fn written_edges(lines: &[Value]) -> Vec<Edge> {
     edges
 }
 
-/// Begins one exchange of thread `t1` per entry of `replies` at once, all recording through one `Exchanges`.
+/// Admits one exchange of thread `t1` per entry of `replies` sequentially, then records them concurrently.
 /// The exchange numbered `late` (counting from 0) has its project lookup held back briefly, so either order can win.
 async fn race_one_thread(replies: Vec<Vec<TapEvent>>, late: Option<usize>) -> Vec<Edge> {
     let slow_lookup = ProjectCache::locating_with(|_| {
@@ -1087,6 +1087,58 @@ async fn race_one_thread(replies: Vec<Vec<TapEvent>>, late: Option<usize>) -> Ve
 
 fn which_exchange_is_late(run: usize, exchanges: usize) -> Option<usize> {
     (run % (exchanges + 1)).checked_sub(1)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_exchanges_get_ids_and_continuation_edges_in_admission_order() {
+    // A paused identity reserves no invisible earlier ID; the exchange admitted first records first.
+    let Capture {
+        exchanges, mut drained, ..
+    } = Capture::new();
+    let exchanges = Arc::new(exchanges);
+    let (entered, paused) = std::sync::mpsc::channel();
+    let (release, resume) = std::sync::mpsc::channel();
+    let delayed = PausingIdentity {
+        who: on_thread("t1"),
+        entered,
+        resume: Mutex::new(resume),
+    };
+    let shared = exchanges.clone();
+    let delayed_begin = tokio::task::spawn_blocking(move || {
+        begin_with(
+            &shared,
+            &delayed,
+            None,
+            Box::new(Emits {
+                events: closed_reply(),
+                release: None,
+            }),
+        )
+    });
+    paused.recv_timeout(WAIT).unwrap();
+
+    let ahead = begin_with(
+        &exchanges,
+        &on_thread("t1"),
+        None,
+        Box::new(Emits {
+            events: closed_reply(),
+            release: None,
+        }),
+    );
+    ahead.end(Side::Response);
+    drop(ahead);
+    let first = drain_ended(&mut drained, 1).await;
+    release.send(()).unwrap();
+    let behind = delayed_begin.await.unwrap();
+    behind.end(Side::Response);
+    drop(behind);
+    let second = drain_ended(&mut drained, 1).await;
+
+    assert_eq!(record_of(&first)["exchange"], 1);
+    assert_eq!(record_of(&second)["exchange"], 2);
+    assert!(step_edges(&first).is_empty());
+    assert_eq!(step_edges(&second), [edge("continues", "step:2.1", "step:1.1")]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1131,7 +1183,7 @@ async fn two_claude_exchanges_of_one_thread_continue_by_message_id_however_the_f
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn codex_exchanges_of_one_thread_form_one_chain_in_the_order_their_exchanges_began() {
+async fn codex_exchanges_of_one_thread_form_one_chain_in_admission_order() {
     // With no previous message id each step continues the one before it, however the records are held up
     for run in 0..50 {
         let replies = vec![closed_reply(), closed_reply(), closed_reply()];
@@ -1400,6 +1452,29 @@ async fn a_stalled_parser_gives_an_incomplete_record_that_counts_the_dropped_inp
 }
 
 struct Identifying(Identity);
+
+struct PausingIdentity {
+    who: Identifying,
+    entered: std::sync::mpsc::Sender<()>,
+    resume: Mutex<Receiver<()>>,
+}
+
+impl Adapter for PausingIdentity {
+    fn name(&self) -> &'static str {
+        self.who.name()
+    }
+    fn hosts(&self) -> &[String] {
+        &[]
+    }
+    fn claim(&self, _head: &RequestHead) -> Option<Box<dyn ExchangeParser>> {
+        None
+    }
+    fn identity(&self, head: &RequestHead) -> Identity {
+        self.entered.send(()).unwrap();
+        self.resume.lock().unwrap().recv_timeout(WAIT).unwrap();
+        self.who.identity(head)
+    }
+}
 
 struct Named(&'static str, Identifying);
 
