@@ -1,6 +1,6 @@
 use super::place::Place;
 use super::step::{claimed_step, Step};
-use super::{Identity, Threads};
+use super::{Identity, Thread, Threads};
 use crate::common::Edge;
 use crate::event::Event;
 use crate::record::Record;
@@ -18,15 +18,17 @@ pub(crate) struct Tracker(Arc<Mutex<Threads>>);
 pub(crate) struct Steps {
     tracker: Tracker,
     place: Option<Place>,
-    identity: Identity,
+    thread: Option<Thread>,
+    header_turn: Option<String>,
     exchange: u64,
     open: Option<u64>,
 }
 
 impl Steps {
     /// Puts the exchange in line among the exchanges of its thread, so its records wait for earlier ones.
-    pub(crate) fn join(tracker: &Tracker, exchange: u64, identity: &Identity) -> Self {
-        let place = identity.thread.as_deref().map(|thread| {
+    pub(crate) fn join(tracker: &Tracker, exchange: u64, identity: &Identity, adapter: &'static str) -> Self {
+        let thread = identity.thread.as_deref().map(|id| Thread::new(adapter, id));
+        let place = thread.as_ref().map(|thread| {
             tracker
                 .0
                 .lock()
@@ -36,7 +38,8 @@ impl Steps {
         Self {
             tracker: tracker.clone(),
             place,
-            identity: identity.clone(),
+            thread,
+            header_turn: identity.turn.clone(),
             exchange,
             open: None,
         }
@@ -60,7 +63,8 @@ impl Steps {
         if let Some(place) = &self.place {
             place.wait_for_turn(TURN_WAIT).await;
         }
-        let Some(step) = Step::of_record(record, &self.identity, self.exchange) else {
+        let Some(step) = Step::of_record(record, self.thread.as_ref(), self.header_turn.as_deref(), self.exchange)
+        else {
             return Vec::new();
         };
         record.step = Some(step.n);
@@ -126,7 +130,7 @@ mod tests {
     #[test]
     fn a_live_line_carries_the_step_of_the_request_it_is_folded_into() {
         // The request line and every line up to its reply end show its step; a line with no request open shows none
-        let mut steps = Steps::join(&Tracker::default(), 7, &Identity::default());
+        let mut steps = Steps::join(&Tracker::default(), 7, &Identity::default(), "test");
         let usage = Event::Usage(Default::default());
 
         let before = steps.of_line(&usage);
@@ -144,7 +148,7 @@ mod tests {
     #[test]
     fn a_request_that_states_no_step_opens_step_one() {
         // A Claude exchange is one request, so its lines show step 1
-        let mut steps = Steps::join(&Tracker::default(), 7, &Identity::default());
+        let mut steps = Steps::join(&Tracker::default(), 7, &Identity::default(), "test");
 
         assert_eq!(steps.of_line(&Event::Conversation(request(None, None))), Some(1));
     }
@@ -152,7 +156,7 @@ mod tests {
     #[tokio::test]
     async fn a_request_that_states_its_step_and_turn_gives_them_to_the_record() {
         // It copies the step and turn of the conversation onto the record
-        let steps = Steps::join(&Tracker::default(), 7, &header_turn("h1"));
+        let steps = Steps::join(&Tracker::default(), 7, &header_turn("h1"), "test");
         let mut record = record_of(Some(request(Some(3), Some("u2"))));
 
         steps.link(&mut record).await;
@@ -163,8 +167,8 @@ mod tests {
     #[tokio::test]
     async fn a_request_that_states_no_step_is_step_one_of_the_header_turn() {
         // A Claude exchange is one request, so the record is step 1 in the turn its headers name, or none
-        let named = Steps::join(&Tracker::default(), 7, &header_turn("h1"));
-        let unnamed = Steps::join(&Tracker::default(), 7, &Identity::default());
+        let named = Steps::join(&Tracker::default(), 7, &header_turn("h1"), "test");
+        let unnamed = Steps::join(&Tracker::default(), 7, &Identity::default(), "test");
         let mut in_turn = record_of(Some(request(None, None)));
         let mut no_turn = record_of(Some(request(None, None)));
 
@@ -185,6 +189,7 @@ mod tests {
                 thread: Some("t1".into()),
                 ..header_turn("h1")
             },
+            "test",
         );
         let mut record = record_of(None);
 
@@ -198,13 +203,34 @@ mod tests {
     async fn a_later_exchange_of_a_thread_continues_the_step_of_an_earlier_one() {
         // Exchanges that share a tracker link their steps across exchanges
         let tracker = Tracker::default();
-        let first = Steps::join(&tracker, 1, &on_thread("t1"));
-        let second = Steps::join(&tracker, 2, &on_thread("t1"));
+        let first = Steps::join(&tracker, 1, &on_thread("t1"), "test");
+        let second = Steps::join(&tracker, 2, &on_thread("t1"), "test");
 
         first.link(&mut record_of(Some(request(None, None)))).await;
         first.leave();
         let edges = second.link(&mut record_of(Some(request(None, None)))).await;
 
         assert_eq!(edges, [Edge::new(EdgeKind::Continues, "step:2.1", "step:1.1")]);
+    }
+
+    #[tokio::test]
+    async fn the_thread_bound_is_shared_across_adapters() {
+        // Activity across both adapters evicts the oldest thread under one global bound.
+        let tracker = Tracker::default();
+        let first = Steps::join(&tracker, 1, &on_thread("first"), "claude");
+        first.link(&mut record_of(Some(request(None, None)))).await;
+        first.leave();
+
+        for exchange in 2..=super::super::THREAD_BOUND as u64 + 1 {
+            let adapter = if exchange % 2 == 0 { "claude" } else { "codex" };
+            let identity = on_thread(&format!("t{}", exchange / 2));
+            let steps = Steps::join(&tracker, exchange, &identity, adapter);
+            steps.link(&mut record_of(Some(request(None, None)))).await;
+            steps.leave();
+        }
+        let revisited = Steps::join(&tracker, 9999, &on_thread("first"), "claude");
+        let edges = revisited.link(&mut record_of(Some(request(None, None)))).await;
+
+        assert!(edges.is_empty());
     }
 }

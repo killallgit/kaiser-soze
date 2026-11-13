@@ -758,7 +758,7 @@ async fn a_result_in_a_later_request_writes_one_calls_edge_for_its_call() {
 }
 
 #[tokio::test]
-async fn a_claude_and_a_codex_exchange_write_these_exact_records_and_edges() {
+async fn two_exchanges_of_one_adapter_write_these_exact_records_and_edges() {
     // It pins every field of the record and edge payloads a thread's two exchanges write
     use crate::common::*;
     use crate::message::{Block, Message, Output};
@@ -859,6 +859,177 @@ async fn a_claude_and_a_codex_exchange_write_these_exact_records_and_edges() {
             json!({"kind": "calls", "from": "call:c1", "to": "result:c1"}),
         ]
     );
+}
+
+#[tokio::test]
+async fn adapter_scoped_threads_keep_separate_continuation_chains() {
+    // Equal native thread ids continue only earlier steps from the same adapter.
+    let claude = Named("claude", on_thread("t1"));
+    let codex = Named("codex", on_thread("t1"));
+    let mut capture = Capture::new();
+
+    let first_claude = capture.run(&claude, None, closed_reply()).await;
+    let first_codex = capture.run(&codex, None, closed_reply()).await;
+    let next_claude = capture.run(&claude, None, closed_reply()).await;
+    let next_codex = capture.run(&codex, None, closed_reply()).await;
+
+    assert!(step_edges(&first_claude).is_empty());
+    assert!(step_edges(&first_codex).is_empty());
+    assert_eq!(step_edges(&next_claude), [edge("continues", "step:3.1", "step:1.1")]);
+    assert_eq!(step_edges(&next_codex), [edge("continues", "step:4.1", "step:2.1")]);
+    for (name, lines) in [("claude", next_claude), ("codex", next_codex)] {
+        assert!(lines
+            .iter()
+            .all(|line| line["adapter"] == name && line["thread"] == "t1"));
+        assert_eq!(record_of(&lines)["payload"]["thread"], "t1");
+    }
+}
+
+#[tokio::test]
+async fn adapter_scoped_threads_do_not_share_or_overwrite_reply_ids() {
+    // A foreign reply id is unknown; identical reply ids still resolve to each adapter's own step.
+    let claude = Named("claude", on_thread("t1"));
+    let codex = Named("codex", on_thread("t1"));
+    let reply = || {
+        vec![
+            conversation(Value::Null, Value::Null, Vec::new()),
+            reply_end_of_message(Value::Null, json!("m1")),
+        ]
+    };
+    let following = || {
+        let mut events = reply();
+        events[0].event.conversation_mut().previous_message_id = Some("m1".into());
+        events
+    };
+    let mut capture = Capture::new();
+
+    capture.run(&claude, None, reply()).await;
+    let foreign = capture.run(&codex, None, following()).await;
+    let next_claude = capture.run(&claude, None, following()).await;
+    let next_codex = capture.run(&codex, None, following()).await;
+
+    assert!(step_edges(&foreign).is_empty());
+    assert_eq!(step_edges(&next_claude), [edge("continues", "step:3.1", "step:1.1")]);
+    assert_eq!(step_edges(&next_codex), [edge("continues", "step:4.1", "step:2.1")]);
+}
+
+#[tokio::test]
+async fn adapter_scoped_threads_match_and_close_only_their_own_calls() {
+    // Foreign results consume nothing, and equal call ids can be answered once in each adapter.
+    use crate::common::{BlockKind, BlockStart};
+    use crate::message::{Block, Message, Output};
+    let claude = Named("claude", on_thread("t1"));
+    let codex = Named("codex", on_thread("t1"));
+    let calling = || {
+        vec![
+            conversation(Value::Null, Value::Null, Vec::new()),
+            block_start(BlockStart {
+                index: 0,
+                kind: BlockKind::ToolCall,
+                id: json!("c1"),
+                name: Value::Null,
+            }),
+            block_stop(0),
+            reply_end_of_message(Value::Null, Value::Null),
+        ]
+    };
+    let answering = || {
+        vec![
+            conversation(
+                Value::Null,
+                Value::Null,
+                vec![Message::user(vec![Block::ToolResult {
+                    call_id: json!("c1"),
+                    is_error: false,
+                    output: Output::Raw(Value::Null),
+                }])],
+            ),
+            reply_end_of_message(Value::Null, Value::Null),
+        ]
+    };
+    let calls = |lines: &[Value]| -> Vec<Edge> {
+        step_edges(lines)
+            .into_iter()
+            .filter(|(kind, _, _)| kind == "calls")
+            .collect()
+    };
+    let mut capture = Capture::new();
+
+    capture.run(&claude, None, calling()).await;
+    let foreign = capture.run(&codex, None, answering()).await;
+    capture.run(&codex, None, calling()).await;
+    let own_claude = capture.run(&claude, None, answering()).await;
+    let own_codex = capture.run(&codex, None, answering()).await;
+    let resent = capture.run(&codex, None, answering()).await;
+
+    assert!(calls(&foreign).is_empty());
+    assert_eq!(calls(&own_claude), [edge("calls", "call:c1", "result:c1")]);
+    assert_eq!(calls(&own_codex), [edge("calls", "call:c1", "result:c1")]);
+    assert!(calls(&resent).is_empty());
+}
+
+#[tokio::test]
+async fn adapter_scoped_threads_do_not_wait_for_another_adapter() {
+    // An unfinished exchange cannot delay a record belonging to another adapter's same native thread id.
+    let claude = Named("claude", on_thread("t1"));
+    let codex = Named("codex", on_thread("t1"));
+    let mut capture = Capture::new();
+    let earlier = capture.begin(
+        &claude,
+        None,
+        Emits {
+            events: Vec::new(),
+            release: None,
+        },
+    );
+
+    let finished = tokio::time::timeout(Duration::from_millis(500), capture.run(&codex, None, closed_reply())).await;
+    drop(earlier);
+
+    assert!(finished.is_ok());
+    let lines = finished.unwrap();
+    assert_eq!(record_of(&lines)["exchange"], 2);
+    assert!(step_edges(&lines).is_empty());
+}
+
+#[tokio::test]
+async fn adapter_scoped_threads_still_wait_for_their_own_earlier_exchange() {
+    // The same adapter still writes its earlier record and edges before the later record.
+    let who = Named("claude", on_thread("t1"));
+    let mut capture = Capture::new();
+    let earlier = capture.begin(
+        &who,
+        None,
+        Emits {
+            events: closed_reply(),
+            release: None,
+        },
+    );
+    let later = capture.begin(
+        &who,
+        None,
+        Emits {
+            events: closed_reply(),
+            release: None,
+        },
+    );
+
+    later.end(Side::Response);
+    let_the_tasks_run().await;
+    let premature_record =
+        std::iter::from_fn(|| capture.drained.try_recv().ok()).any(|line| line.entry.event() == "record");
+    earlier.end(Side::Response);
+    drop((earlier, later));
+    let lines = capture.ended(2).await;
+
+    assert!(!premature_record);
+    let record_order: Vec<u64> = lines
+        .iter()
+        .filter(|line| line["event"] == "record")
+        .map(|line| line["exchange"].as_u64().unwrap())
+        .collect();
+    assert_eq!(record_order, [1, 2]);
+    assert_eq!(step_edges(&lines), [edge("continues", "step:2.1", "step:1.1")]);
 }
 
 type Edge = (String, String, String);
@@ -1229,6 +1400,23 @@ async fn a_stalled_parser_gives_an_incomplete_record_that_counts_the_dropped_inp
 }
 
 struct Identifying(Identity);
+
+struct Named(&'static str, Identifying);
+
+impl Adapter for Named {
+    fn name(&self) -> &'static str {
+        self.0
+    }
+    fn hosts(&self) -> &[String] {
+        &[]
+    }
+    fn claim(&self, _head: &RequestHead) -> Option<Box<dyn ExchangeParser>> {
+        None
+    }
+    fn identity(&self, head: &RequestHead) -> Identity {
+        self.1.identity(head)
+    }
+}
 
 impl Adapter for Identifying {
     fn name(&self) -> &'static str {
