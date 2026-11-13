@@ -2,6 +2,9 @@
 
 Scope: [docs/objective.md](docs/objective.md).
 
+Architecture: [system overview and Mermaid diagram](docs/architecture/system-overview.md),
+[service lifecycle and storage](docs/architecture/service-lifecycle.md).
+
 `soze` is a local HTTPS proxy between a coding agent and its model API. It forwards every byte as it arrives and taps a copy into a JSONL file in one common format ([docs/common-format.md](docs/common-format.md)). The tap never delays the agent: when it falls behind it drops events and counts them.
 
 Hosts an adapter claims (Codex: `chatgpt.com`, `api.openai.com`; Claude Code: `api.anthropic.com`) are decrypted with a local CA. Every other host is tunnelled untouched.
