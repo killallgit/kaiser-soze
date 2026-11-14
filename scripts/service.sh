@@ -1,14 +1,27 @@
 #!/bin/sh
-# Runs soze as a launchd user agent from a binary built by the caller.
+# Runs soze under launchd (macOS) or systemd --user (Linux) from a caller-built binary.
 # Usage: service.sh install <binary> | restart | reload | status | logs | uninstall [--purge]
 set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
 usage="usage: service.sh install <binary> | restart | reload | status | logs | uninstall [--purge]"
 
+# An empty HOME would put installation and purge paths under /.
+[ -n "$HOME" ] || { echo "HOME is empty: nothing changed" >&2; exit 2; }
+platform=$(uname -s)
+case "$platform" in
+  Darwin) ;;
+  Linux)
+    command -v systemctl >/dev/null 2>&1 ||
+      { echo "Linux service management requires systemd --user" >&2; exit 2; }
+    ;;
+  *) echo "unsupported service platform: $platform" >&2; exit 2 ;;
+esac
+
 label=com.killallgit.soze
 domain="gui/$(id -u)"
 data=$HOME/.local/share/soze
 plist=$HOME/Library/LaunchAgents/$label.plist
+unit=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/soze.service
 config=$HOME/.config/soze/config.toml
 
 # launchd_field <key>: a value from the top level of `launchctl print` on stdin
@@ -19,7 +32,14 @@ launchd_field() {
 show_status() {
   state="not loaded"
   pid=
-  if printed=$(launchctl print "$domain/$label" 2>/dev/null); then
+  if [ "$platform" = Linux ]; then
+    printed=$(systemctl --user show soze.service --property=LoadState --property=SubState --property=MainPID) || return
+    if [ "$(printf '%s\n' "$printed" | sed -n 's/^LoadState=//p')" != not-found ]; then
+      state=$(printf '%s\n' "$printed" | sed -n 's/^SubState=//p')
+      pid=$(printf '%s\n' "$printed" | sed -n 's/^MainPID=//p')
+      [ "$pid" != 0 ] || pid=
+    fi
+  elif printed=$(launchctl print "$domain/$label" 2>/dev/null); then
     state=$(printf '%s\n' "$printed" | launchd_field state)
     pid=$(printf '%s\n' "$printed" | launchd_field pid)
   fi
@@ -28,11 +48,19 @@ show_status() {
     sed -n '/^  "/{s/,$//;s/^  "\([a-z_]*\)": /\1=/;s/="\(.*\)"$/=\1/;p;}' "$data/bin/install.json"
 }
 
-# an empty HOME would put the plist and the data dir under /
 uninstall() {
-  [ -n "$HOME" ] || { echo "HOME is empty: nothing changed" >&2; exit 2; }
-  launchctl bootout "$domain/$label" 2>/dev/null || true
-  rm -f "$plist" "$data/bin/soze" "$data/bin/install.json"
+  if [ "$platform" = Linux ]; then
+    if [ -e "$unit" ] || [ -e "$data/bin/soze" ]; then
+      # Do not remove files if the manager could not stop the running service.
+      systemctl --user disable --now soze.service
+      rm -f "$unit"
+      systemctl --user daemon-reload
+    fi
+  else
+    launchctl bootout "$domain/$label" 2>/dev/null || true
+    rm -f "$plist"
+  fi
+  rm -f "$data/bin/soze" "$data/bin/install.json"
   rmdir "$data/bin" 2>/dev/null || true
 }
 
@@ -43,8 +71,14 @@ purge() {
 }
 
 case "$#:$*" in
-  1:restart) exec launchctl kickstart -k "$domain/$label" ;;
-  1:reload) exec launchctl kill HUP "$domain/$label" ;;
+  1:restart)
+    [ "$platform" != Linux ] || exec systemctl --user restart soze.service
+    exec launchctl kickstart -k "$domain/$label"
+    ;;
+  1:reload)
+    [ "$platform" != Linux ] || exec systemctl --user reload soze.service
+    exec launchctl kill HUP "$domain/$label"
+    ;;
   1:status) show_status; exit ;;
   1:logs) exec tail -F "$data/logs/soze.log" ;;
   1:uninstall) uninstall; exit ;;
@@ -113,7 +147,36 @@ write_plist() {
 PLIST
 }
 
-mkdir -p "$data/bin" "$data/logs" "$(dirname "$plist")" "$(dirname "$config")"
+write_unit() {
+  # %h is expanded by systemd, not a shell; quoted argv also supports homes containing spaces.
+  cat > "$unit.new" <<'UNIT'
+[Unit]
+Description=Soze local model API proxy
+
+[Service]
+Type=simple
+ExecStart="%h/.local/share/soze/bin/soze" --port 48731 --tap-file "%h/.local/share/soze/tap.jsonl" --shape-file "%h/.local/share/soze/shapes.jsonl" --log-file "%h/.local/share/soze/debug.jsonl"
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+UMask=0077
+StandardOutput=append:%h/.local/share/soze/logs/soze.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target
+UNIT
+}
+
+if [ "$platform" = Linux ]; then
+  # Fail before touching installed files if no user manager/session bus is available.
+  systemctl --user show --property=Version > /dev/null
+  umask 077
+  definition=$unit
+else
+  definition=$plist
+fi
+mkdir -p "$data/bin" "$data/logs" "$(dirname "$definition")" "$(dirname "$config")"
 # a rename gives the binary a new inode: overwriting a running signed binary can get it killed
 cp "$binary" "$data/bin/soze.new"
 chmod 755 "$data/bin/soze.new"
@@ -121,6 +184,13 @@ mv -f "$data/bin/soze.new" "$data/bin/soze"
 write_record
 [ -e "$config" ] || printf 'log_format = "human"\nlive = true\n' > "$config"
 [ ! -e "$data/logs/soze.log" ] || mv -f "$data/logs/soze.log" "$data/logs/soze.log.1"
+if [ "$platform" = Linux ]; then
+  write_unit
+  mv -f "$unit.new" "$unit"
+  systemctl --user daemon-reload
+  systemctl --user enable soze.service
+  exec systemctl --user restart soze.service
+fi
 write_plist
 changed=0
 cmp -s "$plist.new" "$plist" || changed=1

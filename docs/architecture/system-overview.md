@@ -4,9 +4,8 @@ Soze is a local, per-user HTTPS proxy with a non-blocking capture pipeline. Codi
 communicate with their providers through it; a separate tap converts copied traffic into the
 [common event format](../common-format.md).
 
-This document describes the current implementation. The Linux service supervisor in the
-diagram is a proposal, not an implemented service backend. See [service lifecycle and
-storage](service-lifecycle.md) for platform behavior, commands and retention.
+This document describes the current implementation. See [service lifecycle and
+storage](service-lifecycle.md) for macOS and Linux platform behavior, commands and retention.
 
 ## Architecture diagram
 
@@ -35,7 +34,7 @@ flowchart TB
         ShapeFiles[("Shape files<br/>shapes.jsonl + rotated segments")]
         LogFiles[("Operational and debug logs<br/>soze.log · debug.jsonl")]
         Mac["macOS launchd LaunchAgent<br/>Implemented"]
-        Linux["Linux systemd user service<br/>Proposed, not implemented"]
+        Linux["Linux systemd user service<br/>Implemented"]
 
         Wrappers -->|"Launch with environment settings"| Agents
         Agents <-->|"HTTPS CONNECT"| Listener
@@ -55,7 +54,7 @@ flowchart TB
         Config --> Service
         CA --> Intercept
         Mac -->|"Start and supervise"| Service
-        Linux -.->|"Proposed supervision"| Service
+        Linux -->|"Start and supervise"| Service
     end
 
     Models["Model APIs<br/>Anthropic · OpenAI / ChatGPT"]
@@ -63,12 +62,10 @@ flowchart TB
     Intercept <-->|"Upstream TLS"| Models
     Tunnel <-->|"Encrypted traffic"| Other
 
-    classDef proposed fill:#fff4d6,stroke:#9a6700,stroke-dasharray:5 5;
-    class Linux proposed;
 ```
 
 Dashed data-path arrows show copied traffic, observations or metadata, not forwarding
-dependencies. The separately styled Linux supervisor is the only proposed component.
+dependencies.
 The diagram groups related responsibilities; it is not a task-by-task execution graph.
 
 ## Agent integration
@@ -137,10 +134,10 @@ the proxy from starting.
 
 Soze is one Rust crate and one binary. It does not own the agent's tool-execution loop or run
 the model. The intended service deployment is one proxy per user, without root privileges;
-the current installer implements that on macOS only.
+the installer implements that on macOS and Linux with systemd.
 
 The CLI starts the proxy and accepts configuration flags, but has no status, storage-usage or
-session-listing subcommands. The macOS task commands query the supervisor separately; see
+session-listing subcommands. The service task commands query the supervisor separately; see
 [management and visibility](service-lifecycle.md#management-and-visibility).
 
 How other applications receive the common format remains undecided. This architecture assumes

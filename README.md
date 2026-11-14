@@ -56,16 +56,16 @@ Open a new shell, start the proxy on the wrappers' port (`soze --port 48731 ...`
 - **Known limit:** the proxy address is fixed when the agent starts. If soze stops mid-session, that session loses its connection; start a new one.
 - `agent` (Cursor) gets the proxy only: its host is tunnelled, so nothing is parsed from it.
 
-## The always-on service (macOS)
+## The always-on service (macOS and Linux)
 
-A launchd user agent keeps one `soze` running on port 48731, the port the wrappers use. `task dev` listens on 48732, so both can run at once.
+A launchd user agent (macOS) or a `systemd --user` unit (Linux) keeps one `soze` running on port 48731, the port the wrappers use. `task dev` listens on 48732, so both can run at once. Linux requires systemd 240 or newer, a reachable user manager/session bus and `/bin/kill` for reload (`procps` on Debian); no root access is needed. Other Linux supervisors are not managed by these tasks.
 
 ```sh
 task service:install     # build the debug binary, copy it into place, rotate the log, (re)start
 task service:status      # state, pid, and the sha, branch, dirty flag and time of the install
 task service:logs        # tail -F soze.log
 task service:reload      # SIGHUP: re-read the live logging settings
-task service:restart     # kickstart the service
+task service:restart     # restart the service, cutting in-flight streams
 task service:uninstall   # stop and remove the service and binary
 ```
 
@@ -74,18 +74,43 @@ Layout, all under your home directory:
 | Path | Holds |
 | --- | --- |
 | `~/Library/LaunchAgents/com.killallgit.soze.plist` | the launchd job, label `com.killallgit.soze` |
+| `~/.config/systemd/user/soze.service` | the Linux user unit (`$XDG_CONFIG_HOME/systemd/user/` if set) |
 | `~/.local/share/soze/bin/soze`, `bin/install.json` | the installed binary and what it was built from |
 | `~/.local/share/soze/logs/soze.log`, `soze.log.1` | the service's stdout and stderr, and the previous generation |
 | `~/.local/share/soze/tap.jsonl`, `shapes.jsonl`, `debug.jsonl` | the tap, shape and debug files |
 | `~/.config/soze/config.toml` | settings; written on first install with `log_format = "human"` and `live = true`, never overwritten |
 
 - **Update the service** by re-running `task service:install`. It rebuilds the debug binary, copies it over the installed one, moves `soze.log` to `soze.log.1`, and restarts the service.
+- **Linux startup and recovery.** Installation enables `soze.service` for user-manager startup, normally at login. It runs continuously, without socket activation, and restarts on failure after five seconds. To run from boot and after logout, explicitly opt into lingering with `loginctl enable-linger "$USER"` (authorization depends on your system). The installer never enables lingering or changes system proxy/certificate trust settings.
 - **Restart is abrupt.** In-flight streams are cut and agents must reconnect. The new process has a new `run_id`, which marks the restart in the tap.
 - **Logs.** `task service:logs` tails `soze.log` only. It never reads the tap, because message content must not reach a terminal.
-- **Uninstall** removes the plist, binary and `install.json`, and keeps captures, logs and config. `task service:uninstall -- --purge` also lists every path under `~/.local/share/soze/`, then deletes the directory; `~/.config/soze` stays.
+- **Uninstall** stops and removes the supervisor definition, binary and `install.json` (and disables the Linux unit), keeping captures, logs and config. `task service:uninstall -- --purge` also lists every path under `~/.local/share/soze/`, then deletes the directory; `~/.config/soze` stays. Linux uninstall requires a reachable user manager when the unit is installed. It does not change lingering, which may support other user services.
 - **`live = true` in `config.toml`** applies to `task dev` too, so `LIVE=0 task dev` no longer turns live lines off. Pass `-- --live=false`, or edit the file.
 - **Smoke test.** `task test:smoke` checks that the installed service is running, accepts connections, proxies one `claude -p` call and captures it in the tap without new `connect_failed` lines; it needs the installed service and a logged-in `claude`, and prints counts and ids only.
-- **Tests.** The service tests in `tests/service/` are local shell tests with a fake `launchctl`. `task check` runs them; CI does not.
+- **Tests.** `tests/service/` exercises both platforms with fake `launchctl`, `systemctl` and throwaway homes, without changing the installed service. `task check` and Linux CI run them.
+
+### Test real systemd with Docker
+
+```sh
+docker context show     # check which Docker host will run the privileged test container
+task test:systemd
+```
+
+This is a **test image, not a deployment image**. Production Soze remains a native host
+service. The target builds the actual debug Linux binary, boots systemd as PID 1, starts a
+non-root user manager and tests installation, enablement, status, synthetic proxy traffic,
+SIGHUP reload, restart, crash recovery, update, uninstall and purge.
+
+Use a trusted, rootful Linux Docker daemon with cgroup v2. The container runs with
+`--privileged` and a private cgroup namespace so systemd can manage its hierarchy; this is
+not a security sandbox. No host directories or Docker socket are mounted, no ports are
+published, and runtime networking is disabled except for container loopback. A Dockerfile-specific
+allowlist excludes captures, credentials, Git/Beads state and agent folders from the build context.
+
+Commands are bounded and the container is removed on success, failure or interruption,
+including its scratch captures and CA. The pinned test image/build cache remains available
+for subsequent runs. This opt-in target is separate from `task check` and the mocked service
+tests in CI.
 
 ## Configuration
 
@@ -134,7 +159,7 @@ Terminal stream detail has a budget of 20 records per one-second window; summari
 
 Every dev task also writes `target/dev/debug.jsonl` through a separate logger transport. It resets when the service starts, always selects debug metadata (even with terminal logging off), and does not apply the terminal rate filter. It includes full run/exchange ids, role counts, status/timing/loss counters, and adapter `decision` reasons. `endpoint` is a known API route or `other`; arbitrary paths and query values are excluded. New files are created with mode `0600`. The binary enables this transport with `--log-file <path>`; its parent directory must already exist. Starting a second service on an occupied port leaves the active debug file intact. A debug file cannot alias the tap or shape file, including through dangling symbolic links.
 
-The debug file stops accepting records at 16 MiB per run and reports `debug_file_limit` on stderr; it resumes after the next start resets the file. Open/write/flush failures also report safe diagnostics on stderr while the proxy keeps running. Its independent 256-record queue can drop under load, and abrupt shutdown may lose queued records. This is a disposable debug log, not a durable audit trail. The tap and shape files are bounded separately (see [The tap file](#the-tap-file)); the debug file and `soze.log` (launchd stderr, rotated one generation by the service install) are excluded from that retention.
+The debug file stops accepting records at 16 MiB per run and reports `debug_file_limit` on stderr; it resumes after the next start resets the file. Open/write/flush failures also report safe diagnostics on stderr while the proxy keeps running. Its independent 256-record queue can drop under load, and abrupt shutdown may lose queued records. This is a disposable debug log, not a durable audit trail. The tap and shape files are bounded separately (see [The tap file](#the-tap-file)); the debug file and `soze.log` (supervised stdout/stderr, rotated one generation by the service install) are excluded from that retention.
 
 ```sh
 tail -f target/dev/debug.jsonl               # metadata only; safe to inspect while developing
@@ -183,7 +208,8 @@ Run `task --list`. Tasks run from any directory in the repo.
 - `task dev:stream:json`: real-time metadata as JSON logs.
 - `task test:smoke`: one real `claude` call through the installed always-on service; local only, not part of `task check`.
 - `task test:wrappers`: shell tests for the wrappers and their installer, run under every shell installed. `task check` runs them too.
-- `task service:install`, `service:status`, `service:logs`, `service:reload`, `service:restart`, `service:uninstall`: the always-on macOS service, see above.
+- `task test:systemd`: build and exercise the native Linux user service under real systemd in a disposable privileged Docker container; opt-in, see above.
+- `task service:install`, `service:status`, `service:logs`, `service:reload`, `service:restart`, `service:uninstall`: the always-on macOS or Linux user service, see above.
 
 ## Build disk use
 

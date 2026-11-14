@@ -20,3 +20,5 @@ jobs:
         run: cargo test
       - if: ${{ !cancelled() }}
         run: tests/wrappers/run.sh
+      - if: ${{ !cancelled() }}
+        run: tests/service/run.sh

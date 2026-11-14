@@ -1,0 +1,11 @@
+**
+!Cargo.toml
+!Cargo.lock
+!src/
+!src/**
+!scripts/
+!scripts/service.sh
+!tests/
+!tests/systemd/
+!tests/systemd/inside.sh
+!tests/systemd/test_service.py

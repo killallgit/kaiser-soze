@@ -1,19 +1,62 @@
 . "$(dirname "$0")/../wrappers/lib.sh"
-# Helpers for the service tests: a throwaway HOME with a fake launchctl and a fake git on PATH.
+# Helpers for the service tests: a throwaway HOME with fake supervisors and git on PATH.
 
 new_home() {
   HOME=$(mktemp -d)
   export HOME
   mkdir -p "$HOME/bin"
   PATH="$HOME/bin:$ORIG_PATH"
-  unset SOZE_PORT
+  unset SOZE_PORT XDG_CONFIG_HOME
   LABEL=com.killallgit.soze
   DOMAIN="gui/$(id -u)"
   DATA="$HOME/.local/share/soze"
   PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+  UNIT="$HOME/.config/systemd/user/soze.service"
+  fake_uname "${SERVICE_OS:-Darwin}"
   fake_launchctl
+  fake_systemctl
   fake_git
   touch "$HOME/.marker"
+}
+
+fake_uname() {
+  printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$1" > "$HOME/bin/uname"
+  chmod +x "$HOME/bin/uname"
+}
+
+# Records calls and models only the properties used by the installer.
+fake_systemctl() {
+  cat > "$HOME/bin/systemctl" <<'FAKE'
+#!/bin/sh
+[ "$1" = --user ] || exit 2
+shift
+echo "$*" >> "$HOME/systemctl.calls"
+if [ -e "$HOME/systemctl.fail" ] && grep -qxF "$1" "$HOME/systemctl.fail"; then exit 1; fi
+case "$*" in
+  'show --property=Version') echo Version=257 ;;
+  'daemon-reload') ;;
+  'enable soze.service') touch "$HOME/systemctl.enabled" ;;
+  'restart soze.service')
+    [ -e "$HOME/systemctl.enabled" ] || exit 1
+    touch "$HOME/systemctl.running"
+    ;;
+  'reload soze.service') [ -e "$HOME/systemctl.running" ] || exit 1 ;;
+  'show soze.service --property=LoadState --property=SubState --property=MainPID')
+    if [ -e "$HOME/systemctl.running" ]; then
+      printf 'LoadState=loaded\nSubState=running\nMainPID=4242\n'
+    elif [ -e "$HOME/systemctl.enabled" ]; then
+      printf 'LoadState=loaded\nSubState=failed\nMainPID=0\n'
+    else
+      printf 'LoadState=not-found\nSubState=dead\nMainPID=0\n'
+    fi
+    ;;
+  'disable --now soze.service')
+    rm -f "$HOME/systemctl.enabled" "$HOME/systemctl.running"
+    ;;
+  *) exit 2 ;;
+esac
+FAKE
+  chmod +x "$HOME/bin/systemctl"
 }
 
 # Records every call; the agent is loaded while $HOME/launchctl.loaded exists, and a subcommand
