@@ -10,7 +10,9 @@ architecture diagram and capture pipeline.
 `task service:*` manages a macOS LaunchAgent or a Linux systemd user unit. Linux requires
 systemd 240 or newer (for file-log append support), a reachable user manager/session bus
 and `/bin/kill` for reload (`procps` on Debian).
-The installer checks manager access before changing installed files. No root access is needed.
+The installer checks manager access and unit-directory visibility before changing installed
+files. A custom `XDG_CONFIG_HOME` must agree with the running user manager's unit search path;
+an override visible only to the invoking shell is rejected. No root access is needed.
 
 | Concern | macOS | Linux |
 | --- | --- | --- |

@@ -82,6 +82,7 @@ Layout, all under your home directory:
 
 - **Update the service** by re-running `task service:install`. It rebuilds the debug binary, copies it over the installed one, moves `soze.log` to `soze.log.1`, and restarts the service.
 - **Linux startup and recovery.** Installation enables `soze.service` for user-manager startup, normally at login. It runs continuously, without socket activation, and restarts on failure after five seconds. To run from boot and after logout, explicitly opt into lingering with `loginctl enable-linger "$USER"` (authorization depends on your system). The installer never enables lingering or changes system proxy/certificate trust settings.
+- **Linux unit paths.** The unit directory must be in the running user manager's search path. A shell-only `XDG_CONFIG_HOME` override that the manager cannot see is rejected before installed files change.
 - **Restart is abrupt.** In-flight streams are cut and agents must reconnect. The new process has a new `run_id`, which marks the restart in the tap.
 - **Logs.** `task service:logs` tails `soze.log` only. It never reads the tap, because message content must not reach a terminal.
 - **Uninstall** stops and removes the supervisor definition, binary and `install.json` (and disables the Linux unit), keeping captures, logs and config. `task service:uninstall -- --purge` also lists every path under `~/.local/share/soze/`, then deletes the directory; `~/.config/soze` stays. Linux uninstall requires a reachable user manager when the unit is installed. It does not change lingering, which may support other user services.
@@ -107,8 +108,9 @@ not a security sandbox. No host directories or Docker socket are mounted, no por
 published, and runtime networking is disabled except for container loopback. A Dockerfile-specific
 allowlist excludes captures, credentials, Git/Beads state and agent folders from the build context.
 
-Commands are bounded and the container is removed on success, failure or interruption,
-including its scratch captures and CA. The pinned test image/build cache remains available
+Each invocation tests its own immutable image, even when builds run concurrently. Commands
+are bounded, and cleanup removes the container on success, failure or interruption, including
+its scratch captures and CA. Failed cleanup is reported. The test image/build cache remains available
 for subsequent runs. This opt-in target is separate from `task check` and the mocked service
 tests in CI.
 

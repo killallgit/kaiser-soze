@@ -169,8 +169,52 @@ UNIT
 }
 
 if [ "$platform" = Linux ]; then
-  # Fail before touching installed files if no user manager/session bus is available.
-  systemctl --user show --property=Version > /dev/null
+  # Query the running manager, not the caller's potentially different XDG environment.
+  unit_paths=$(systemctl --user show --property=UnitPath --value)
+  # systemctl quotes string-array entries and backslash-escapes special characters.
+  # Decode those entries as data, never shell code, before comparing complete paths.
+  if ! printf '%s\n' "$unit_paths" | UNIT_DIRECTORY="${unit%/*}" awk '
+    function matches_directory(value) {
+      gsub(/\/+/, "/", value)
+      sub(/\/$/, "", value)
+      return value == directory
+    }
+    BEGIN {
+      directory = ENVIRON["UNIT_DIRECTORY"]
+      gsub(/\/+/, "/", directory)
+      controls = sprintf("%c%c%c%c%c%c%c", 7, 8, 12, 10, 13, 9, 11)
+    }
+    {
+      if (NR != 1) { invalid = 1; next }
+      for (i = 1; i <= length($0); i++) {
+        c = substr($0, i, 1)
+        if (c == "\\") {
+          c = substr($0, ++i, 1)
+          octal = substr($0, i, 3)
+          if (octal ~ /^[0-3][0-7][0-7]$/) {
+            path = path sprintf("%c", substr(octal, 1, 1) * 64 + substr(octal, 2, 1) * 8 + substr(octal, 3, 1))
+            i += 2
+          } else if (c != "" && index("abfnrtv", c)) {
+            path = path substr(controls, index("abfnrtv", c), 1)
+          } else if (c == "\\" || c == "\"" || c == "$" || c == "`") {
+            path = path c
+          } else { invalid = 1; break }
+        } else if (c == "\"") {
+          quoted = !quoted
+        } else if (c ~ /[ \t]/ && !quoted) {
+          if (matches_directory(path)) found = 1
+          path = ""
+        } else {
+          path = path c
+        }
+      }
+      if (matches_directory(path)) found = 1
+    }
+    END { exit (invalid || quoted || !found) }
+  '; then
+    echo "unit directory is outside the user manager search path: nothing changed" >&2
+    exit 2
+  fi
   umask 077
   definition=$unit
 else

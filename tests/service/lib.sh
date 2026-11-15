@@ -33,7 +33,13 @@ shift
 echo "$*" >> "$HOME/systemctl.calls"
 if [ -e "$HOME/systemctl.fail" ] && grep -qxF "$1" "$HOME/systemctl.fail"; then exit 1; fi
 case "$*" in
-  'show --property=Version') echo Version=257 ;;
+  'show --property=UnitPath --value')
+    if [ -e "$HOME/systemctl.unit-paths" ]; then
+      cat "$HOME/systemctl.unit-paths"
+    else
+      printf '/etc/systemd/user "%s/.config/systemd/user" /usr/lib/systemd/user\n' "$HOME"
+    fi
+    ;;
   'daemon-reload') ;;
   'enable soze.service') touch "$HOME/systemctl.enabled" ;;
   'restart soze.service')

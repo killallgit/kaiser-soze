@@ -25,7 +25,7 @@ installs_an_enabled_always_on_user_unit() {
   # The user unit supervises the foreground binary, reloads logging and keeps output private.
   [ -x "$DATA/bin/soze" ]
   cmp "$HOME/soze" "$DATA/bin/soze"
-  eq "$(systemctl_calls)" "$(printf '%s\n' 'show --property=Version' daemon-reload 'enable soze.service' 'restart soze.service')" "install calls"
+  eq "$(systemctl_calls)" "$(printf '%s\n' 'show --property=UnitPath --value' daemon-reload 'enable soze.service' 'restart soze.service')" "install calls"
   eq "$(cat "$UNIT")" "$(cat <<'UNIT'
 [Unit]
 Description=Soze local model API proxy
@@ -79,11 +79,12 @@ updates_the_binary_preserving_config_and_captures() {
   cmp "$HOME/config.before" "$HOME/.config/soze/config.toml"
   cmp "$HOME/tap.before" "$DATA/tap.jsonl"
   cmp "$HOME/log.before" "$DATA/logs/soze.log.1"
-  eq "$(systemctl_calls)" "$(printf '%s\n' 'show --property=Version' daemon-reload 'enable soze.service' 'restart soze.service')" "update calls"
+  eq "$(systemctl_calls)" "$(printf '%s\n' 'show --property=UnitPath --value' daemon-reload 'enable soze.service' 'restart soze.service')" "update calls"
 }
 
 uses_the_user_managers_config_directory() {
   export XDG_CONFIG_HOME="$HOME/custom config"
+  printf '/etc/systemd/user "%s/systemd/user" /usr/lib/systemd/user\n' "$XDG_CONFIG_HOME" > "$HOME/systemctl.unit-paths"
   install_fake
 
   # Only the supervisor definition follows XDG; Soze keeps its existing config/data contract.
@@ -92,6 +93,77 @@ uses_the_user_managers_config_directory() {
   [ -f "$HOME/.config/soze/config.toml" ]
   service uninstall
   [ ! -e "$XDG_CONFIG_HOME/systemd/user/soze.service" ]
+}
+
+manager_paths_with_escaped_characters_remain_valid() {
+  export XDG_CONFIG_HOME="$HOME/custom \"config\\dir \$HOME"
+  printf '/etc/systemd/user "%s/custom \\"config\\\\dir \\$HOME/systemd/user"\n' "$HOME" > "$HOME/systemctl.unit-paths"
+
+  install_fake
+
+  # Quoting and escape sequences describe literal path characters, never shell expansions.
+  [ -f "$XDG_CONFIG_HOME/systemd/user/soze.service" ]
+  [ ! -e "$UNIT" ]
+}
+
+config_directory_trailing_slashes_remain_valid() {
+  export XDG_CONFIG_HOME="$HOME/custom config/"
+  printf '"%s/custom config/systemd/user"\n' "$HOME" > "$HOME/systemctl.unit-paths"
+
+  install_fake
+
+  # A trailing XDG slash still addresses the directory searched by the manager.
+  [ -f "$XDG_CONFIG_HOME/systemd/user/soze.service" ]
+}
+
+malformed_manager_paths_cannot_authorize_installation() {
+  printf '"%s/.config/systemd/user\n' "$HOME" > "$HOME/systemctl.unit-paths"
+  fake_soze "$HOME/soze" one
+
+  code=$(exit_code install "$HOME/soze")
+
+  # A partial quoted entry is not evidence that the manager searches that directory.
+  eq "$code" 2 "malformed unit path"
+  [ ! -e "$HOME/.local" ]
+  [ ! -e "$HOME/.config" ]
+}
+
+caller_only_config_override_preserves_the_running_installation() {
+  installed
+  printf 'synthetic\n' > "$DATA/logs/soze.log"
+  printf '{"synthetic":true}\n' > "$DATA/tap.jsonl"
+  cp -Rp "$DATA" "$HOME/data.before"
+  cp "$UNIT" "$HOME/unit.before"
+  cp "$HOME/.config/soze/config.toml" "$HOME/config.before"
+  inode_before=$(ls -i "$DATA/bin/soze" | awk '{print $1}')
+  export XDG_CONFIG_HOME="$HOME/caller config"
+  fake_soze "$HOME/soze" two
+
+  code=$(exit_code install "$HOME/soze")
+
+  # A caller-only directory cannot replace files or disturb the already running service.
+  eq "$code" 2 "unsearchable unit directory"
+  diff -rq "$HOME/data.before" "$DATA" > /dev/null
+  cmp "$HOME/unit.before" "$UNIT"
+  cmp "$HOME/config.before" "$HOME/.config/soze/config.toml"
+  eq "$(ls -i "$DATA/bin/soze" | awk '{print $1}')" "$inode_before" "binary inode"
+  [ -e "$HOME/systemctl.running" ]
+  [ ! -e "$XDG_CONFIG_HOME" ]
+  eq "$(systemctl_calls)" 'show --property=UnitPath --value' "preflight calls only"
+}
+
+manager_path_prefixes_do_not_authorize_a_new_installation() {
+  export XDG_CONFIG_HOME="$HOME/caller config"
+  printf '"%s/systemd/user-extra" "%s/systemd/user/nested"\n' "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME" > "$HOME/systemctl.unit-paths"
+  fake_soze "$HOME/soze" one
+
+  code=$(exit_code install "$HOME/soze")
+
+  # Only a complete search-path entry authorizes the unit directory, not a substring.
+  eq "$code" 2 "unsearchable unit directory"
+  [ ! -e "$HOME/.local" ]
+  [ ! -e "$HOME/.config" ]
+  [ ! -e "$XDG_CONFIG_HOME" ]
 }
 
 restart_and_reload_use_the_user_manager() {
@@ -268,6 +340,11 @@ case_run installs_an_enabled_always_on_user_unit installs_an_enabled_always_on_u
 case_run shares_config_and_provenance_with_macos shares_config_and_provenance_with_macos
 case_run updates_the_binary_preserving_config_and_captures updates_the_binary_preserving_config_and_captures
 case_run uses_the_user_managers_config_directory uses_the_user_managers_config_directory
+case_run manager_paths_with_escaped_characters_remain_valid manager_paths_with_escaped_characters_remain_valid
+case_run config_directory_trailing_slashes_remain_valid config_directory_trailing_slashes_remain_valid
+case_run malformed_manager_paths_cannot_authorize_installation malformed_manager_paths_cannot_authorize_installation
+case_run caller_only_config_override_preserves_the_running_installation caller_only_config_override_preserves_the_running_installation
+case_run manager_path_prefixes_do_not_authorize_a_new_installation manager_path_prefixes_do_not_authorize_a_new_installation
 case_run restart_and_reload_use_the_user_manager restart_and_reload_use_the_user_manager
 case_run control_failures_propagate control_failures_propagate
 case_run status_without_an_install_is_not_loaded status_without_an_install_is_not_loaded

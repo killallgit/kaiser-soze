@@ -10,6 +10,7 @@ from pathlib import Path
 import selectors
 import socket
 import subprocess
+import tempfile
 import time
 import unittest
 
@@ -203,6 +204,37 @@ class UserService(unittest.TestCase):
         self.assertNotEqual((DATA / "bin/soze").stat().st_ino, inode_before)
         self.assertTrue(any(hashlib.sha256(path.read_bytes()).digest() == capture_before for path in DATA.glob("tap.*.jsonl")))
         self.assertTrue((DATA / "logs/soze.log.1").is_file())
+
+    def test_caller_only_config_override_leaves_the_running_installation_untouched(self):
+        self.install()
+        self.relay()
+        pid = self.property("MainPID")
+        paths = [UNIT, *CONFIG.parent.rglob("*"), *DATA.rglob("*")]
+        before = {
+            path: (path.stat().st_ino, hashlib.sha256(path.read_bytes()).digest())
+            for path in paths if path.is_file()
+        }
+        with tempfile.TemporaryDirectory(prefix="soze caller config ") as directory:
+            override = Path(directory) / "config"
+            environment = dict(os.environ, XDG_CONFIG_HOME=str(override))
+
+            result = subprocess.run(
+                ["sh", str(ROOT / "scripts/service.sh"), "install", str(BINARY)],
+                env=environment, capture_output=True, timeout=20, check=False,
+            )
+
+            # Rejection cannot replace service/config/data files, rotate logs, or restart the PID.
+            self.assertEqual(result.returncode, 2)
+            self.assertFalse(override.exists())
+        after_paths = [UNIT, *CONFIG.parent.rglob("*"), *DATA.rglob("*")]
+        after = {
+            path: (path.stat().st_ino, hashlib.sha256(path.read_bytes()).digest())
+            for path in after_paths if path.is_file()
+        }
+        self.assertTrue(before == after, "installed file identities and digests changed")
+        self.assertEqual(self.property("MainPID"), pid)
+        self.assertEqual(self.property("ActiveState"), "active")
+        self.assertTrue(self.listening())
 
     def test_uninstall_preserves_data_and_purge_removes_only_data(self):
         self.install()
