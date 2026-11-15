@@ -57,22 +57,26 @@ the gate exposes gets fixed, even if unrelated.
 ## Git and worktrees
 
 The default branch is `main`. Forgejo `Laurel` is its local upstream and the default push
-target; `origin` and `gh` remain GitHub. Branch from fresh `Laurel/main` for a Forgejo PR,
-or fresh `origin/main` for a GitHub PR. For GitHub work, explicitly `git push -u origin
-<branch>` and set `git config branch.<branch>.pushRemote origin` so later plain pushes
-stay there. Existing GitHub branch push settings remain intact. Only main is synchronized,
-with ordinary fast-forwards; never force to resolve divergence. PR metadata is independent,
-so link a Forgejo PR in the coordinating GitHub issue.
+target; `origin` and the `gh` CLI remain GitHub. Fetch the target remote first: `git fetch
+Laurel` for a Forgejo PR, or `git fetch origin` for a GitHub PR. Use that remote's main
+as the lane base, not a possibly stale/ahead local main. Stop/report local main divergence.
+For Forgejo, first push with `git push -u Laurel <branch>`. For GitHub, explicitly
+`git push -u origin <branch>` and set `git config branch.<branch>.pushRemote origin` so
+later plain pushes stay there. Existing GitHub branch push settings remain intact.
+Only main is synchronized, with ordinary fast-forwards; never force to resolve divergence.
+PR metadata is independent, so link a Forgejo PR in the coordinating GitHub issue.
 
 Before the first edit, create a lane worktree from the repo root with
-`git worktree add .claude/worktrees/<lane> -b worktree-<lane> main`, enter it, and confirm the
+`git worktree add .claude/worktrees/<lane> -b worktree-<lane> <target-remote>/main`
+(`Laurel` or `origin` as selected above), enter it, and confirm the
 branch is `worktree-<lane>`. This setup is required even when commits or pushes are not authorized;
 it does not authorize either. `.claude/worktrees/` is ignored by `.gitignore`.
 
 Each commit message is one plain sentence, with no attribution lines. `CLAUDE.local.md` is never
 committed.
 
-Integrate by rebasing the lane onto `main`, running the gate, and opening a pull request. Merge
+Integrate by fetching and rebasing the lane onto the same target remote's `main`, running
+the gate, and opening a pull request. Merge
 only after all CI checks pass. Commit and code push require the user's request; report proposed
 commands at handoff otherwise. Beads data stays local; do not push Beads or Dolt state.
 
