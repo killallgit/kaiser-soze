@@ -1,19 +1,105 @@
 . "$(dirname "$0")/../wrappers/lib.sh"
-# Helpers for the service tests: a throwaway HOME with a fake launchctl and a fake git on PATH.
+# Helpers for the service tests: a throwaway HOME with fake supervisors and git on PATH.
 
 new_home() {
   HOME=$(mktemp -d)
   export HOME
   mkdir -p "$HOME/bin"
   PATH="$HOME/bin:$ORIG_PATH"
-  unset SOZE_PORT
+  unset SOZE_PORT XDG_CONFIG_HOME
   LABEL=com.killallgit.soze
   DOMAIN="gui/$(id -u)"
   DATA="$HOME/.local/share/soze"
   PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+  UNIT="$HOME/.config/systemd/user/soze.service"
+  fake_uname "${SERVICE_OS:-Darwin}"
   fake_launchctl
+  fake_systemctl
   fake_git
   touch "$HOME/.marker"
+}
+
+fake_uname() {
+  printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$1" > "$HOME/bin/uname"
+  chmod +x "$HOME/bin/uname"
+}
+
+# Records calls and models only the properties used by the installer.
+fake_systemctl() {
+  cat > "$HOME/bin/systemctl" <<'FAKE'
+#!/bin/sh
+[ "$1" = --user ] || exit 2
+shift
+echo "$*" >> "$HOME/systemctl.calls"
+if [ -e "$HOME/systemctl.fail" ] && grep -qxF "$1" "$HOME/systemctl.fail"; then exit 1; fi
+resolve_fragment() {
+  for candidate in "$HOME/.config/systemd/user/soze.service" \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/soze.service" \
+    "$HOME/.local/share/systemd/user/soze.service"; do
+    [ -f "$candidate" ] || continue
+    printf '%s\n' "$candidate" | sed 's://*:/:g'
+    return
+  done
+}
+case "$*" in
+  'show --property=UnitPath --value')
+    if [ -e "$HOME/systemctl.unit-paths" ]; then
+      cat "$HOME/systemctl.unit-paths"
+    else
+      printf '/etc/systemd/user "%s/.config/systemd/user" /usr/lib/systemd/user\n' "$HOME"
+    fi
+    ;;
+  'daemon-reload')
+    resolve_fragment > "$HOME/systemctl.fragment-path"
+    if [ -e "$HOME/systemctl.fragment-after-reload" ]; then
+      cp "$HOME/systemctl.fragment-after-reload" "$HOME/systemctl.fragment-path"
+    fi
+    ;;
+  'enable soze.service') touch "$HOME/systemctl.enabled" ;;
+  'restart soze.service')
+    [ -e "$HOME/systemctl.enabled" ] || exit 1
+    pid=4242
+    [ ! -e "$HOME/systemctl.pid" ] || pid=$(($(cat "$HOME/systemctl.pid") + 1))
+    printf '%s\n' "$pid" > "$HOME/systemctl.pid"
+    touch "$HOME/systemctl.running"
+    ;;
+  'stop soze.service') rm -f "$HOME/systemctl.running" ;;
+  'reload soze.service') [ -e "$HOME/systemctl.running" ] || exit 1 ;;
+  'show soze.service --property=FragmentPath --value')
+    [ -e "$HOME/systemctl.fragment-path" ] || resolve_fragment > "$HOME/systemctl.fragment-path"
+    cat "$HOME/systemctl.fragment-path"
+    ;;
+  'show soze.service --property=LoadState --property=MainPID')
+    if [ -e "$HOME/systemctl.load-state" ]; then
+      printf 'LoadState='
+      cat "$HOME/systemctl.load-state"
+    elif [ -s "$HOME/systemctl.fragment-path" ]; then
+      printf 'LoadState=loaded\n'
+    else
+      printf 'LoadState=not-found\n'
+    fi
+    if [ -e "$HOME/systemctl.running" ]; then
+      printf 'MainPID=%s\n' "$(cat "$HOME/systemctl.pid")"
+    else
+      printf 'MainPID=0\n'
+    fi
+    ;;
+  'show soze.service --property=LoadState --property=SubState --property=MainPID')
+    if [ -e "$HOME/systemctl.running" ]; then
+      printf 'LoadState=loaded\nSubState=running\nMainPID=%s\n' "$(cat "$HOME/systemctl.pid")"
+    elif [ -e "$HOME/systemctl.enabled" ]; then
+      printf 'LoadState=loaded\nSubState=failed\nMainPID=0\n'
+    else
+      printf 'LoadState=not-found\nSubState=dead\nMainPID=0\n'
+    fi
+    ;;
+  'disable --now soze.service')
+    rm -f "$HOME/systemctl.enabled" "$HOME/systemctl.running"
+    ;;
+  *) exit 2 ;;
+esac
+FAKE
+  chmod +x "$HOME/bin/systemctl"
 }
 
 # Records every call; the agent is loaded while $HOME/launchctl.loaded exists, and a subcommand

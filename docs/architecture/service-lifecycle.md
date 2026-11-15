@@ -7,16 +7,20 @@ architecture diagram and capture pipeline.
 
 ## Platform support
 
-**macOS service management is implemented. Linux service management is proposed, not
-implemented.** The current installer calls `launchctl` directly; `task service:*` is not a
-cross-platform service interface.
+`task service:*` manages a macOS LaunchAgent or a Linux systemd user unit. Linux requires
+systemd 240 or newer (for file-log append support), a reachable user manager/session bus
+and `/bin/kill` for reload (`procps` on Debian).
+The installer checks manager access, unit-directory visibility and any loaded definition's
+identity before changing installed files. A custom `XDG_CONFIG_HOME` must agree with the
+running user manager's unit search path and cannot select a shadowed, same-named unit.
+The effective definition is checked again before restart. No root access is needed.
 
-| Concern | Current macOS behavior | Proposed Linux equivalent |
+| Concern | macOS | Linux |
 | --- | --- | --- |
 | Supervisor | `launchd` user LaunchAgent | `systemd --user` service |
-| Definition | `~/Library/LaunchAgents/com.killallgit.soze.plist` | `~/.config/systemd/user/soze.service` |
+| Definition | `~/Library/LaunchAgents/com.killallgit.soze.plist` | `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/soze.service` |
 | Startup | GUI user login; job uses `RunAtLoad` | User-manager startup, normally login |
-| Automatic recovery | `KeepAlive` | `Restart=on-failure` with a restart delay |
+| Automatic recovery | `KeepAlive` | `Restart=on-failure`, five-second delay |
 | Run without a login session | Not supplied by the current GUI-domain installer | Explicitly enable user lingering |
 | Logging reload | SIGHUP | SIGHUP through `ExecReload` |
 
@@ -27,9 +31,9 @@ service backend is implemented; the foreground binary can be managed by another 
 One service per user avoids sharing CA private keys and captured conversations across users.
 The default port is still shared by the machine: two users cannot both bind
 `127.0.0.1:48731`. Multi-user deployment would need distinct ports and matching wrapper
-settings; the macOS installer currently fixes its service port at 48731.
+settings; both installers currently fix the service port at 48731.
 
-## macOS operations
+## Service operations
 
 Run these commands from a checkout with Task installed:
 
@@ -41,6 +45,17 @@ task service:reload      # SIGHUP: reload live logging settings
 task service:restart     # abruptly restart the process
 task service:uninstall   # remove the job and binary; keep captures, logs and config
 ```
+
+Linux installation writes `soze.service`, reloads the user manager, enables the unit for
+`default.target` and restarts it. It runs the foreground binary continuously, not through
+socket activation. stdout and stderr append to the same `soze.log` used on macOS; the logs
+command does not read journald or capture output. New Linux directories and non-executable
+files are private to the user, and the unit applies `UMask=0077` to runtime files.
+
+To keep the Linux user manager running from boot and after logout, explicitly enable
+lingering with `loginctl enable-linger "$USER"`; authorization depends on local policy.
+Installation and removal never change lingering, which can also support other user services.
+Without it, service lifetime follows the system's user-manager/session policy.
 
 Installation copies the binary to `~/.local/share/soze/bin/soze`, so changing checkout branches
 or rebuilding a development binary does not replace the running installation. Re-running
@@ -64,6 +79,7 @@ Use `SOZE_PORT=48732` when launching a wrapped agent against the development pro
 | Path | Contents |
 | --- | --- |
 | `~/Library/LaunchAgents/com.killallgit.soze.plist` | macOS supervisor definition |
+| `~/.config/systemd/user/soze.service` | Linux supervisor definition; follows `XDG_CONFIG_HOME` if set |
 | `~/.local/share/soze/bin/soze` | Installed executable |
 | `~/.local/share/soze/bin/install.json` | Installed-build provenance |
 | `~/.local/share/soze/tap.jsonl` and numbered segments | Captured events, content, records and graph edges |
@@ -77,7 +93,10 @@ The first install creates `config.toml` with `log_format = "human"` and `live = 
 file is absent. Later installs preserve it. The CA is made on the binary's first run, not
 installed into a trust store.
 
-Normal uninstall keeps captures, logs, configuration and CA material.
+Normal uninstall keeps captures, logs, configuration and CA material. On Linux it first
+verifies that the caller's unit path matches the manager's loaded definition, then disables
+and stops the unit before deleting it and reloading the manager. A mismatched path or stop
+failure aborts removal, so files are not deleted from underneath a possibly running service.
 `task service:uninstall -- --purge` additionally lists and deletes the entire
 `~/.local/share/soze/` directory. It still keeps `~/.config/soze/`.
 
@@ -109,7 +128,7 @@ subcommands and exposes no management or health API.
 
 | Information | Available interface |
 | --- | --- |
-| Supervisor state and PID | `task service:status`, macOS only |
+| Supervisor state and PID | `task service:status`, macOS and Linux |
 | Installed source SHA, branch, dirty flag and installation time | Same command, from `bin/install.json` |
 | Content-free operational activity | `task service:logs` |
 | Capture and log disk usage | Filesystem tools; no built-in aggregate report |
@@ -118,6 +137,28 @@ subcommands and exposes no management or health API.
 Supervisor state and a listening TCP port do not prove successful upstream requests or
 complete capture. The existing status command reports the supervisor and installation, not
 an application-level health assessment.
+
+Linux status maps systemd's service substate to `state` (for example, `running`, `dead` or
+`failed`), reports an empty PID when no process is running, and uses `not loaded` for a missing
+unit. An unreachable user manager fails the command rather than looking like an absent unit.
+
+## Testing supervision
+
+`task check` and Linux CI run isolated shell tests of both service backends using fake OS
+commands. `task test:systemd` separately builds a debug Linux binary and boots a disposable
+systemd Docker image, exercising the real installer and proxy under a non-root user manager.
+It checks enablement, state/PID, proxy forwarding, reload, restart, automatic recovery,
+update and retained data after uninstall, followed by purge.
+
+Docker is only the integration-test environment; it does not replace native host supervision.
+The test needs a trusted rootful Linux Docker daemon with cgroup v2 and uses a privileged
+container with a private cgroup namespace. No host directories or sockets are mounted, no
+ports are published and runtime networking is loopback-only. The container and its generated
+capture/CA files are removed after the test. See the [Docker test
+instructions](../../README.md#test-real-systemd-with-docker) before running against a local or
+remote Docker context.
+
+## Inspecting disk usage
 
 These commands report disk usage without printing captured content:
 

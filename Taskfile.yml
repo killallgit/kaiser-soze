@@ -26,6 +26,11 @@ tasks:
     cmds:
       - tests/wrappers/run.sh
 
+  test:systemd:
+    desc: Build a debug Linux binary and test its real systemd user service in a disposable privileged Docker container
+    cmds:
+      - sh tests/systemd/run.sh
+
   test:smoke:
     desc: Check the installed always-on service with one real claude call; needs the service and a logged-in claude
     cmds:
@@ -57,7 +62,7 @@ tasks:
       - scripts/dev.sh --stream --log-format json {{.CLI_ARGS}}
 
   service:install:
-    desc: Build the debug binary, install it as the always-on macOS service on port 48731, and restart it
+    desc: Build the debug binary, install it as a macOS or Linux user service on port 48731, and restart it
     vars:
       BINARY:
         sh: cargo metadata --format-version 1 --no-deps | jq -r '.target_directory + "/debug/soze"'
