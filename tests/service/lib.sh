@@ -32,6 +32,15 @@ fake_systemctl() {
 shift
 echo "$*" >> "$HOME/systemctl.calls"
 if [ -e "$HOME/systemctl.fail" ] && grep -qxF "$1" "$HOME/systemctl.fail"; then exit 1; fi
+resolve_fragment() {
+  for candidate in "$HOME/.config/systemd/user/soze.service" \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/soze.service" \
+    "$HOME/.local/share/systemd/user/soze.service"; do
+    [ -f "$candidate" ] || continue
+    printf '%s\n' "$candidate" | sed 's://*:/:g'
+    return
+  done
+}
 case "$*" in
   'show --property=UnitPath --value')
     if [ -e "$HOME/systemctl.unit-paths" ]; then
@@ -40,23 +49,44 @@ case "$*" in
       printf '/etc/systemd/user "%s/.config/systemd/user" /usr/lib/systemd/user\n' "$HOME"
     fi
     ;;
-  'daemon-reload') ;;
-  'enable soze.service')
-    touch "$HOME/systemctl.enabled"
-    printf '%s/systemd/user/soze.service\n' "${XDG_CONFIG_HOME:-$HOME/.config}" |
-      sed 's://*:/:g' > "$HOME/systemctl.fragment-path"
+  'daemon-reload')
+    resolve_fragment > "$HOME/systemctl.fragment-path"
+    if [ -e "$HOME/systemctl.fragment-after-reload" ]; then
+      cp "$HOME/systemctl.fragment-after-reload" "$HOME/systemctl.fragment-path"
+    fi
     ;;
+  'enable soze.service') touch "$HOME/systemctl.enabled" ;;
   'restart soze.service')
     [ -e "$HOME/systemctl.enabled" ] || exit 1
+    pid=4242
+    [ ! -e "$HOME/systemctl.pid" ] || pid=$(($(cat "$HOME/systemctl.pid") + 1))
+    printf '%s\n' "$pid" > "$HOME/systemctl.pid"
     touch "$HOME/systemctl.running"
     ;;
+  'stop soze.service') rm -f "$HOME/systemctl.running" ;;
   'reload soze.service') [ -e "$HOME/systemctl.running" ] || exit 1 ;;
   'show soze.service --property=FragmentPath --value')
-    [ ! -e "$HOME/systemctl.fragment-path" ] || cat "$HOME/systemctl.fragment-path"
+    [ -e "$HOME/systemctl.fragment-path" ] || resolve_fragment > "$HOME/systemctl.fragment-path"
+    cat "$HOME/systemctl.fragment-path"
+    ;;
+  'show soze.service --property=LoadState --property=MainPID')
+    if [ -e "$HOME/systemctl.load-state" ]; then
+      printf 'LoadState='
+      cat "$HOME/systemctl.load-state"
+    elif [ -s "$HOME/systemctl.fragment-path" ]; then
+      printf 'LoadState=loaded\n'
+    else
+      printf 'LoadState=not-found\n'
+    fi
+    if [ -e "$HOME/systemctl.running" ]; then
+      printf 'MainPID=%s\n' "$(cat "$HOME/systemctl.pid")"
+    else
+      printf 'MainPID=0\n'
+    fi
     ;;
   'show soze.service --property=LoadState --property=SubState --property=MainPID')
     if [ -e "$HOME/systemctl.running" ]; then
-      printf 'LoadState=loaded\nSubState=running\nMainPID=4242\n'
+      printf 'LoadState=loaded\nSubState=running\nMainPID=%s\n' "$(cat "$HOME/systemctl.pid")"
     elif [ -e "$HOME/systemctl.enabled" ]; then
       printf 'LoadState=loaded\nSubState=failed\nMainPID=0\n'
     else

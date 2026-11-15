@@ -25,7 +25,7 @@ installs_an_enabled_always_on_user_unit() {
   # The user unit supervises the foreground binary, reloads logging and keeps output private.
   [ -x "$DATA/bin/soze" ]
   cmp "$HOME/soze" "$DATA/bin/soze"
-  eq "$(systemctl_calls)" "$(printf '%s\n' 'show --property=UnitPath --value' daemon-reload 'enable soze.service' 'restart soze.service')" "install calls"
+  eq "$(systemctl_calls)" "$(printf '%s\n' 'show --property=UnitPath --value' 'show soze.service --property=FragmentPath --value' 'show soze.service --property=LoadState --property=MainPID' daemon-reload 'enable soze.service' 'show soze.service --property=FragmentPath --value' 'restart soze.service')" "install calls"
   eq "$(cat "$UNIT")" "$(cat <<'UNIT'
 [Unit]
 Description=Soze local model API proxy
@@ -79,7 +79,7 @@ updates_the_binary_preserving_config_and_captures() {
   cmp "$HOME/config.before" "$HOME/.config/soze/config.toml"
   cmp "$HOME/tap.before" "$DATA/tap.jsonl"
   cmp "$HOME/log.before" "$DATA/logs/soze.log.1"
-  eq "$(systemctl_calls)" "$(printf '%s\n' 'show --property=UnitPath --value' daemon-reload 'enable soze.service' 'restart soze.service')" "update calls"
+  eq "$(systemctl_calls)" "$(printf '%s\n' 'show --property=UnitPath --value' 'show soze.service --property=FragmentPath --value' daemon-reload 'enable soze.service' 'show soze.service --property=FragmentPath --value' 'restart soze.service')" "update calls"
 }
 
 uses_the_user_managers_config_directory() {
@@ -168,6 +168,87 @@ manager_path_prefixes_do_not_authorize_a_new_installation() {
   [ ! -e "$HOME/.local" ]
   [ ! -e "$HOME/.config" ]
   [ ! -e "$XDG_CONFIG_HOME" ]
+}
+
+a_searched_but_shadowed_directory_cannot_update_the_loaded_installation() {
+  installed
+  printf 'synthetic\n' > "$DATA/logs/soze.log"
+  printf '{"synthetic":true}\n' > "$DATA/tap.jsonl"
+  cp -Rp "$DATA" "$HOME/data.before"
+  cp "$UNIT" "$HOME/unit.before"
+  cp "$HOME/.config/soze/config.toml" "$HOME/config.before"
+  inode_before=$(ls -i "$DATA/bin/soze" | awk '{print $1}')
+  pid_before=$(cat "$HOME/systemctl.pid")
+  export XDG_CONFIG_HOME="$HOME/.local/share"
+  printf '"%s/.config/systemd/user" "%s/systemd/user"\n' "$HOME" "$XDG_CONFIG_HOME" > "$HOME/systemctl.unit-paths"
+  fake_soze "$HOME/soze" two
+
+  code=$(exit_code install "$HOME/soze")
+
+  # Both directories are searched, but only the already loaded definition owns shared files.
+  eq "$code" 2 "shadowed installation"
+  diff -rq "$HOME/data.before" "$DATA" > /dev/null
+  cmp "$HOME/unit.before" "$UNIT"
+  cmp "$HOME/config.before" "$HOME/.config/soze/config.toml"
+  eq "$(ls -i "$DATA/bin/soze" | awk '{print $1}')" "$inode_before" "binary inode"
+  eq "$(cat "$HOME/systemctl.pid")" "$pid_before" "running pid"
+  [ -e "$HOME/systemctl.running" ]
+  [ -e "$HOME/systemctl.enabled" ]
+  [ ! -e "$XDG_CONFIG_HOME/systemd/user/soze.service" ]
+  eq "$(systemctl_calls)" "$(printf '%s\n' 'show --property=UnitPath --value' 'show soze.service --property=FragmentPath --value')" "identity preflight only"
+}
+
+an_empty_fragment_cannot_authorize_an_existing_installation_update() {
+  installed
+  : > "$HOME/systemctl.fragment-path"
+  cp -Rp "$DATA" "$HOME/data.before"
+  cp "$UNIT" "$HOME/unit.before"
+  fake_soze "$HOME/soze" two
+
+  code=$(exit_code install "$HOME/soze")
+
+  # Missing identity is acceptable only before the first installation, never for installed artifacts.
+  eq "$code" 2 "missing existing identity"
+  diff -rq "$HOME/data.before" "$DATA" > /dev/null
+  cmp "$HOME/unit.before" "$UNIT"
+  [ -e "$HOME/systemctl.running" ]
+}
+
+a_masked_unit_is_not_a_genuinely_new_installation() {
+  echo masked > "$HOME/systemctl.load-state"
+  fake_soze "$HOME/soze" one
+
+  code=$(exit_code install "$HOME/soze")
+
+  # An empty FragmentPath does not prove absence when the manager reports another load state.
+  eq "$code" 2 "masked unit"
+  [ ! -e "$HOME/.local" ]
+  [ ! -e "$HOME/.config" ]
+}
+
+an_identity_change_during_reload_prevents_restart() {
+  printf '%s/shadow/soze.service\n' "$HOME" > "$HOME/systemctl.fragment-after-reload"
+  fake_soze "$HOME/soze" one
+
+  code=$(exit_code install "$HOME/soze")
+
+  # The effective post-write identity must match even when the earlier absence check succeeded.
+  eq "$code" 2 "post-write identity mismatch"
+  [ ! -e "$HOME/systemctl.running" ]
+  [ ! -e "$HOME/systemctl.pid" ]
+  eq "$(systemctl_calls)" "$(printf '%s\n' 'show --property=UnitPath --value' 'show soze.service --property=FragmentPath --value' 'show soze.service --property=LoadState --property=MainPID' daemon-reload 'enable soze.service' 'show soze.service --property=FragmentPath --value')" "no shadowed restart"
+}
+
+a_stopped_service_can_be_updated_with_its_existing_identity() {
+  installed
+  systemctl --user stop soze.service
+  fake_soze "$HOME/soze" two
+
+  service install "$HOME/soze"
+
+  # Stopped is not missing: the same loaded definition can still receive an ordinary update.
+  cmp "$HOME/soze" "$DATA/bin/soze"
+  [ -e "$HOME/systemctl.running" ]
 }
 
 restart_and_reload_use_the_user_manager() {
@@ -453,6 +534,11 @@ case_run config_directory_trailing_slashes_remain_valid config_directory_trailin
 case_run malformed_manager_paths_cannot_authorize_installation malformed_manager_paths_cannot_authorize_installation
 case_run caller_only_config_override_preserves_the_running_installation caller_only_config_override_preserves_the_running_installation
 case_run manager_path_prefixes_do_not_authorize_a_new_installation manager_path_prefixes_do_not_authorize_a_new_installation
+case_run a_searched_but_shadowed_directory_cannot_update_the_loaded_installation a_searched_but_shadowed_directory_cannot_update_the_loaded_installation
+case_run an_empty_fragment_cannot_authorize_an_existing_installation_update an_empty_fragment_cannot_authorize_an_existing_installation_update
+case_run a_masked_unit_is_not_a_genuinely_new_installation a_masked_unit_is_not_a_genuinely_new_installation
+case_run an_identity_change_during_reload_prevents_restart an_identity_change_during_reload_prevents_restart
+case_run a_stopped_service_can_be_updated_with_its_existing_identity a_stopped_service_can_be_updated_with_its_existing_identity
 case_run restart_and_reload_use_the_user_manager restart_and_reload_use_the_user_manager
 case_run control_failures_propagate control_failures_propagate
 case_run status_without_an_install_is_not_loaded status_without_an_install_is_not_loaded

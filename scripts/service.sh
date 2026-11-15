@@ -48,17 +48,31 @@ show_status() {
     sed -n '/^  "/{s/,$//;s/^  "\([a-z_]*\)": /\1=/;s/="\(.*\)"$/=\1/;p;}' "$data/bin/install.json"
 }
 
+installation_exists() {
+  [ -e "$unit" ] || [ -e "$data/bin/soze" ] || [ -e "$data/bin/install.json" ]
+}
+
+verify_unit_identity() {
+  # Search visibility does not establish which same-named definition the manager loaded.
+  fragment=$(systemctl --user show soze.service --property=FragmentPath --value)
+  expected_unit=$(printf '%s\n' "$unit" | sed 's://*:/:g')
+  [ "$fragment" != "$expected_unit" ] || return 0
+  if [ "$1" = new ] && [ -z "$fragment" ] && ! installation_exists; then
+    # Only a genuinely absent unit may lack an identity before the first write.
+    identity=$(systemctl --user show soze.service --property=LoadState --property=MainPID)
+    if [ "$(printf '%s\n' "$identity" | sed -n 's/^LoadState=//p')" = not-found ] &&
+      [ "$(printf '%s\n' "$identity" | sed -n 's/^MainPID=//p')" = 0 ]; then
+      return 0
+    fi
+  fi
+  echo "unit identity does not match the user manager: refusing service operation" >&2
+  exit 2
+}
+
 uninstall() {
   if [ "$platform" = Linux ]; then
-    if [ -e "$unit" ] || [ -e "$data/bin/soze" ] || [ -e "$data/bin/install.json" ]; then
-      # A searched directory may still contain a shadowed, same-named definition.
-      # Validate the loaded path before stopping anything or deleting installed files.
-      fragment=$(systemctl --user show soze.service --property=FragmentPath --value)
-      expected_unit=$(printf '%s\n' "$unit" | sed 's://*:/:g')
-      if [ "$fragment" != "$expected_unit" ]; then
-        echo "unit path differs from the user manager loaded definition: nothing changed" >&2
-        exit 2
-      fi
+    if installation_exists; then
+      verify_unit_identity existing
       # Do not remove files if the manager could not stop the running service.
       systemctl --user disable --now soze.service
       rm -f "$unit"
@@ -223,6 +237,7 @@ if [ "$platform" = Linux ]; then
     echo "unit directory is outside the user manager search path: nothing changed" >&2
     exit 2
   fi
+  verify_unit_identity new
   umask 077
   definition=$unit
 else
@@ -241,6 +256,8 @@ if [ "$platform" = Linux ]; then
   mv -f "$unit.new" "$unit"
   systemctl --user daemon-reload
   systemctl --user enable soze.service
+  # Reload/enable can change name resolution; never restart a different effective definition.
+  verify_unit_identity existing
   exec systemctl --user restart soze.service
 fi
 write_plist

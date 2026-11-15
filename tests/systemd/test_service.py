@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import selectors
+import shlex
 import socket
 import subprocess
 import tempfile
@@ -235,6 +236,45 @@ class UserService(unittest.TestCase):
         self.assertEqual(self.property("MainPID"), pid)
         self.assertEqual(self.property("ActiveState"), "active")
         self.assertTrue(self.listening())
+
+    def test_a_searched_but_shadowed_directory_cannot_update_the_loaded_installation(self):
+        self.install()
+        self.relay()
+        lower_config = Path.home() / ".local/share"
+        lower_unit = lower_config / "systemd/user/soze.service"
+        search_paths = shlex.split(self.run_command(
+            "systemctl", "--user", "show", "--property=UnitPath", "--value"
+        ))
+        self.assertIn(str(lower_unit.parent), search_paths)
+        self.assertLess(search_paths.index(str(UNIT.parent)), search_paths.index(str(lower_unit.parent)))
+        self.assertFalse(lower_unit.exists())
+        pid = self.property("MainPID")
+        fragment = self.property("FragmentPath")
+        paths = [UNIT, *CONFIG.parent.rglob("*"), *DATA.rglob("*")]
+        before = {
+            path: (path.stat().st_ino, hashlib.sha256(path.read_bytes()).digest())
+            for path in paths if path.is_file()
+        }
+
+        result = subprocess.run(
+            ["sh", str(ROOT / "scripts/service.sh"), "install", str(BINARY)],
+            env=dict(os.environ, XDG_CONFIG_HOME=str(lower_config)),
+            capture_output=True, timeout=20, check=False,
+        )
+
+        # A lower-priority searched directory cannot replace shared files or restart the loaded unit.
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse(lower_unit.exists())
+        after_paths = [UNIT, *CONFIG.parent.rglob("*"), *DATA.rglob("*")]
+        after = {
+            path: (path.stat().st_ino, hashlib.sha256(path.read_bytes()).digest())
+            for path in after_paths if path.is_file()
+        }
+        self.assertTrue(before == after, "installed file identities and digests changed")
+        self.assertEqual(self.property("MainPID"), pid)
+        self.assertEqual(self.property("FragmentPath"), fragment)
+        self.assertEqual(self.property("ActiveState"), "active")
+        self.assertEqual(self.run_command("systemctl", "--user", "is-enabled", "soze.service").strip(), "enabled")
 
     def test_uninstall_preserves_data_and_purge_removes_only_data(self):
         self.install()
