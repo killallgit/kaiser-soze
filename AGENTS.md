@@ -56,7 +56,13 @@ the gate exposes gets fixed, even if unrelated.
 
 ## Git and worktrees
 
-The default branch is `main`.
+The default branch is `main`. Forgejo `Laurel` is its local upstream and the default push
+target; `origin` and `gh` remain GitHub. Branch from fresh `Laurel/main` for a Forgejo PR,
+or fresh `origin/main` for a GitHub PR. For GitHub work, explicitly `git push -u origin
+<branch>` and set `git config branch.<branch>.pushRemote origin` so later plain pushes
+stay there. Existing GitHub branch push settings remain intact. Only main is synchronized,
+with ordinary fast-forwards; never force to resolve divergence. PR metadata is independent,
+so link a Forgejo PR in the coordinating GitHub issue.
 
 Before the first edit, create a lane worktree from the repo root with
 `git worktree add .claude/worktrees/<lane> -b worktree-<lane> main`, enter it, and confirm the
