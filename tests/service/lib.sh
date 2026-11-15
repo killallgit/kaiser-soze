@@ -41,12 +41,19 @@ case "$*" in
     fi
     ;;
   'daemon-reload') ;;
-  'enable soze.service') touch "$HOME/systemctl.enabled" ;;
+  'enable soze.service')
+    touch "$HOME/systemctl.enabled"
+    printf '%s/systemd/user/soze.service\n' "${XDG_CONFIG_HOME:-$HOME/.config}" |
+      sed 's://*:/:g' > "$HOME/systemctl.fragment-path"
+    ;;
   'restart soze.service')
     [ -e "$HOME/systemctl.enabled" ] || exit 1
     touch "$HOME/systemctl.running"
     ;;
   'reload soze.service') [ -e "$HOME/systemctl.running" ] || exit 1 ;;
+  'show soze.service --property=FragmentPath --value')
+    [ ! -e "$HOME/systemctl.fragment-path" ] || cat "$HOME/systemctl.fragment-path"
+    ;;
   'show soze.service --property=LoadState --property=SubState --property=MainPID')
     if [ -e "$HOME/systemctl.running" ]; then
       printf 'LoadState=loaded\nSubState=running\nMainPID=4242\n'

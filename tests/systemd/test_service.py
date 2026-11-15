@@ -257,6 +257,40 @@ class UserService(unittest.TestCase):
         self.assertTrue(CONFIG.exists())
         self.assertTrue((CONFIG.parent / "ca.pem").exists())
 
+    def test_caller_only_override_cannot_uninstall_or_purge_the_running_service(self):
+        self.install()
+        self.relay()
+        pid = self.property("MainPID")
+        fragment = self.property("FragmentPath")
+        paths = [UNIT, *CONFIG.parent.rglob("*"), *DATA.rglob("*")]
+        before = {
+            path: (path.stat().st_ino, hashlib.sha256(path.read_bytes()).digest())
+            for path in paths if path.is_file()
+        }
+        with tempfile.TemporaryDirectory(prefix="soze caller config ") as directory:
+            override = Path(directory) / "config"
+            environment = dict(os.environ, XDG_CONFIG_HOME=str(override))
+            for arguments in (("uninstall",), ("uninstall", "--purge")):
+                with self.subTest(arguments=arguments):
+                    result = subprocess.run(
+                        ["sh", str(ROOT / "scripts/service.sh"), *arguments],
+                        env=environment, capture_output=True, timeout=20, check=False,
+                    )
+
+                    # A wrong caller path cannot stop, disable, remove, purge, or alter the service.
+                    self.assertEqual(result.returncode, 2)
+                    self.assertFalse(override.exists())
+                    after_paths = [UNIT, *CONFIG.parent.rglob("*"), *DATA.rglob("*")]
+                    after = {
+                        path: (path.stat().st_ino, hashlib.sha256(path.read_bytes()).digest())
+                        for path in after_paths if path.is_file()
+                    }
+                    self.assertTrue(before == after, "installed file identities and digests changed")
+                    self.assertEqual(self.property("MainPID"), pid)
+                    self.assertEqual(self.property("FragmentPath"), fragment)
+                    self.assertEqual(self.property("ActiveState"), "active")
+                    self.assertEqual(self.run_command("systemctl", "--user", "is-enabled", "soze.service").strip(), "enabled")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

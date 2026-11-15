@@ -50,7 +50,15 @@ show_status() {
 
 uninstall() {
   if [ "$platform" = Linux ]; then
-    if [ -e "$unit" ] || [ -e "$data/bin/soze" ]; then
+    if [ -e "$unit" ] || [ -e "$data/bin/soze" ] || [ -e "$data/bin/install.json" ]; then
+      # A searched directory may still contain a shadowed, same-named definition.
+      # Validate the loaded path before stopping anything or deleting installed files.
+      fragment=$(systemctl --user show soze.service --property=FragmentPath --value)
+      expected_unit=$(printf '%s\n' "$unit" | sed 's://*:/:g')
+      if [ "$fragment" != "$expected_unit" ]; then
+        echo "unit path differs from the user manager loaded definition: nothing changed" >&2
+        exit 2
+      fi
       # Do not remove files if the manager could not stop the running service.
       systemctl --user disable --now soze.service
       rm -f "$unit"

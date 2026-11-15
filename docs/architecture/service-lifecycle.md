@@ -92,9 +92,10 @@ The first install creates `config.toml` with `log_format = "human"` and `live = 
 file is absent. Later installs preserve it. The CA is made on the binary's first run, not
 installed into a trust store.
 
-Normal uninstall keeps captures, logs, configuration and CA material. On Linux it disables
-and stops the unit before deleting it, then reloads the user manager. A stop failure aborts
-removal, so files are not deleted from underneath a possibly running service.
+Normal uninstall keeps captures, logs, configuration and CA material. On Linux it first
+verifies that the caller's unit path matches the manager's loaded definition, then disables
+and stops the unit before deleting it and reloading the manager. A mismatched path or stop
+failure aborts removal, so files are not deleted from underneath a possibly running service.
 `task service:uninstall -- --purge` additionally lists and deletes the entire
 `~/.local/share/soze/` directory. It still keeps `~/.config/soze/`.
 

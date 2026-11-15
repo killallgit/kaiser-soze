@@ -104,6 +104,8 @@ manager_paths_with_escaped_characters_remain_valid() {
   # Quoting and escape sequences describe literal path characters, never shell expansions.
   [ -f "$XDG_CONFIG_HOME/systemd/user/soze.service" ]
   [ ! -e "$UNIT" ]
+  service uninstall
+  [ ! -e "$XDG_CONFIG_HOME/systemd/user/soze.service" ]
 }
 
 config_directory_trailing_slashes_remain_valid() {
@@ -114,6 +116,8 @@ config_directory_trailing_slashes_remain_valid() {
 
   # A trailing XDG slash still addresses the directory searched by the manager.
   [ -f "$XDG_CONFIG_HOME/systemd/user/soze.service" ]
+  service uninstall
+  [ ! -e "$XDG_CONFIG_HOME/systemd/user/soze.service" ]
 }
 
 malformed_manager_paths_cannot_authorize_installation() {
@@ -225,7 +229,7 @@ uninstall_disables_the_unit_and_preserves_data() {
   service uninstall > "$HOME/out"
 
   # Stop/disable precedes removal and reload; captures and configuration survive.
-  eq "$(systemctl_calls)" "$(printf '%s\n' 'disable --now soze.service' daemon-reload)" "uninstall calls"
+  eq "$(systemctl_calls)" "$(printf '%s\n' 'show soze.service --property=FragmentPath --value' 'disable --now soze.service' daemon-reload)" "uninstall calls"
   [ ! -e "$UNIT" ]
   [ ! -e "$DATA/bin" ]
   [ ! -e "$HOME/systemctl.enabled" ]
@@ -236,12 +240,102 @@ uninstall_disables_the_unit_and_preserves_data() {
 }
 
 uninstall_is_idempotent() {
+  echo show > "$HOME/systemctl.fail"
   service uninstall
   service uninstall
 
   # No installed unit means no supervisor operation is needed.
   [ ! -e "$HOME/systemctl.calls" ]
   [ ! -e "$HOME/.local" ]
+}
+
+rejects_uninstall_without_mutating_the_installation() {
+  expected_code=$1
+  shift
+  printf 'synthetic\n' > "$DATA/logs/soze.log"
+  printf '{"synthetic":true}\n' > "$DATA/tap.jsonl"
+  cp -Rp "$DATA" "$HOME/data.before"
+  cp "$UNIT" "$HOME/unit.before"
+  cp "$HOME/.config/soze/config.toml" "$HOME/config.before"
+  inode_before=$(ls -i "$DATA/bin/soze" | awk '{print $1}')
+
+  code=$(exit_code uninstall "$@")
+
+  # Identity rejection or a failed query cannot stop/disable or change installed files/data.
+  eq "$code" "$expected_code" "uninstall exit status"
+  diff -rq "$HOME/data.before" "$DATA" > /dev/null
+  cmp "$HOME/unit.before" "$UNIT"
+  cmp "$HOME/config.before" "$HOME/.config/soze/config.toml"
+  eq "$(ls -i "$DATA/bin/soze" | awk '{print $1}')" "$inode_before" "binary inode"
+  [ -e "$HOME/systemctl.running" ]
+  [ -e "$HOME/systemctl.enabled" ]
+  eq "$(systemctl_calls)" 'show soze.service --property=FragmentPath --value' "identity query only"
+  [ ! -s "$HOME/out" ]
+}
+
+caller_only_override_cannot_uninstall_the_running_service() {
+  installed
+  export XDG_CONFIG_HOME="$HOME/caller config"
+
+  rejects_uninstall_without_mutating_the_installation 2
+
+  # An absent caller-only directory must remain absent.
+  [ ! -e "$XDG_CONFIG_HOME" ]
+}
+
+caller_only_override_cannot_purge_the_running_service() {
+  installed
+  export XDG_CONFIG_HOME="$HOME/caller config"
+
+  rejects_uninstall_without_mutating_the_installation 2 --purge
+
+  # Purge cannot create or remove an unrelated caller-only directory.
+  [ ! -e "$XDG_CONFIG_HOME" ]
+}
+
+an_absent_executable_does_not_bypass_the_identity_check() {
+  installed
+  "$RM" "$DATA/bin/soze"
+  export XDG_CONFIG_HOME="$HOME/caller config"
+  cp "$DATA/bin/install.json" "$HOME/record.before"
+
+  code=$(exit_code uninstall --purge)
+
+  # Remaining provenance still identifies an installation even if its executable was removed.
+  eq "$code" 2 "uninstall exit status"
+  cmp "$HOME/record.before" "$DATA/bin/install.json"
+  [ -f "$UNIT" ]
+  [ -e "$HOME/systemctl.running" ]
+  [ -e "$HOME/systemctl.enabled" ]
+  eq "$(systemctl_calls)" 'show soze.service --property=FragmentPath --value' "identity query only"
+}
+
+a_searched_but_shadowed_definition_cannot_uninstall_the_loaded_unit() {
+  installed
+  export XDG_CONFIG_HOME="$HOME/other config"
+  printf '"%s/.config/systemd/user" "%s/systemd/user"\n' "$HOME" "$XDG_CONFIG_HOME" > "$HOME/systemctl.unit-paths"
+  mkdir -p "$XDG_CONFIG_HOME/systemd/user"
+  cp "$UNIT" "$XDG_CONFIG_HOME/systemd/user/soze.service"
+  cp "$UNIT" "$HOME/other-unit.before"
+
+  rejects_uninstall_without_mutating_the_installation 2
+
+  # Search visibility and an identical definition do not prove which path is loaded.
+  cmp "$HOME/other-unit.before" "$XDG_CONFIG_HOME/systemd/user/soze.service"
+}
+
+an_empty_fragment_identity_prevents_purging_the_installation() {
+  installed
+  : > "$HOME/systemctl.fragment-path"
+
+  rejects_uninstall_without_mutating_the_installation 2 --purge
+}
+
+an_unavailable_manager_prevents_uninstall_mutation() {
+  installed
+  echo show > "$HOME/systemctl.fail"
+
+  rejects_uninstall_without_mutating_the_installation 1 --purge
 }
 
 purge_deletes_only_the_data_directory() {
@@ -300,6 +394,20 @@ a_missing_unit_file_does_not_bypass_the_stop_check() {
   [ -x "$DATA/bin/soze" ]
   [ -e "$DATA/tap.jsonl" ]
   [ -e "$HOME/systemctl.running" ]
+  eq "$(systemctl_calls)" "$(printf '%s\n' 'show soze.service --property=FragmentPath --value' 'disable --now soze.service')" "missing definition still requires stop"
+}
+
+a_removed_definition_can_be_uninstalled_using_the_cached_identity() {
+  installed
+  "$RM" "$UNIT"
+
+  service uninstall
+
+  # A cached matching FragmentPath still requires a successful stop before removing the binary.
+  [ ! -e "$DATA/bin" ]
+  [ ! -e "$HOME/systemctl.running" ]
+  [ ! -e "$HOME/systemctl.enabled" ]
+  eq "$(systemctl_calls)" "$(printf '%s\n' 'show soze.service --property=FragmentPath --value' 'disable --now soze.service' daemon-reload)" "removed definition uninstall calls"
 }
 
 invalid_arguments_change_nothing() {
@@ -353,11 +461,18 @@ case_run status_fails_when_the_user_manager_is_unavailable status_fails_when_the
 case_run logs_follow_only_the_operational_file logs_follow_only_the_operational_file
 case_run uninstall_disables_the_unit_and_preserves_data uninstall_disables_the_unit_and_preserves_data
 case_run uninstall_is_idempotent uninstall_is_idempotent
+case_run caller_only_override_cannot_uninstall_the_running_service caller_only_override_cannot_uninstall_the_running_service
+case_run caller_only_override_cannot_purge_the_running_service caller_only_override_cannot_purge_the_running_service
+case_run an_absent_executable_does_not_bypass_the_identity_check an_absent_executable_does_not_bypass_the_identity_check
+case_run a_searched_but_shadowed_definition_cannot_uninstall_the_loaded_unit a_searched_but_shadowed_definition_cannot_uninstall_the_loaded_unit
+case_run an_empty_fragment_identity_prevents_purging_the_installation an_empty_fragment_identity_prevents_purging_the_installation
+case_run an_unavailable_manager_prevents_uninstall_mutation an_unavailable_manager_prevents_uninstall_mutation
 case_run purge_deletes_only_the_data_directory purge_deletes_only_the_data_directory
 case_run an_unavailable_manager_prevents_installation an_unavailable_manager_prevents_installation
 case_run install_failures_propagate install_failures_propagate
 case_run a_stop_failure_preserves_the_installation a_stop_failure_preserves_the_installation
 case_run a_missing_unit_file_does_not_bypass_the_stop_check a_missing_unit_file_does_not_bypass_the_stop_check
+case_run a_removed_definition_can_be_uninstalled_using_the_cached_identity a_removed_definition_can_be_uninstalled_using_the_cached_identity
 case_run invalid_arguments_change_nothing invalid_arguments_change_nothing
 case_run an_empty_home_changes_nothing an_empty_home_changes_nothing
 case_run an_unsupported_platform_changes_nothing an_unsupported_platform_changes_nothing
