@@ -60,14 +60,40 @@ Open a new shell, start the proxy on the wrappers' port (`soze --port 48731 ...`
 
 A launchd user agent (macOS) or a `systemd --user` unit (Linux) keeps one `soze` running on port 48731, the port the wrappers use. `task dev` listens on 48732, so both can run at once. Linux requires systemd 240 or newer, a reachable user manager/session bus and `/bin/kill` for reload (`procps` on Debian); no root access is needed. Other Linux supervisors are not managed by these tasks.
 
+Run from a checkout on either platform:
+
 ```sh
 task service:install     # build the debug binary, copy it into place, rotate the log, (re)start
 task service:status      # state, pid, and the sha, branch, dirty flag and time of the install
-task service:logs        # tail -F soze.log
+task service:logs        # follow live operational logs (soze.log)
 task service:reload      # SIGHUP: re-read the live logging settings
 task service:restart     # restart the service, cutting in-flight streams
 task service:uninstall   # stop and remove the service and binary
 ```
+
+### Check and monitor
+
+`task service:status` should show `state=running` and a PID. This checks supervision, not upstream API health.
+`task service:logs` follows activity and errors in real time; Ctrl-C stops following, not the service.
+For the detailed JSON debug log on either platform, even outside a checkout:
+
+```sh
+tail -F "$HOME/.local/share/soze/debug.jsonl"
+```
+
+Both logs contain metadata, not message content. Debug logging is always enabled, resets on
+restart and stops at 16 MiB per run. Never tail `tap.jsonl`: it contains conversations.
+For per-chunk detail in `soze.log`, set `log_level = "debug"` and `stream = true` in
+`~/.config/soze/config.toml`, then run `task service:reload`; no restart is needed.
+
+Native supervisor details (no checkout or Task needed):
+
+```sh
+systemctl --user status soze.service                       # Linux
+launchctl print "gui/$(id -u)/com.killallgit.soze"           # macOS
+```
+
+### Files and lifecycle
 
 Layout, all under your home directory:
 
@@ -84,7 +110,6 @@ Layout, all under your home directory:
 - **Linux startup and recovery.** Installation enables `soze.service` for user-manager startup, normally at login. It runs continuously, without socket activation, and restarts on failure after five seconds. To run from boot and after logout, explicitly opt into lingering with `loginctl enable-linger "$USER"` (authorization depends on your system). The installer never enables lingering or changes system proxy/certificate trust settings.
 - **Linux unit paths.** The unit directory must be in the running user manager's search path. Install and uninstall reject caller-only overrides and a different same-named loaded definition before changing the installation.
 - **Restart is abrupt.** In-flight streams are cut and agents must reconnect. The new process has a new `run_id`, which marks the restart in the tap.
-- **Logs.** `task service:logs` tails `soze.log` only. It never reads the tap, because message content must not reach a terminal.
 - **Uninstall** stops and removes the supervisor definition, binary and `install.json` (and disables the Linux unit), keeping captures, logs and config. `task service:uninstall -- --purge` also lists every path under `~/.local/share/soze/`, then deletes the directory; `~/.config/soze` stays. Linux uninstall requires a reachable user manager when the unit is installed. It does not change lingering, which may support other user services.
 - **`live = true` in `config.toml`** applies to `task dev` too, so `LIVE=0 task dev` no longer turns live lines off. Pass `-- --live=false`, or edit the file.
 - **Smoke test.** `task test:smoke` checks that the installed service is running, accepts connections, proxies one `claude -p` call and captures it in the tap without new `connect_failed` lines; it needs the installed service and a logged-in `claude`, and prints counts and ids only.
